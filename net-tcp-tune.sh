@@ -1373,6 +1373,153 @@ analyze_realm_connections() {
 # Realm IPv4 强制转发管理
 #=============================================================================
 
+# DNS 守护标记文件
+DNS_GUARD_MARKER="/root/.realm_backup/dns_guard.conf"
+
+# 检查 Cron 守护状态
+check_cron_guard() {
+    if crontab -l 2>/dev/null | grep -q "realm.*resolv.conf"; then
+        return 0  # 已启用
+    else
+        return 1  # 未启用
+    fi
+}
+
+# 检查 systemd-resolved 守护状态
+check_systemd_guard() {
+    if [ -f /etc/systemd/resolved.conf.d/realm-ipv4-only.conf ]; then
+        return 0  # 已启用
+    else
+        return 1  # 未启用
+    fi
+}
+
+# 设置 Cron 守护
+setup_cron_guard() {
+    echo -e "${gl_zi}正在设置 Cron DNS 守护...${gl_bai}"
+
+    # 检查是否已存在
+    if check_cron_guard; then
+        echo -e "${gl_huang}⚠️  Cron 守护已存在，跳过${gl_bai}"
+        return 0
+    fi
+
+    # 添加 cron 任务（每分钟检查一次）
+    local cron_job="* * * * * grep -q 'nameserver.*:' /etc/resolv.conf 2>/dev/null && sed -i '/nameserver.*:/d' /etc/resolv.conf"
+
+    # 获取现有 crontab
+    local current_cron=$(crontab -l 2>/dev/null)
+
+    # 添加新任务
+    (echo "$current_cron"; echo "$cron_job") | crontab -
+
+    # 记录守护类型
+    echo "cron" >> "$DNS_GUARD_MARKER"
+
+    echo -e "${gl_lv}✅ Cron 守护已启用（每分钟自动检测）${gl_bai}"
+    return 0
+}
+
+# 设置 systemd-resolved 守护
+setup_systemd_guard() {
+    echo -e "${gl_zi}正在设置 systemd-resolved DNS 守护...${gl_bai}"
+
+    # 检查系统是否支持 systemd-resolved
+    if ! systemctl is-active systemd-resolved &>/dev/null; then
+        echo -e "${gl_huang}⚠️  系统不支持 systemd-resolved，跳过${gl_bai}"
+        return 1
+    fi
+
+    # 检查是否已存在
+    if check_systemd_guard; then
+        echo -e "${gl_huang}⚠️  systemd 守护已存在，跳过${gl_bai}"
+        return 0
+    fi
+
+    # 创建配置目录
+    mkdir -p /etc/systemd/resolved.conf.d/
+
+    # 创建配置文件
+    cat > /etc/systemd/resolved.conf.d/realm-ipv4-only.conf << 'EOF'
+# Realm IPv4 强制转发 - DNS 配置
+# 此文件由 net-tcp-tune.sh 自动生成
+# 作用：强制 systemd-resolved 只使用 IPv4 DNS 服务器
+
+[Resolve]
+DNS=1.1.1.1 8.8.8.8
+FallbackDNS=
+EOF
+
+    # 重启 systemd-resolved
+    systemctl restart systemd-resolved 2>/dev/null
+
+    # 记录守护类型
+    echo "systemd" >> "$DNS_GUARD_MARKER"
+
+    echo -e "${gl_lv}✅ systemd 守护已启用（从源头禁止 IPv6 DNS）${gl_bai}"
+    return 0
+}
+
+# 移除 Cron 守护
+remove_cron_guard() {
+    if ! check_cron_guard; then
+        return 0  # 未启用，无需移除
+    fi
+
+    echo -e "${gl_zi}正在移除 Cron DNS 守护...${gl_bai}"
+
+    # 获取现有 crontab，删除相关任务
+    crontab -l 2>/dev/null | grep -v "realm.*resolv.conf" | crontab -
+
+    # 从标记文件中删除
+    if [ -f "$DNS_GUARD_MARKER" ]; then
+        sed -i '/^cron$/d' "$DNS_GUARD_MARKER"
+    fi
+
+    echo -e "${gl_lv}✅ Cron 守护已移除${gl_bai}"
+    return 0
+}
+
+# 移除 systemd-resolved 守护
+remove_systemd_guard() {
+    if ! check_systemd_guard; then
+        return 0  # 未启用，无需移除
+    fi
+
+    echo -e "${gl_zi}正在移除 systemd-resolved DNS 守护...${gl_bai}"
+
+    # 删除配置文件
+    rm -f /etc/systemd/resolved.conf.d/realm-ipv4-only.conf
+
+    # 重启 systemd-resolved
+    if systemctl is-active systemd-resolved &>/dev/null; then
+        systemctl restart systemd-resolved 2>/dev/null
+    fi
+
+    # 从标记文件中删除
+    if [ -f "$DNS_GUARD_MARKER" ]; then
+        sed -i '/^systemd$/d' "$DNS_GUARD_MARKER"
+    fi
+
+    echo -e "${gl_lv}✅ systemd 守护已移除${gl_bai}"
+    return 0
+}
+
+# 移除所有 DNS 守护
+remove_all_guards() {
+    echo -e "${gl_zi}正在移除所有 DNS 守护...${gl_bai}"
+    echo ""
+
+    remove_cron_guard
+    remove_systemd_guard
+
+    # 删除标记文件
+    rm -f "$DNS_GUARD_MARKER"
+
+    echo ""
+    echo -e "${gl_lv}✅ 所有 DNS 守护已移除${gl_bai}"
+}
+
 # 备份当前配置
 backup_realm_config() {
     local backup_dir="/root/.realm_backup"
@@ -1427,27 +1574,46 @@ backup_realm_config() {
 }
 
 # 启用 Realm IPv4 强制转发
+# 参数: $1 = 守护模式 (cron|systemd|both)
 enable_realm_ipv4() {
+    local guard_mode="$1"
+
     clear
     echo -e "${gl_kjlan}=========================================="
     echo "      启用 Realm IPv4 强制转发"
     echo -e "==========================================${gl_bai}"
     echo ""
-    
+
+    # 显示守护模式
+    if [ -n "$guard_mode" ]; then
+        case "$guard_mode" in
+            cron)
+                echo -e "${gl_zi}守护模式: Cron 定时检测${gl_bai}"
+                ;;
+            systemd)
+                echo -e "${gl_zi}守护模式: systemd-resolved 配置${gl_bai}"
+                ;;
+            both)
+                echo -e "${gl_zi}守护模式: Cron + systemd 双重守护${gl_bai}"
+                ;;
+        esac
+        echo ""
+    fi
+
     # 步骤1：备份配置
-    echo -e "${gl_zi}[步骤 1/5] 备份当前配置...${gl_bai}"
+    echo -e "${gl_zi}[步骤 1/6] 备份当前配置...${gl_bai}"
     echo ""
-    
+
     if ! backup_realm_config; then
         echo ""
         break_end
         return 1
     fi
-    
+
     echo ""
-    
+
     # 步骤2：修改 resolv.conf
-    echo -e "${gl_zi}[步骤 2/5] 修改 DNS 配置...${gl_bai}"
+    echo -e "${gl_zi}[步骤 2/6] 修改 DNS 配置...${gl_bai}"
     
     if [ -f /etc/resolv.conf ]; then
         # 删除 IPv6 DNS 服务器行
@@ -1466,7 +1632,7 @@ enable_realm_ipv4() {
     echo ""
     
     # 步骤3：修改 Realm 配置
-    echo -e "${gl_zi}[步骤 3/5] 修改 Realm 配置...${gl_bai}"
+    echo -e "${gl_zi}[步骤 3/6] 修改 Realm 配置...${gl_bai}"
     
     if [ ! -f /etc/realm/config.json ]; then
         echo -e "${gl_hong}❌ /etc/realm/config.json 不存在${gl_bai}"
@@ -1522,7 +1688,7 @@ enable_realm_ipv4() {
     echo ""
     
     # 步骤4：重启 Realm 服务
-    echo -e "${gl_zi}[步骤 4/5] 重启 Realm 服务...${gl_bai}"
+    echo -e "${gl_zi}[步骤 4/6] 重启 Realm 服务...${gl_bai}"
     
     if systemctl restart realm 2>/dev/null; then
         sleep 2
@@ -1542,8 +1708,31 @@ enable_realm_ipv4() {
     
     echo ""
     
-    # 步骤5：验证配置
-    echo -e "${gl_zi}[步骤 5/5] 验证配置...${gl_bai}"
+    # 步骤5：设置 DNS 守护
+    echo -e "${gl_zi}[步骤 5/6] 设置 DNS 守护...${gl_bai}"
+    echo ""
+
+    if [ -n "$guard_mode" ]; then
+        case "$guard_mode" in
+            cron)
+                setup_cron_guard
+                ;;
+            systemd)
+                setup_systemd_guard
+                ;;
+            both)
+                setup_cron_guard
+                setup_systemd_guard
+                ;;
+        esac
+    else
+        echo -e "${gl_huang}⚠️  未指定守护模式，跳过${gl_bai}"
+    fi
+
+    echo ""
+
+    # 步骤6：验证配置
+    echo -e "${gl_zi}[步骤 6/6] 验证配置...${gl_bai}"
     echo ""
     
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1614,19 +1803,24 @@ restore_realm_config() {
     
     echo ""
     echo -e "${gl_zi}正在还原配置文件...${gl_bai}"
-    
+
     # 还原 resolv.conf
     if [ -f "$backup_dir/resolv.conf.bak" ]; then
         cp "$backup_dir/resolv.conf.bak" /etc/resolv.conf
         echo -e "${gl_lv}✅ 已还原 /etc/resolv.conf${gl_bai}"
     fi
-    
+
     # 还原 realm config
     if [ -f "$backup_dir/config.json.bak" ]; then
         cp "$backup_dir/config.json.bak" /etc/realm/config.json
         echo -e "${gl_lv}✅ 已还原 /etc/realm/config.json${gl_bai}"
     fi
-    
+
+    echo ""
+
+    # 移除所有 DNS 守护
+    remove_all_guards
+
     echo ""
     
     # 重启服务
@@ -1659,21 +1853,22 @@ realm_ipv4_management() {
         echo "      Realm 转发强制使用 IPv4"
         echo -e "==========================================${gl_bai}"
         echo ""
-        
+
         # 显示当前状态
         echo -e "${gl_zi}当前状态:${gl_bai}"
-        
+
         # 检查备份
         if [ -d /root/.realm_backup ] && [ -f /root/.realm_backup/config.json.bak ]; then
-            echo -e "备份状态: ${gl_lv}✅ 已备份${gl_bai}"
             if [ -f /root/.realm_backup/backup_time.txt ]; then
-                echo -n "备份时间: "
-                cat /root/.realm_backup/backup_time.txt
+                local backup_time=$(cat /root/.realm_backup/backup_time.txt)
+                echo -e "备份状态: ${gl_lv}✅ 已备份${gl_bai} (${backup_time})"
+            else
+                echo -e "备份状态: ${gl_lv}✅ 已备份${gl_bai}"
             fi
         else
             echo -e "备份状态: ${gl_huang}⚠️  未备份${gl_bai}"
         fi
-        
+
         # 检查 Realm 配置
         if [ -f /etc/realm/config.json ]; then
             if grep -q '"resolve".*"ipv4"' /etc/realm/config.json 2>/dev/null; then
@@ -1681,7 +1876,7 @@ realm_ipv4_management() {
             else
                 echo -e "IPv4强制: ${gl_huang}⚠️  未启用${gl_bai}"
             fi
-            
+
             local listen_ipv6=$(grep -c ':::' /etc/realm/config.json 2>/dev/null || echo "0")
             if [ "$listen_ipv6" -gt 0 ]; then
                 echo -e "监听地址: ${gl_huang}检测到 ${listen_ipv6} 个 IPv6 监听${gl_bai}"
@@ -1691,7 +1886,7 @@ realm_ipv4_management() {
         else
             echo -e "配置文件: ${gl_hong}❌ 不存在${gl_bai}"
         fi
-        
+
         # 检查 DNS
         if [ -f /etc/resolv.conf ]; then
             local ipv6_dns=$(grep -c 'nameserver.*:' /etc/resolv.conf 2>/dev/null || echo "0")
@@ -1701,44 +1896,101 @@ realm_ipv4_management() {
                 echo -e "DNS配置: ${gl_lv}✅ 仅 IPv4 DNS${gl_bai}"
             fi
         fi
-        
+
+        # 检查守护状态
+        local cron_status=""
+        local systemd_status=""
+
+        if check_cron_guard; then
+            cron_status="${gl_lv}✅ Cron${gl_bai}"
+        else
+            cron_status="${gl_huang}❌ Cron${gl_bai}"
+        fi
+
+        if check_systemd_guard; then
+            systemd_status="${gl_lv}✅ systemd${gl_bai}"
+        else
+            systemd_status="${gl_huang}❌ systemd${gl_bai}"
+        fi
+
+        echo -e "守护状态: ${cron_status} | ${systemd_status}"
+
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo ""
-        echo "1. 启用 IPv4 强制转发（会先备份）"
-        echo "2. 还原到原始配置"
-        echo "3. 查看详细配置"
+        echo -e "${gl_zi}【启用 IPv4 强制转发】${gl_bai}"
+        echo ""
+        echo "1. Cron守护 ⭐ 推荐"
+        echo "   每分钟自动检测，适用所有系统"
+        echo ""
+        echo "2. systemd守护"
+        echo "   从源头禁止IPv6 DNS，仅现代系统"
+        echo ""
+        echo "3. 双重守护 🔥 最强"
+        echo "   Cron + systemd 双保险"
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "4. 还原到原始配置"
+        echo "5. 查看详细配置"
         echo "0. 返回主菜单"
         echo ""
-        
-        read -p "请选择操作 [0-3]: " choice
-        
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        read -p "请选择操作 [0-5]: " choice
+
         case $choice in
             1)
-                enable_realm_ipv4
+                enable_realm_ipv4 "cron"
                 ;;
             2)
-                restore_realm_config
+                enable_realm_ipv4 "systemd"
                 ;;
             3)
+                enable_realm_ipv4 "both"
+                ;;
+            4)
+                restore_realm_config
+                ;;
+            5)
                 clear
                 echo -e "${gl_kjlan}=========================================="
                 echo "           详细配置信息"
                 echo -e "==========================================${gl_bai}"
                 echo ""
-                
+
                 echo -e "${gl_huang}=== DNS 配置 ===${gl_bai}"
                 cat /etc/resolv.conf 2>/dev/null || echo "文件不存在"
                 echo ""
-                
+
                 echo -e "${gl_huang}=== Realm 配置 ===${gl_bai}"
                 cat /etc/realm/config.json 2>/dev/null || echo "文件不存在"
                 echo ""
-                
+
                 echo -e "${gl_huang}=== Realm 监听端口 ===${gl_bai}"
                 ss -tlnp 2>/dev/null | grep realm || echo "无监听端口"
                 echo ""
-                
+
+                echo -e "${gl_huang}=== DNS 守护状态 ===${gl_bai}"
+                if check_cron_guard; then
+                    echo "Cron 守护: ✅ 已启用"
+                    echo "Cron 任务:"
+                    crontab -l 2>/dev/null | grep "realm.*resolv.conf"
+                else
+                    echo "Cron 守护: ❌ 未启用"
+                fi
+                echo ""
+
+                if check_systemd_guard; then
+                    echo "systemd 守护: ✅ 已启用"
+                    echo "配置文件:"
+                    cat /etc/systemd/resolved.conf.d/realm-ipv4-only.conf 2>/dev/null
+                else
+                    echo "systemd 守护: ❌ 未启用"
+                fi
+                echo ""
+
                 break_end
                 ;;
             0)
