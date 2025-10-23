@@ -1378,7 +1378,7 @@ DNS_GUARD_MARKER="/root/.realm_backup/dns_guard.conf"
 
 # 检查 Cron 守护状态
 check_cron_guard() {
-    if crontab -l 2>/dev/null | grep -q "realm.*resolv.conf"; then
+    if crontab -l 2>/dev/null | grep -q "nameserver.*:.*resolv.conf"; then
         return 0  # 已启用
     else
         return 1  # 未启用
@@ -1469,7 +1469,7 @@ remove_cron_guard() {
     echo -e "${gl_zi}正在移除 Cron DNS 守护...${gl_bai}"
 
     # 获取现有 crontab，删除相关任务
-    crontab -l 2>/dev/null | grep -v "realm.*resolv.conf" | crontab -
+    crontab -l 2>/dev/null | grep -v "nameserver.*:.*resolv.conf" | crontab -
 
     # 从标记文件中删除
     if [ -f "$DNS_GUARD_MARKER" ]; then
@@ -1617,8 +1617,9 @@ enable_realm_ipv4() {
     
     if [ -f /etc/resolv.conf ]; then
         # 删除 IPv6 DNS 服务器行
-        local ipv6_dns_count=$(grep -c ':' /etc/resolv.conf 2>/dev/null || echo "0")
-        
+        local ipv6_dns_count=$(grep 'nameserver.*:' /etc/resolv.conf 2>/dev/null | wc -l)
+        ipv6_dns_count=$(echo "$ipv6_dns_count" | tr -d ' \n')
+
         if [ "$ipv6_dns_count" -gt 0 ]; then
             sed -i '/nameserver.*:/d' /etc/resolv.conf
             echo -e "${gl_lv}✅ 已删除 ${ipv6_dns_count} 个 IPv6 DNS 服务器${gl_bai}"
@@ -1662,8 +1663,9 @@ enable_realm_ipv4() {
     fi
     
     # 替换所有 ::: 为 0.0.0.0
-    local listen_count=$(grep -c ':::' "$temp_config" 2>/dev/null || echo "0")
-    
+    local listen_count=$(grep ':::' "$temp_config" 2>/dev/null | wc -l)
+    listen_count=$(echo "$listen_count" | tr -d ' \n')
+
     if [ "$listen_count" -gt 0 ]; then
         sed -i 's/":::/"0.0.0.0:/g' "$temp_config"
         echo -e "${gl_lv}✅ 已修改 ${listen_count} 个监听地址为 0.0.0.0${gl_bai}"
@@ -1877,7 +1879,8 @@ realm_ipv4_management() {
                 echo -e "IPv4强制: ${gl_huang}⚠️  未启用${gl_bai}"
             fi
 
-            local listen_ipv6=$(grep -c ':::' /etc/realm/config.json 2>/dev/null || echo "0")
+            local listen_ipv6=$(grep ':::' /etc/realm/config.json 2>/dev/null | wc -l)
+            listen_ipv6=$(echo "$listen_ipv6" | tr -d ' \n')
             if [ "$listen_ipv6" -gt 0 ]; then
                 echo -e "监听地址: ${gl_huang}检测到 ${listen_ipv6} 个 IPv6 监听${gl_bai}"
             else
@@ -1889,7 +1892,8 @@ realm_ipv4_management() {
 
         # 检查 DNS
         if [ -f /etc/resolv.conf ]; then
-            local ipv6_dns=$(grep -c 'nameserver.*:' /etc/resolv.conf 2>/dev/null || echo "0")
+            local ipv6_dns=$(grep 'nameserver.*:' /etc/resolv.conf 2>/dev/null | wc -l)
+            ipv6_dns=$(echo "$ipv6_dns" | tr -d ' \n')
             if [ "$ipv6_dns" -gt 0 ]; then
                 echo -e "DNS配置: ${gl_huang}检测到 ${ipv6_dns} 个 IPv6 DNS${gl_bai}"
             else
@@ -1976,7 +1980,7 @@ realm_ipv4_management() {
                 if check_cron_guard; then
                     echo "Cron 守护: ✅ 已启用"
                     echo "Cron 任务:"
-                    crontab -l 2>/dev/null | grep "realm.*resolv.conf"
+                    crontab -l 2>/dev/null | grep "nameserver.*:.*resolv.conf"
                 else
                     echo "Cron 守护: ❌ 未启用"
                 fi
