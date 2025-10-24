@@ -4992,33 +4992,32 @@ show_main_menu() {
         echo "16. 恢复Xray默认配置"
         echo ""
         echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-        echo "17. 一键部署SOCKS5代理"
-        echo "18. Sub-Store多实例管理"
+        echo "17. 星辰大海Xray一键双协议 ⭐ 推荐"
+        echo "18. 一键部署SOCKS5代理"
+        echo "19. Sub-Store多实例管理"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-        echo "19. IP质量检测（IPv4+IPv6）"
-        echo "20. IP质量检测（仅IPv4）⭐ 推荐"
+        echo "20. IP质量检测（IPv4+IPv6）"
+        echo "21. IP质量检测（仅IPv4）⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-        echo "21. 服务器带宽测试"
-        echo "22. iperf3单线程测试"
-        echo "23. 国际互联速度测试 ⭐ 推荐"
-        echo "24. 网络延迟质量检测 ⭐ 推荐"
-        echo "25. 三网回程路由测试 ⭐ 推荐"
+        echo "22. 服务器带宽测试"
+        echo "23. iperf3单线程测试"
+        echo "24. 国际互联速度测试 ⭐ 推荐"
+        echo "25. 网络延迟质量检测 ⭐ 推荐"
+        echo "26. 三网回程路由测试 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-        echo "26. IP媒体/AI解锁检测 ⭐ 推荐"
-        echo "27. NS一键检测脚本 ⭐ 推荐"
+        echo "27. IP媒体/AI解锁检测 ⭐ 推荐"
+        echo "28. NS一键检测脚本 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-        echo "28. PF_realm转发脚本 ⭐ 推荐"
-        echo "29. 御坂美琴一键双协议 ⭐ 推荐"
-        echo "30. 星辰大海Xray一键双协议 ⭐ 推荐"
-        echo "31. F佬一键sing box脚本"
-        echo "32. 科技lion脚本"
-        echo "33. 酷雪云脚本"
+        echo "29. PF_realm转发脚本 ⭐ 推荐"
+        echo "30. F佬一键sing box脚本"
+        echo "31. 科技lion脚本"
+        echo "32. 酷雪云脚本"
     else
         echo "1. 安装 XanMod 内核 + BBR v3 ⭐ 推荐"
         echo ""
@@ -5049,33 +5048,32 @@ show_main_menu() {
         echo "15. 恢复Xray默认配置"
         echo ""
         echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-        echo "16. 一键部署SOCKS5代理"
-        echo "17. Sub-Store多实例管理"
+        echo "16. 星辰大海Xray一键双协议 ⭐ 推荐"
+        echo "17. 一键部署SOCKS5代理"
+        echo "18. Sub-Store多实例管理"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-        echo "18. IP质量检测（IPv4+IPv6）"
-        echo "19. IP质量检测（仅IPv4）⭐ 推荐"
+        echo "19. IP质量检测（IPv4+IPv6）"
+        echo "20. IP质量检测（仅IPv4）⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-        echo "20. 服务器带宽测试"
-        echo "21. iperf3单线程测试"
-        echo "22. 国际互联速度测试 ⭐ 推荐"
-        echo "23. 网络延迟质量检测 ⭐ 推荐"
-        echo "24. 三网回程路由测试 ⭐ 推荐"
+        echo "21. 服务器带宽测试"
+        echo "22. iperf3单线程测试"
+        echo "23. 国际互联速度测试 ⭐ 推荐"
+        echo "24. 网络延迟质量检测 ⭐ 推荐"
+        echo "25. 三网回程路由测试 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-        echo "25. IP媒体/AI解锁检测 ⭐ 推荐"
-        echo "26. NS一键检测脚本 ⭐ 推荐"
+        echo "26. IP媒体/AI解锁检测 ⭐ 推荐"
+        echo "27. NS一键检测脚本 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-        echo "27. PF_realm转发脚本 ⭐ 推荐"
-        echo "28. 御坂美琴一键双协议 ⭐ 推荐"
-        echo "29. 星辰大海Xray一键双协议 ⭐ 推荐"
-        echo "30. F佬一键sing box脚本"
-        echo "31. 科技lion脚本"
-        echo "32. 酷雪云脚本"
+        echo "28. PF_realm转发脚本 ⭐ 推荐"
+        echo "29. F佬一键sing box脚本"
+        echo "30. 科技lion脚本"
+        echo "31. 酷雪云脚本"
     fi
     
     echo ""
@@ -5202,122 +5200,115 @@ show_main_menu() {
             if [ $is_installed -eq 0 ]; then
                 restore_xray_default
             else
-                deploy_socks5
+                run_xinchendahai_xray
             fi
             ;;
         17)
             if [ $is_installed -eq 0 ]; then
+                run_xinchendahai_xray
+            else
+                deploy_socks5
+            fi
+            ;;
+        18)
+            if [ $is_installed -eq 0 ]; then
                 deploy_socks5
             else
                 manage_substore
             fi
             ;;
-        18)
+        19)
             if [ $is_installed -eq 0 ]; then
                 manage_substore
             else
                 run_ip_quality_check
             fi
             ;;
-        19)
+        20)
             if [ $is_installed -eq 0 ]; then
                 run_ip_quality_check
             else
                 run_ip_quality_check_ipv4
             fi
             ;;
-        20)
+        21)
             if [ $is_installed -eq 0 ]; then
                 run_ip_quality_check_ipv4
             else
                 run_speedtest
             fi
             ;;
-        21)
+        22)
             if [ $is_installed -eq 0 ]; then
                 run_speedtest
             else
                 iperf3_single_thread_test
             fi
             ;;
-        22)
+        23)
             if [ $is_installed -eq 0 ]; then
                 iperf3_single_thread_test
             else
                 run_international_speed_test
             fi
             ;;
-        23)
+        24)
             if [ $is_installed -eq 0 ]; then
                 run_international_speed_test
             else
                 run_network_latency_check
             fi
             ;;
-        24)
+        25)
             if [ $is_installed -eq 0 ]; then
                 run_network_latency_check
             else
                 run_backtrace
             fi
             ;;
-        25)
+        26)
             if [ $is_installed -eq 0 ]; then
                 run_backtrace
             else
                 run_unlock_check
             fi
             ;;
-        26)
+        27)
             if [ $is_installed -eq 0 ]; then
                 run_unlock_check
             else
                 run_ns_detect
             fi
             ;;
-        27)
+        28)
             if [ $is_installed -eq 0 ]; then
                 run_ns_detect
             else
                 run_pf_realm
             fi
             ;;
-        28)
-            if [ $is_installed -eq 0 ]; then
-                run_pf_realm
-            else
-                run_misaka_xray
-            fi
-            ;;
         29)
             if [ $is_installed -eq 0 ]; then
-                run_misaka_xray
-            else
-                run_xinchendahai_xray
-            fi
-            ;;
-        30)
-            if [ $is_installed -eq 0 ]; then
-                run_xinchendahai_xray
+                run_pf_realm
             else
                 run_fscarmen_singbox
             fi
             ;;
-        31)
+        30)
             if [ $is_installed -eq 0 ]; then
                 run_fscarmen_singbox
             else
                 run_kejilion_script
             fi
             ;;
-        32)
+        31)
             if [ $is_installed -eq 0 ]; then
                 run_kejilion_script
             else
                 run_kxy_script
             fi
             ;;
-        33)
+        32)
             if [ $is_installed -eq 0 ]; then
                 run_kxy_script
             else
@@ -5531,32 +5522,6 @@ run_kxy_script() {
 
     # 执行酷雪云脚本
     bash <(curl -sL https://cdn.kxy.ovh/kxy.sh)
-
-    echo ""
-    echo "------------------------------------------------"
-    break_end
-}
-
-run_misaka_xray() {
-    clear
-    echo -e "${gl_kjlan}=== 御坂美琴一键双协议 ===${gl_bai}"
-    echo ""
-    echo "正在运行御坂美琴一键双协议安装脚本..."
-    echo "------------------------------------------------"
-    echo ""
-
-    # 执行御坂美琴一键双协议脚本
-    if bash <(curl -L https://raw.githubusercontent.com/yahuisme/xray-dual/main/install.sh); then
-        echo ""
-        echo -e "${gl_lv}✅ 御坂美琴一键双协议脚本执行完成${gl_bai}"
-    else
-        echo ""
-        echo -e "${gl_hong}❌ 御坂美琴一键双协议脚本执行失败${gl_bai}"
-        echo "可能原因："
-        echo "1. 网络连接问题（无法访问GitHub）"
-        echo "2. curl 命令不可用"
-        echo "3. 脚本执行过程中出错"
-    fi
 
     echo ""
     echo "------------------------------------------------"
