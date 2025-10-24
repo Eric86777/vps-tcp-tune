@@ -5819,12 +5819,23 @@ is_valid_port() {
 is_port_available() {
     local port="$1"
     is_valid_port "$port" || return 1
-    
-    # 检查端口是否被占用
+
+    # 检查系统端口是否被占用
     if ss -tlpn 2>/dev/null | grep -q ":$port "; then
-        warning "端口 $port 已被占用，建议选择其他端口"
+        error "端口 $port 已被系统占用"
         return 1
     fi
+
+    # 检查配置文件中是否已存在该端口
+    if [[ -f "$xray_config_path" ]]; then
+        local existing_ports
+        existing_ports=$(jq -r '.inbounds[]?.port // empty' "$xray_config_path" 2>/dev/null)
+        if echo "$existing_ports" | grep -q "^${port}$"; then
+            error "端口 $port 已在 Xray 配置中使用"
+            return 1
+        fi
+    fi
+
     return 0
 }
 
@@ -5886,7 +5897,7 @@ prompt_for_vless_config() {
     # 节点名称
     read -p "$(echo -e " -> 请输入节点名称 (留空默认使用端口号): ")" p_node_name || true
     if [[ -z "$p_node_name" ]]; then
-        p_node_name="VLESS-${p_port}"
+        p_node_name="VLESS-Reality-${p_port}"
         info "节点名称将使用: ${cyan}${p_node_name}${none}"
     fi
 }
@@ -6432,7 +6443,7 @@ view_all_info() {
                 continue
             fi
 
-            link_name_raw="$host $node_name"
+            link_name_raw="$node_name"
             link_name_encoded=$(echo "$link_name_raw" | sed 's/ /%20/g')
             vless_url="vless://${uuid}@${display_ip}:${port}?flow=xtls-rprx-vision&encryption=none&type=tcp&security=reality&sni=${domain}&fp=chrome&pbk=${public_key}&sid=${shortid}#${link_name_encoded}"
             links_array+=("$vless_url")
@@ -6462,7 +6473,7 @@ view_all_info() {
         port=$(echo "$ss_inbound" | jq -r '.port')
         method=$(echo "$ss_inbound" | jq -r '.settings.method')
         password=$(echo "$ss_inbound" | jq -r '.settings.password')
-        link_name_raw="$host X-ss2022"
+        link_name_raw="Shadowsocks-2022"
         user_info_base64=$(echo -n "${method}:${password}" | base64 -w 0)
         ss_url="ss://${user_info_base64}@${ip}:${port}#${link_name_raw}"
         links_array+=("$ss_url")
