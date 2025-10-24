@@ -6209,10 +6209,9 @@ delete_vless_node() {
     # 删除选中的节点
     local new_inbounds
     new_inbounds=$(jq --argjson idx "$((choice - 1))" '
-        .inbounds as $all |
         ([.inbounds[] | select(.protocol == "vless")] | del(.[$idx])) as $vless_filtered |
         [.inbounds[] | select(.protocol != "vless")] + $vless_filtered
-    ' "$xray_config_path" | jq '.inbounds')
+    ' "$xray_config_path")
 
     write_config "$new_inbounds"
 
