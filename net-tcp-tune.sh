@@ -5739,9 +5739,9 @@ build_vless_inbound() {
 }
 
 build_ss_inbound() {
-    local port="$1" password="$2"
-    jq -n --argjson port "$port" --arg password "$password" \
-    '{ "listen": "0.0.0.0", "port": $port, "protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": $password} }'
+    local port="$1" password="$2" node_name="$3"
+    jq -n --argjson port "$port" --arg password "$password" --arg node_name "$node_name" \
+    '{ "listen": "0.0.0.0", "port": $port, "protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": $password}, "tag": $node_name }'
 }
 
 write_config() {
@@ -5918,8 +5918,8 @@ prompt_for_vless_config() {
 }
 
 prompt_for_ss_config() {
-    local -n p_port="$1" p_pass="$2"
-    local default_port="${3:-8388}"
+    local -n p_port="$1" p_pass="$2" p_node_name="$3"
+    local default_port="${4:-8388}"
 
     while true; do
         read -p "$(echo -e " -> 请输入 Shadowsocks 端口 (默认: ${cyan}${default_port}${none}): ")" p_port || true
@@ -5927,11 +5927,18 @@ prompt_for_ss_config() {
         if is_port_available "$p_port"; then break; fi
     done
     info "Shadowsocks 端口将使用: ${cyan}${p_port}${none}"
-    
+
     read -p "$(echo -e " -> 请输入 Shadowsocks 密钥 (留空将自动生成): ")" p_pass || true
     if [[ -z "$p_pass" ]]; then
         p_pass=$(generate_ss_key)
         info "已为您生成随机密钥: ${cyan}${p_pass:0:4}...${p_pass: -4}${none}"
+    fi
+
+    # 节点名称
+    read -p "$(echo -e " -> 请输入节点名称 (留空默认使用端口号): ")" p_node_name || true
+    if [[ -z "$p_node_name" ]]; then
+        p_node_name="Shadowsocks-2022-${p_port}"
+        info "节点名称将使用: ${cyan}${p_node_name}${none}"
     fi
 }
 
@@ -6016,18 +6023,18 @@ add_ss_to_vless() {
         error "无法获取公网 IP 地址，操作中止。请检查您的网络连接。"
         return 1
     fi
-    local vless_inbound vless_port default_ss_port ss_port ss_password ss_inbound
+    local vless_inbound vless_port default_ss_port ss_port ss_password ss_node_name ss_inbound
     vless_inbound=$(jq '.inbounds[] | select(.protocol == "vless")' "$xray_config_path")
     vless_port=$(echo "$vless_inbound" | jq -r '.port')
     default_ss_port=$([[ "$vless_port" == "443" ]] && echo "8388" || echo "$((vless_port + 1))")
-    
-    prompt_for_ss_config ss_port ss_password "$default_ss_port"
 
-    ss_inbound=$(build_ss_inbound "$ss_port" "$ss_password")
+    prompt_for_ss_config ss_port ss_password ss_node_name "$default_ss_port"
+
+    ss_inbound=$(build_ss_inbound "$ss_port" "$ss_password" "$ss_node_name")
     write_config "[$vless_inbound, $ss_inbound]"
-    
+
     if ! restart_xray; then return 1; fi
-    
+
     success "追加安装成功！"
     view_all_info
 }
@@ -6073,14 +6080,14 @@ install_vless_only() {
 
 install_ss_only() {
     info "开始配置 Shadowsocks-2022..."
-    local port password
-    prompt_for_ss_config port password
-    run_install_ss "$port" "$password"
+    local port password node_name
+    prompt_for_ss_config port password node_name
+    run_install_ss "$port" "$password" "$node_name"
 }
 
 install_dual() {
     info "开始配置双协议 (VLESS-Reality + Shadowsocks-2022)..."
-    local vless_port vless_uuid vless_domain vless_node_name ss_port ss_password
+    local vless_port vless_uuid vless_domain vless_node_name ss_port ss_password ss_node_name
     prompt_for_vless_config vless_port vless_uuid vless_domain vless_node_name
 
     local default_ss_port
@@ -6090,9 +6097,9 @@ install_dual() {
         default_ss_port=$((vless_port + 1))
     fi
 
-    prompt_for_ss_config ss_port ss_password "$default_ss_port"
+    prompt_for_ss_config ss_port ss_password ss_node_name "$default_ss_port"
 
-    run_install_dual "$vless_port" "$vless_uuid" "$vless_domain" "$vless_node_name" "$ss_port" "$ss_password"
+    run_install_dual "$vless_port" "$vless_uuid" "$vless_domain" "$vless_node_name" "$ss_port" "$ss_password" "$ss_node_name"
 }
 
 update_xray() {
@@ -6196,6 +6203,43 @@ add_new_vless() {
     view_all_info
 }
 
+# 增加 Shadowsocks-2022 协议
+add_new_ss() {
+    if [[ ! -f "$xray_binary_path" ]]; then
+        error "错误: Xray 未安装，请先安装 Xray。"
+        return
+    fi
+
+    info "开始添加新的 Shadowsocks-2022 节点..."
+    if [[ -z "$(get_public_ip)" ]]; then
+        error "无法获取公网 IP 地址，操作中止。请检查您的网络连接。"
+        return 1
+    fi
+
+    local ss_port ss_password ss_node_name
+    prompt_for_ss_config ss_port ss_password ss_node_name
+
+    local new_ss_inbound
+    new_ss_inbound=$(build_ss_inbound "$ss_port" "$ss_password" "$ss_node_name")
+
+    # 读取现有配置
+    local existing_inbounds
+    if [[ -f "$xray_config_path" ]]; then
+        existing_inbounds=$(jq '.inbounds' "$xray_config_path")
+        # 追加新的 SS inbound
+        local new_inbounds
+        new_inbounds=$(echo "$existing_inbounds" | jq ". += [$new_ss_inbound]")
+        write_config "$new_inbounds"
+    else
+        write_config "[$new_ss_inbound]"
+    fi
+
+    if ! restart_xray; then return 1; fi
+
+    success "新 Shadowsocks-2022 节点添加成功！"
+    view_all_info
+}
+
 # 删除指定 VLESS 节点
 delete_vless_node() {
     if [[ ! -f "$xray_config_path" ]]; then
@@ -6253,31 +6297,61 @@ delete_vless_node() {
     view_all_info
 }
 
-modify_config_menu() {
-    if [[ ! -f "$xray_config_path" ]]; then error "错误: Xray 未安装。" && return; fi
-
-    local vless_exists="" ss_exists=""
-    vless_exists=$(jq '.inbounds[] | select(.protocol == "vless")' "$xray_config_path" 2>/dev/null || true)
-    ss_exists=$(jq '.inbounds[] | select(.protocol == "shadowsocks")' "$xray_config_path" 2>/dev/null || true)
-
-    if [[ -n "$vless_exists" && -n "$ss_exists" ]]; then
-        draw_menu_header
-        echo -e "${cyan} 请选择要修改的协议配置${none}"
-        draw_divider
-        printf "  ${green}%-2s${none} %-35s\n" "1." "VLESS-Reality"
-        printf "  ${cyan}%-2s${none} %-35s\n" "2." "Shadowsocks-2022"
-        draw_divider
-        printf "  ${yellow}%-2s${none} %-35s\n" "0." "返回主菜单"
-        draw_divider
-        read -p " 请输入选项 [0-2]: " choice || true
-        case "$choice" in 1) modify_vless_config ;; 2) modify_ss_config ;; 0) return ;; *) error "无效选项。" ;; esac
-    elif [[ -n "$vless_exists" ]]; then
-        modify_vless_config
-    elif [[ -n "$ss_exists" ]]; then
-        modify_ss_config
-    else
-        error "未找到可修改的协议配置。"
+# 删除指定 Shadowsocks-2022 节点
+delete_ss_node() {
+    if [[ ! -f "$xray_config_path" ]]; then
+        error "错误: Xray 配置文件不存在。"
+        return
     fi
+
+    # 获取所有 SS inbounds
+    local ss_count
+    ss_count=$(jq '[.inbounds[] | select(.protocol == "shadowsocks")] | length' "$xray_config_path")
+
+    if [[ "$ss_count" -eq 0 ]]; then
+        error "未找到任何 Shadowsocks-2022 节点。"
+        return
+    fi
+
+    draw_menu_header
+    echo -e "${cyan} 当前 Shadowsocks-2022 节点列表${none}"
+    draw_divider
+
+    # 列出所有 SS 节点
+    local index=1
+    jq -r '.inbounds[] | select(.protocol == "shadowsocks") | "\(.port)|\(.settings.password)|\(.tag // "未命名")"' "$xray_config_path" | while IFS='|' read -r port password tag; do
+        printf "  ${green}%-2s${none} 端口: ${cyan}%-6s${none} 密码: ${cyan}%s...%s${none} 名称: ${cyan}%s${none}\n" "$index." "$port" "${password:0:4}" "${password: -4}" "$tag"
+        ((index++))
+    done
+
+    draw_divider
+    printf "  ${yellow}%-2s${none} %-35s\n" "0." "返回主菜单"
+    draw_divider
+
+    read -p " 请选择要删除的节点编号 [0-$ss_count]: " choice || true
+
+    if [[ "$choice" == "0" ]]; then
+        return
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt "$ss_count" ]]; then
+        error "无效选项。"
+        return
+    fi
+
+    # 删除选中的节点
+    local new_inbounds
+    new_inbounds=$(jq --argjson idx "$((choice - 1))" '
+        ([.inbounds[] | select(.protocol == "shadowsocks")] | del(.[$idx])) as $ss_filtered |
+        [.inbounds[] | select(.protocol != "shadowsocks")] + $ss_filtered
+    ' "$xray_config_path")
+
+    write_config "$new_inbounds"
+
+    if ! restart_xray; then return 1; fi
+
+    success "Shadowsocks-2022 节点删除成功！"
+    view_all_info
 }
 
 modify_vless_config() {
@@ -6375,12 +6449,66 @@ modify_vless_config() {
 }
 
 modify_ss_config() {
+    if [[ ! -f "$xray_config_path" ]]; then
+        error "错误: Xray 配置文件不存在。"
+        return
+    fi
+
+    # 获取所有 SS inbounds
+    local ss_count
+    ss_count=$(jq '[.inbounds[] | select(.protocol == "shadowsocks")] | length' "$xray_config_path")
+
+    if [[ "$ss_count" -eq 0 ]]; then
+        error "未找到任何 Shadowsocks-2022 节点。"
+        return
+    fi
+
+    local selected_index=0
+
+    # 如果有多个 SS 节点，让用户选择
+    if [[ "$ss_count" -gt 1 ]]; then
+        draw_menu_header
+        echo -e "${cyan} 当前 Shadowsocks-2022 节点列表${none}"
+        draw_divider
+
+        # 列出所有 SS 节点
+        local index=1
+        jq -r '.inbounds[] | select(.protocol == "shadowsocks") | "\(.port)|\(.settings.password)|\(.tag // "未命名")"' "$xray_config_path" | while IFS='|' read -r port password tag; do
+            printf "  ${green}%-2s${none} 端口: ${cyan}%-6s${none} 密码: ${cyan}%s...%s${none} 名称: ${cyan}%s${none}\n" "$index." "$port" "${password:0:4}" "${password: -4}" "$tag"
+            ((index++))
+        done
+
+        draw_divider
+        printf "  ${yellow}%-2s${none} %-35s\n" "0." "返回主菜单"
+        draw_divider
+
+        read -p " 请选择要修改的节点编号 [0-$ss_count]: " choice || true
+
+        if [[ "$choice" == "0" ]]; then
+            return
+        fi
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt "$ss_count" ]]; then
+            error "无效选项。"
+            return
+        fi
+
+        selected_index=$((choice - 1))
+    else
+        selected_index=0
+    fi
+
     info "开始修改 Shadowsocks-2022 配置..."
-    local ss_inbound current_port current_password port password new_ss_inbound vless_inbound new_inbounds
-    ss_inbound=$(jq '.inbounds[] | select(.protocol == "shadowsocks")' "$xray_config_path")
+
+    # 获取选中的 SS inbound
+    local ss_inbound current_port current_password current_node_name
+    ss_inbound=$(jq --argjson idx "$selected_index" '[.inbounds[] | select(.protocol == "shadowsocks")][$idx]' "$xray_config_path")
     current_port=$(echo "$ss_inbound" | jq -r '.port')
     current_password=$(echo "$ss_inbound" | jq -r '.settings.password')
-    
+    current_node_name=$(echo "$ss_inbound" | jq -r '.tag // "Shadowsocks-2022-" + (.port | tostring)')
+
+    # 输入新配置
+    local port password node_name
     while true; do
         read -p "$(echo -e " -> 新端口 (当前: ${cyan}${current_port}${none}, 留空不改): ")" port || true
         [[ -z "$port" ]] && port=$current_port
@@ -6389,12 +6517,21 @@ modify_ss_config() {
 
     read -p "$(echo -e " -> 新密钥 (当前: ${cyan}${current_password:0:4}...${current_password: -4}${none}, 留空不改): ")" password || true
     [[ -z "$password" ]] && password=$current_password
-    
-    new_ss_inbound=$(build_ss_inbound "$port" "$password")
-    vless_inbound=$(jq '.inbounds[] | select(.protocol == "vless")' "$xray_config_path" 2>/dev/null || true)
-    new_inbounds="[$new_ss_inbound]"
-    [[ -n "$vless_inbound" ]] && new_inbounds="[$vless_inbound, $new_ss_inbound]"
-    
+
+    read -p "$(echo -e " -> 新节点名称 (当前: ${cyan}${current_node_name}${none}, 留空不改): ")" node_name || true
+    [[ -z "$node_name" ]] && node_name=$current_node_name
+
+    # 构建新的 SS inbound
+    local new_ss_inbound
+    new_ss_inbound=$(build_ss_inbound "$port" "$password" "$node_name")
+
+    # 更新配置
+    local new_inbounds
+    new_inbounds=$(jq --argjson idx "$selected_index" --argjson new_ss "$new_ss_inbound" '
+        ([.inbounds[] | select(.protocol == "shadowsocks")] | .[$idx] = $new_ss) as $ss_updated |
+        [.inbounds[] | select(.protocol != "shadowsocks")] + $ss_updated
+    ' "$xray_config_path" | jq '.inbounds')
+
     write_config "$new_inbounds"
     if ! restart_xray; then return 1; fi
 
@@ -6497,27 +6634,36 @@ view_all_info() {
         done
     fi
 
-    local ss_inbound
-    ss_inbound=$(jq '.inbounds[] | select(.protocol == "shadowsocks")' "$xray_config_path" 2>/dev/null || true)
-    if [[ -n "$ss_inbound" ]]; then
-        local port method password link_name_raw user_info_base64 ss_url
-        port=$(echo "$ss_inbound" | jq -r '.port')
-        method=$(echo "$ss_inbound" | jq -r '.settings.method')
-        password=$(echo "$ss_inbound" | jq -r '.settings.password')
-        link_name_raw="Shadowsocks-2022"
-        user_info_base64=$(echo -n "${method}:${password}" | base64 -w 0)
-        ss_url="ss://${user_info_base64}@${ip}:${port}#${link_name_raw}"
-        links_array+=("$ss_url")
-        
-        if [[ "$is_quiet" = false ]]; then
-            echo ""
-            echo -e "${green} [ Shadowsocks-2022 配置 ]${none}"
-            printf "    %s: ${cyan}%s${none}\n" "节点名称" "$link_name_raw"
-            printf "    %s: ${cyan}%s${none}\n" "服务器地址" "$ip"
-            printf "    %s: ${cyan}%s${none}\n" "端口" "$port"
-            printf "    %s: ${cyan}%s${none}\n" "加密方式" "$method"
-            printf "    %s: ${cyan}%s${none}\n" "密码" "${password:0:4}...${password: -4}"
-        fi
+    # 处理所有 Shadowsocks inbounds
+    local ss_count
+    ss_count=$(jq '[.inbounds[] | select(.protocol == "shadowsocks")] | length' "$xray_config_path" 2>/dev/null || echo "0")
+
+    if [[ "$ss_count" -gt 0 ]]; then
+        # 循环处理每个 SS 节点
+        for ((i=0; i<ss_count; i++)); do
+            local ss_inbound port method password node_name link_name_raw link_name_encoded user_info_base64 ss_url
+            ss_inbound=$(jq --argjson idx "$i" '[.inbounds[] | select(.protocol == "shadowsocks")][$idx]' "$xray_config_path")
+            port=$(echo "$ss_inbound" | jq -r '.port')
+            method=$(echo "$ss_inbound" | jq -r '.settings.method')
+            password=$(echo "$ss_inbound" | jq -r '.settings.password')
+            node_name=$(echo "$ss_inbound" | jq -r '.tag // "Shadowsocks-2022-" + (.port | tostring)')
+
+            link_name_raw="$node_name"
+            link_name_encoded=$(echo "$link_name_raw" | sed 's/ /%20/g')
+            user_info_base64=$(echo -n "${method}:${password}" | base64 -w 0)
+            ss_url="ss://${user_info_base64}@${ip}:${port}#${link_name_encoded}"
+            links_array+=("$ss_url")
+
+            if [[ "$is_quiet" = false ]]; then
+                echo ""
+                echo -e "${green} [ Shadowsocks-2022 配置 - ${node_name} ]${none}"
+                printf "    %s: ${cyan}%s${none}\n" "节点名称" "$link_name_raw"
+                printf "    %s: ${cyan}%s${none}\n" "服务器地址" "$ip"
+                printf "    %s: ${cyan}%s${none}\n" "端口" "$port"
+                printf "    %s: ${cyan}%s${none}\n" "加密方式" "$method"
+                printf "    %s: ${cyan}%s${none}\n" "密码" "${password:0:4}...${password: -4}"
+            fi
+        done
     fi
 
     if [ ${#links_array[@]} -gt 0 ]; then
@@ -6568,14 +6714,14 @@ run_install_vless() {
 }
 
 run_install_ss() {
-    local port="$1" password="$2"
+    local port="$1" password="$2" node_name="$3"
     if [[ -z "$(get_public_ip)" ]]; then
         error "无法获取公网 IP 地址，安装中止。请检查您的网络连接。"
         exit 1
     fi
     run_core_install || exit 1
     local ss_inbound
-    ss_inbound=$(build_ss_inbound "$port" "$password")
+    ss_inbound=$(build_ss_inbound "$port" "$password" "$node_name")
     write_config "[$ss_inbound]"
 
     if ! restart_xray; then exit 1; fi
@@ -6585,7 +6731,7 @@ run_install_ss() {
 }
 
 run_install_dual() {
-    local vless_port="$1" vless_uuid="$2" vless_domain="$3" vless_node_name="$4" ss_port="$5" ss_password="$6"
+    local vless_port="$1" vless_uuid="$2" vless_domain="$3" vless_node_name="$4" ss_port="$5" ss_password="$6" ss_node_name="$7"
     if [[ -z "$(get_public_ip)" ]]; then
         error "无法获取公网 IP 地址，安装中止。请检查您的网络连接。"
         exit 1
@@ -6603,7 +6749,7 @@ run_install_dual() {
     fi
 
     vless_inbound=$(build_vless_inbound "$vless_port" "$vless_uuid" "$vless_domain" "$private_key" "$public_key" "$vless_node_name")
-    ss_inbound=$(build_ss_inbound "$ss_port" "$ss_password")
+    ss_inbound=$(build_ss_inbound "$ss_port" "$ss_password" "$ss_node_name")
     write_config "[$vless_inbound, $ss_inbound]"
 
     if ! restart_xray; then exit 1; fi
@@ -6617,20 +6763,25 @@ main_menu() {
     while true; do
         draw_menu_header
         printf "  ${green}%-2s${none} %-35s\n" "1." "安装 Xray (VLESS/Shadowsocks)"
+        draw_divider
         printf "  ${cyan}%-2s${none} %-35s\n" "2." "增加 VLESS 协议"
         printf "  ${magenta}%-2s${none} %-35s\n" "3." "删除指定 VLESS 节点"
-        printf "  ${yellow}%-2s${none} %-35s\n" "4." "更新 Xray"
-        printf "  ${red}%-2s${none} %-35s\n" "5." "卸载 Xray"
+        printf "  ${yellow}%-2s${none} %-35s\n" "4." "修改 VLESS 配置"
         draw_divider
-        printf "  ${cyan}%-2s${none} %-35s\n" "6." "修改配置"
-        printf "  ${green}%-2s${none} %-35s\n" "7." "重启 Xray"
-        printf "  ${magenta}%-2s${none} %-35s\n" "8." "查看 Xray 日志"
-        printf "  ${yellow}%-2s${none} %-35s\n" "9." "查看订阅信息"
+        printf "  ${cyan}%-2s${none} %-35s\n" "5." "增加 Shadowsocks-2022 协议"
+        printf "  ${magenta}%-2s${none} %-35s\n" "6." "删除指定 Shadowsocks-2022 节点"
+        printf "  ${yellow}%-2s${none} %-35s\n" "7." "修改 Shadowsocks-2022 配置"
+        draw_divider
+        printf "  ${green}%-2s${none} %-35s\n" "8." "更新 Xray"
+        printf "  ${red}%-2s${none} %-35s\n" "9." "卸载 Xray"
+        printf "  ${cyan}%-2s${none} %-35s\n" "10." "重启 Xray"
+        printf "  ${magenta}%-2s${none} %-35s\n" "11." "查看 Xray 日志"
+        printf "  ${yellow}%-2s${none} %-35s\n" "12." "查看订阅信息"
         draw_divider
         printf "  ${red}%-2s${none} %-35s\n" "0." "退出脚本"
         draw_divider
 
-        read -p " 请输入选项 [0-9]: " choice || true
+        read -p " 请输入选项 [0-12]: " choice || true
 
         local needs_pause=true
 
@@ -6638,16 +6789,19 @@ main_menu() {
             1) install_menu ;;
             2) add_new_vless ;;
             3) delete_vless_node ;;
-            4) update_xray ;;
-            5) uninstall_xray ;;
-            6) modify_config_menu ;;
-            7) restart_xray ;;
-            8) view_xray_log; needs_pause=false ;;
-            9) view_all_info ;;
+            4) modify_vless_config ;;
+            5) add_new_ss ;;
+            6) delete_ss_node ;;
+            7) modify_ss_config ;;
+            8) update_xray ;;
+            9) uninstall_xray ;;
+            10) restart_xray ;;
+            11) view_xray_log; needs_pause=false ;;
+            12) view_all_info ;;
             0) success "感谢使用！"; exit 0 ;;
-            *) error "无效选项。请输入0到9之间的数字。" ;;
+            *) error "无效选项。请输入0到12之间的数字。" ;;
         esac
-        
+
         if [ "$needs_pause" = true ]; then
             press_any_key_to_continue
         fi
