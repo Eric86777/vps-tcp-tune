@@ -5015,9 +5015,10 @@ show_main_menu() {
         echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
         echo "28. PF_realm转发脚本 ⭐ 推荐"
         echo "29. 御坂美琴一键双协议 ⭐ 推荐"
-        echo "30. F佬一键sing box脚本"
-        echo "31. 科技lion脚本"
-        echo "32. 酷雪云脚本"
+        echo "30. 星辰大海Xray一键双协议 ⭐ 推荐"
+        echo "31. F佬一键sing box脚本"
+        echo "32. 科技lion脚本"
+        echo "33. 酷雪云脚本"
     else
         echo "1. 安装 XanMod 内核 + BBR v3 ⭐ 推荐"
         echo ""
@@ -5071,9 +5072,10 @@ show_main_menu() {
         echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
         echo "27. PF_realm转发脚本 ⭐ 推荐"
         echo "28. 御坂美琴一键双协议 ⭐ 推荐"
-        echo "29. F佬一键sing box脚本"
-        echo "30. 科技lion脚本"
-        echo "31. 酷雪云脚本"
+        echo "29. 星辰大海Xray一键双协议 ⭐ 推荐"
+        echo "30. F佬一键sing box脚本"
+        echo "31. 科技lion脚本"
+        echo "32. 酷雪云脚本"
     fi
     
     echo ""
@@ -5291,24 +5293,31 @@ show_main_menu() {
             if [ $is_installed -eq 0 ]; then
                 run_misaka_xray
             else
-                run_fscarmen_singbox
+                run_xinchendahai_xray
             fi
             ;;
         30)
+            if [ $is_installed -eq 0 ]; then
+                run_xinchendahai_xray
+            else
+                run_fscarmen_singbox
+            fi
+            ;;
+        31)
             if [ $is_installed -eq 0 ]; then
                 run_fscarmen_singbox
             else
                 run_kejilion_script
             fi
             ;;
-        31)
+        32)
             if [ $is_installed -eq 0 ]; then
                 run_kejilion_script
             else
                 run_kxy_script
             fi
             ;;
-        32)
+        33)
             if [ $is_installed -eq 0 ]; then
                 run_kxy_script
             else
@@ -5547,6 +5556,55 @@ run_misaka_xray() {
         echo "1. 网络连接问题（无法访问GitHub）"
         echo "2. curl 命令不可用"
         echo "3. 脚本执行过程中出错"
+    fi
+
+    echo ""
+    echo "------------------------------------------------"
+    break_end
+}
+
+run_xinchendahai_xray() {
+    clear
+    echo -e "${gl_kjlan}=== 星辰大海Xray一键双协议（增强版） ===${gl_bai}"
+    echo ""
+    echo -e "${gl_lv}✨ 功能特性：${gl_bai}"
+    echo "  • 支持多 VLESS 节点部署（不同端口）"
+    echo "  • 随机 shortid 生成（更安全）"
+    echo "  • SNI 域名快速选择（addons.mozilla.org / updates.cdn-apple.com）"
+    echo "  • 节点自定义命名"
+    echo "  • 灵活的节点管理（增加/删除/修改）"
+    echo "------------------------------------------------"
+    echo ""
+
+    # 获取当前脚本所在目录
+    local current_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local script_path="/tmp/xinchendahai_xray.sh"
+
+    echo "正在准备星辰大海Xray增强版脚本..."
+
+    # 从本地复制修改版脚本到临时目录
+    if [ -f "${current_dir}/御坂美琴脚本_修改版.sh" ]; then
+        cp "${current_dir}/御坂美琴脚本_修改版.sh" "$script_path"
+        chmod +x "$script_path"
+        echo -e "${gl_lv}✅ 脚本准备完成${gl_bai}"
+        echo ""
+
+        # 执行脚本
+        if bash "$script_path"; then
+            echo ""
+            echo -e "${gl_lv}✅ 星辰大海Xray增强版脚本执行完成${gl_bai}"
+        else
+            echo ""
+            echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        fi
+
+        # 清理临时文件
+        rm -f "$script_path"
+    else
+        echo -e "${gl_hong}❌ 错误: 找不到增强版脚本文件${gl_bai}"
+        echo "脚本路径: ${current_dir}/御坂美琴脚本_修改版.sh"
+        echo ""
+        echo "请确保脚本文件存在于正确位置。"
     fi
 
     echo ""
