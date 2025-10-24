@@ -5860,6 +5860,29 @@ is_port_available() {
     return 0
 }
 
+# 生成随机可用端口（排除所有已占用端口）
+generate_random_port() {
+    local max_attempts=100
+    local attempt=0
+
+    while [ $attempt -lt $max_attempts ]; do
+        # 生成 10000-65535 范围的随机端口
+        local random_port=$((RANDOM % 55536 + 10000))
+
+        # 检查端口是否可用
+        if is_port_available "$random_port" 2>/dev/null; then
+            echo "$random_port"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    # 如果 100 次都没找到可用端口，返回错误
+    error "无法生成可用的随机端口，请手动指定"
+    return 1
+}
+
 is_valid_domain() {
     local domain="$1"
     [[ "$domain" =~ ^[a-zA-Z0-9-]{1,63}(\.[a-zA-Z0-9-]{1,63})+$ ]] && [[ "$domain" != *--* ]]
@@ -5873,9 +5896,22 @@ prompt_for_vless_config() {
     show_port_usage
 
     while true; do
-        read -p "$(echo -e " -> 请输入 VLESS 端口 (默认: ${cyan}${default_port}${none}): ")" p_port || true
-        [[ -z "$p_port" ]] && p_port="$default_port"
-        if is_port_available "$p_port"; then break; fi
+        read -p "$(echo -e " -> 请输入 VLESS 端口 (留空随机生成): ")" p_port || true
+        if [[ -z "$p_port" ]]; then
+            # 回车随机生成
+            p_port=$(generate_random_port)
+            if [ $? -eq 0 ]; then
+                info "已为您随机生成端口: ${cyan}${p_port}${none}"
+                break
+            else
+                continue
+            fi
+        else
+            # 手动输入
+            if is_port_available "$p_port"; then
+                break
+            fi
+        fi
     done
     info "VLESS 端口将使用: ${cyan}${p_port}${none}"
 
@@ -5934,9 +5970,22 @@ prompt_for_ss_config() {
     show_port_usage
 
     while true; do
-        read -p "$(echo -e " -> 请输入 Shadowsocks 端口 (默认: ${cyan}${default_port}${none}): ")" p_port || true
-        [[ -z "$p_port" ]] && p_port="$default_port"
-        if is_port_available "$p_port"; then break; fi
+        read -p "$(echo -e " -> 请输入 Shadowsocks 端口 (留空随机生成): ")" p_port || true
+        if [[ -z "$p_port" ]]; then
+            # 回车随机生成
+            p_port=$(generate_random_port)
+            if [ $? -eq 0 ]; then
+                info "已为您随机生成端口: ${cyan}${p_port}${none}"
+                break
+            else
+                continue
+            fi
+        else
+            # 手动输入
+            if is_port_available "$p_port"; then
+                break
+            fi
+        fi
     done
     info "Shadowsocks 端口将使用: ${cyan}${p_port}${none}"
 
