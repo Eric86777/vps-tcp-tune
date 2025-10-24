@@ -5778,19 +5778,34 @@ write_config() {
 execute_official_script() {
     local args="$1"
     local script_content
-    
-    # 增强：添加简单的内容检查
-    script_content=$(curl -L "$xray_install_script_url")
+    local temp_script="/tmp/xray_install_$$.sh"
+
+    # 下载官方安装脚本
+    if ! script_content=$(curl -fsSL --max-time 30 "$xray_install_script_url" 2>/dev/null); then
+        error "下载 Xray 官方安装脚本失败！请检查网络连接。"
+        return 1
+    fi
+
+    # 验证脚本内容
     if [[ -z "$script_content" || ! "$script_content" =~ "install-release" ]]; then
-        error "下载 Xray 官方安装脚本失败或内容异常！请检查网络连接。"
+        error "Xray 官方安装脚本内容异常！"
         return 1
     fi
-    
-    echo "$script_content" | bash -s -- $args &> /dev/null &
-    spinner $!
-    if ! wait $!; then
-        return 1
+
+    # 写入临时文件并执行
+    echo "$script_content" > "$temp_script"
+    chmod +x "$temp_script"
+
+    if [[ "$is_quiet" = false ]]; then
+        bash "$temp_script" $args &
+        spinner $!
+        wait $! || { rm -f "$temp_script"; return 1; }
+    else
+        bash "$temp_script" $args &>/dev/null || { rm -f "$temp_script"; return 1; }
     fi
+
+    rm -f "$temp_script"
+    return 0
 }
 
 run_core_install() {
@@ -6084,18 +6099,35 @@ update_xray() {
     if [[ ! -f "$xray_binary_path" ]]; then error "错误: Xray 未安装。" && return; fi
     info "正在检查最新版本..."
     local current_version latest_version
-    current_version=$("$xray_binary_path" version | head -n 1 | awk '{print $2}')
-    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name' | sed 's/v//' || echo "")
-    
-    if [[ -z "$latest_version" ]]; then error "获取最新版本号失败，请检查网络或稍后重试。" && return; fi
-    info "当前版本: ${cyan}${current_version}${none}，最新版本: ${cyan}${latest_version}${none}"
-    
-    if [[ "$current_version" == "$latest_version" ]]; then
-        success "您的 Xray 已是最新版本。" && return
+    current_version=$("$xray_binary_path" version 2>/dev/null | head -n 1 | awk '{print $2}')
+
+    # 尝试多种方式获取最新版本
+    latest_version=$(curl -s --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null | jq -r '.tag_name' 2>/dev/null | sed 's/v//' || echo "")
+
+    if [[ -z "$latest_version" ]]; then
+        warning "无法通过 GitHub API 获取最新版本，尝试直接更新..."
+        info "开始更新 Xray..."
+        if ! run_core_install; then
+            error "Xray 更新失败！"
+            return 1
+        fi
+        if ! restart_xray; then return 1; fi
+        success "Xray 更新完成！"
+        return
     fi
-    
+
+    info "当前版本: ${cyan}${current_version}${none}，最新版本: ${cyan}${latest_version}${none}"
+
+    if [[ "$current_version" == "$latest_version" ]]; then
+        success "您的 Xray 已是最新版本。"
+        return
+    fi
+
     info "发现新版本，开始更新..."
-    run_core_install
+    if ! run_core_install; then
+        error "Xray 更新失败！"
+        return 1
+    fi
     if ! restart_xray; then return 1; fi
     success "Xray 更新成功！"
 }
