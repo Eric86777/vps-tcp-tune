@@ -5830,6 +5830,47 @@ is_valid_port() {
     [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
 }
 
+# 显示系统端口使用情况
+show_port_usage() {
+    echo ""
+    info "当前系统端口使用情况:"
+    printf "%-15s %-9s\n" "程序名" "端口"
+    echo "────────────────────────────────────────────────────────"
+
+    # 解析ss输出，聚合同程序的端口
+    declare -A program_ports
+    while read line; do
+        if [[ "$line" =~ LISTEN|UNCONN ]]; then
+            local local_addr=$(echo "$line" | awk '{print $5}')
+            local port=$(echo "$local_addr" | grep -o ':[0-9]*$' | cut -d':' -f2)
+            local program=$(echo "$line" | awk '{print $7}' | cut -d'"' -f2 2>/dev/null || echo "")
+
+            if [ -n "$port" ] && [ -n "$program" ] && [ "$program" != "-" ]; then
+                if [ -z "${program_ports[$program]:-}" ]; then
+                    program_ports[$program]="$port"
+                else
+                    # 避免重复端口
+                    if [[ ! "${program_ports[$program]}" =~ (^|.*\|)$port(\||$) ]]; then
+                        program_ports[$program]="${program_ports[$program]}|$port"
+                    fi
+                fi
+            fi
+        fi
+    done < <(ss -tulnp 2>/dev/null || true)
+
+    if [ ${#program_ports[@]} -gt 0 ]; then
+        for program in $(printf '%s\n' "${!program_ports[@]}" | sort); do
+            local ports="${program_ports[$program]}"
+            printf "%-10s | %-9s\n" "$program" "$ports"
+        done
+    else
+        echo "无活跃端口"
+    fi
+
+    echo "────────────────────────────────────────────────────────"
+    echo ""
+}
+
 # 新增：端口可用性检测
 is_port_available() {
     local port="$1"
@@ -5862,6 +5903,9 @@ is_valid_domain() {
 prompt_for_vless_config() {
     local -n p_port="$1" p_uuid="$2" p_sni="$3" p_node_name="$4"
     local default_port="${5:-443}"
+
+    # 显示端口使用情况
+    show_port_usage
 
     while true; do
         read -p "$(echo -e " -> 请输入 VLESS 端口 (默认: ${cyan}${default_port}${none}): ")" p_port || true
@@ -5920,6 +5964,9 @@ prompt_for_vless_config() {
 prompt_for_ss_config() {
     local -n p_port="$1" p_pass="$2" p_node_name="$3"
     local default_port="${4:-8388}"
+
+    # 显示端口使用情况
+    show_port_usage
 
     while true; do
         read -p "$(echo -e " -> 请输入 Shadowsocks 端口 (默认: ${cyan}${default_port}${none}): ")" p_port || true
@@ -6410,6 +6457,9 @@ modify_vless_config() {
     private_key=$(echo "$vless_inbound" | jq -r '.streamSettings.realitySettings.privateKey')
     public_key=$(echo "$vless_inbound" | jq -r '.streamSettings.realitySettings.publicKey')
 
+    # 显示端口使用情况
+    show_port_usage
+
     # 输入新配置
     local port uuid domain node_name
     while true; do
@@ -6506,6 +6556,9 @@ modify_ss_config() {
     current_port=$(echo "$ss_inbound" | jq -r '.port')
     current_password=$(echo "$ss_inbound" | jq -r '.settings.password')
     current_node_name=$(echo "$ss_inbound" | jq -r '.tag // "Shadowsocks-2022-" + (.port | tostring)')
+
+    # 显示端口使用情况
+    show_port_usage
 
     # 输入新配置
     local port password node_name
