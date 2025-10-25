@@ -4993,31 +4993,32 @@ show_main_menu() {
         echo ""
         echo -e "${gl_kjlan}[代理部署]${gl_bai}"
         echo "17. 星辰大海Xray一键双协议 ⭐ 推荐"
-        echo "18. 一键部署SOCKS5代理"
-        echo "19. Sub-Store多实例管理"
+        echo "18. 禁止端口通过中国大陆直连"
+        echo "19. 一键部署SOCKS5代理"
+        echo "20. Sub-Store多实例管理"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-        echo "20. IP质量检测（IPv4+IPv6）"
-        echo "21. IP质量检测（仅IPv4）⭐ 推荐"
+        echo "21. IP质量检测（IPv4+IPv6）"
+        echo "22. IP质量检测（仅IPv4）⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-        echo "22. 服务器带宽测试"
-        echo "23. iperf3单线程测试"
-        echo "24. 国际互联速度测试 ⭐ 推荐"
-        echo "25. 网络延迟质量检测 ⭐ 推荐"
-        echo "26. 三网回程路由测试 ⭐ 推荐"
+        echo "23. 服务器带宽测试"
+        echo "24. iperf3单线程测试"
+        echo "25. 国际互联速度测试 ⭐ 推荐"
+        echo "26. 网络延迟质量检测 ⭐ 推荐"
+        echo "27. 三网回程路由测试 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-        echo "27. IP媒体/AI解锁检测 ⭐ 推荐"
-        echo "28. NS一键检测脚本 ⭐ 推荐"
+        echo "28. IP媒体/AI解锁检测 ⭐ 推荐"
+        echo "29. NS一键检测脚本 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-        echo "29. PF_realm转发脚本 ⭐ 推荐"
-        echo "30. F佬一键sing box脚本"
-        echo "31. 科技lion脚本"
-        echo "32. 酷雪云脚本"
+        echo "30. PF_realm转发脚本 ⭐ 推荐"
+        echo "31. F佬一键sing box脚本"
+        echo "32. 科技lion脚本"
+        echo "33. 酷雪云脚本"
     else
         echo "1. 安装 XanMod 内核 + BBR v3 ⭐ 推荐"
         echo ""
@@ -5049,31 +5050,32 @@ show_main_menu() {
         echo ""
         echo -e "${gl_kjlan}[代理部署]${gl_bai}"
         echo "16. 星辰大海Xray一键双协议 ⭐ 推荐"
-        echo "17. 一键部署SOCKS5代理"
-        echo "18. Sub-Store多实例管理"
+        echo "17. 禁止端口通过中国大陆直连"
+        echo "18. 一键部署SOCKS5代理"
+        echo "19. Sub-Store多实例管理"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-        echo "19. IP质量检测（IPv4+IPv6）"
-        echo "20. IP质量检测（仅IPv4）⭐ 推荐"
+        echo "20. IP质量检测（IPv4+IPv6）"
+        echo "21. IP质量检测（仅IPv4）⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-        echo "21. 服务器带宽测试"
-        echo "22. iperf3单线程测试"
-        echo "23. 国际互联速度测试 ⭐ 推荐"
-        echo "24. 网络延迟质量检测 ⭐ 推荐"
-        echo "25. 三网回程路由测试 ⭐ 推荐"
+        echo "22. 服务器带宽测试"
+        echo "23. iperf3单线程测试"
+        echo "24. 国际互联速度测试 ⭐ 推荐"
+        echo "25. 网络延迟质量检测 ⭐ 推荐"
+        echo "26. 三网回程路由测试 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-        echo "26. IP媒体/AI解锁检测 ⭐ 推荐"
-        echo "27. NS一键检测脚本 ⭐ 推荐"
+        echo "27. IP媒体/AI解锁检测 ⭐ 推荐"
+        echo "28. NS一键检测脚本 ⭐ 推荐"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
         echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-        echo "28. PF_realm转发脚本 ⭐ 推荐"
-        echo "29. F佬一键sing box脚本"
-        echo "30. 科技lion脚本"
-        echo "31. 酷雪云脚本"
+        echo "29. PF_realm转发脚本 ⭐ 推荐"
+        echo "30. F佬一键sing box脚本"
+        echo "31. 科技lion脚本"
+        echo "32. 酷雪云脚本"
     fi
     
     echo ""
@@ -5207,108 +5209,115 @@ show_main_menu() {
             if [ $is_installed -eq 0 ]; then
                 run_xinchendahai_xray
             else
-                deploy_socks5
+                manage_cn_ip_block
             fi
             ;;
         18)
+            if [ $is_installed -eq 0 ]; then
+                manage_cn_ip_block
+            else
+                deploy_socks5
+            fi
+            ;;
+        19)
             if [ $is_installed -eq 0 ]; then
                 deploy_socks5
             else
                 manage_substore
             fi
             ;;
-        19)
+        20)
             if [ $is_installed -eq 0 ]; then
                 manage_substore
             else
                 run_ip_quality_check
             fi
             ;;
-        20)
+        21)
             if [ $is_installed -eq 0 ]; then
                 run_ip_quality_check
             else
                 run_ip_quality_check_ipv4
             fi
             ;;
-        21)
+        22)
             if [ $is_installed -eq 0 ]; then
                 run_ip_quality_check_ipv4
             else
                 run_speedtest
             fi
             ;;
-        22)
+        23)
             if [ $is_installed -eq 0 ]; then
                 run_speedtest
             else
                 iperf3_single_thread_test
             fi
             ;;
-        23)
+        24)
             if [ $is_installed -eq 0 ]; then
                 iperf3_single_thread_test
             else
                 run_international_speed_test
             fi
             ;;
-        24)
+        25)
             if [ $is_installed -eq 0 ]; then
                 run_international_speed_test
             else
                 run_network_latency_check
             fi
             ;;
-        25)
+        26)
             if [ $is_installed -eq 0 ]; then
                 run_network_latency_check
             else
                 run_backtrace
             fi
             ;;
-        26)
+        27)
             if [ $is_installed -eq 0 ]; then
                 run_backtrace
             else
                 run_unlock_check
             fi
             ;;
-        27)
+        28)
             if [ $is_installed -eq 0 ]; then
                 run_unlock_check
             else
                 run_ns_detect
             fi
             ;;
-        28)
+        29)
             if [ $is_installed -eq 0 ]; then
                 run_ns_detect
             else
                 run_pf_realm
             fi
             ;;
-        29)
+        30)
             if [ $is_installed -eq 0 ]; then
                 run_pf_realm
             else
                 run_fscarmen_singbox
             fi
             ;;
-        30)
+        31)
             if [ $is_installed -eq 0 ]; then
                 run_fscarmen_singbox
             else
                 run_kejilion_script
             fi
             ;;
-        31)
+        32)
             if [ $is_installed -eq 0 ]; then
                 run_kejilion_script
             else
                 run_kxy_script
             fi
             ;;
-        32)
+        33)
             if [ $is_installed -eq 0 ]; then
                 run_kxy_script
             else
@@ -6903,6 +6912,765 @@ XRAY_ENHANCED_SCRIPT_EOF
     echo ""
     echo "------------------------------------------------"
     break_end
+}
+
+#=============================================================================
+# 禁止端口通过中国大陆直连功能
+#=============================================================================
+
+# 配置文件路径
+CN_BLOCK_CONFIG="/usr/local/etc/xray/cn-block-ports.conf"
+CN_IPSET_NAME="china-ip-block"
+CN_IP_LIST_FILE="/tmp/china-ip-list.txt"
+
+# 检查依赖
+check_cn_block_dependencies() {
+    local missing_deps=()
+
+    if ! command -v ipset &> /dev/null; then
+        missing_deps+=("ipset")
+    fi
+
+    if ! command -v iptables &> /dev/null; then
+        missing_deps+=("iptables")
+    fi
+
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo -e "${gl_huang}检测到缺少依赖: ${missing_deps[*]}${gl_bai}"
+        echo "正在安装..."
+
+        if command -v apt-get &> /dev/null; then
+            apt-get update -qq
+            apt-get install -y ipset iptables iptables-persistent
+        elif command -v yum &> /dev/null; then
+            yum install -y ipset iptables iptables-services
+        else
+            echo -e "${gl_hong}❌ 不支持的系统，请手动安装 ipset 和 iptables${gl_bai}"
+            return 1
+        fi
+
+        echo -e "${gl_lv}✅ 依赖安装完成${gl_bai}"
+    fi
+
+    return 0
+}
+
+# 初始化配置文件
+init_cn_block_config() {
+    if [ ! -f "$CN_BLOCK_CONFIG" ]; then
+        mkdir -p "$(dirname "$CN_BLOCK_CONFIG")"
+        cat > "$CN_BLOCK_CONFIG" << 'EOF'
+# 中国大陆 IP 封锁端口配置文件
+# 格式: 端口|添加时间|备注
+# 示例: 1234|2025-10-25 12:00:00|SS节点
+EOF
+    fi
+}
+
+# 下载中国 IP 段列表
+download_china_ip_list() {
+    echo -e "${gl_kjlan}正在下载中国 IP 段列表...${gl_bai}"
+
+    local sources=(
+        "https://raw.githubusercontent.com/metowolf/iplist/master/data/country/CN.txt"
+        "https://ispip.clang.cn/all_cn.txt"
+        "https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt"
+    )
+
+    local downloaded=0
+
+    for source in "${sources[@]}"; do
+        echo "尝试从 $source 下载..."
+        if curl -sSL --connect-timeout 10 --max-time 60 "$source" -o "$CN_IP_LIST_FILE" 2>/dev/null; then
+            if [ -s "$CN_IP_LIST_FILE" ]; then
+                local line_count=$(wc -l < "$CN_IP_LIST_FILE")
+                if [ "$line_count" -gt 1000 ]; then
+                    echo -e "${gl_lv}✅ 下载成功，共 $line_count 条 IP 段${gl_bai}"
+                    downloaded=1
+                    break
+                fi
+            fi
+        fi
+    done
+
+    if [ $downloaded -eq 0 ]; then
+        echo -e "${gl_hong}❌ 所有源下载失败${gl_bai}"
+        return 1
+    fi
+
+    return 0
+}
+
+# 创建或更新 ipset
+update_china_ipset() {
+    echo -e "${gl_kjlan}正在更新 IP 地址库...${gl_bai}"
+
+    # 下载 IP 列表
+    if ! download_china_ip_list; then
+        return 1
+    fi
+
+    # 创建临时 ipset
+    local temp_set="${CN_IPSET_NAME}-temp"
+
+    # 删除旧的临时集合（如果存在）
+    ipset destroy "$temp_set" 2>/dev/null || true
+
+    # 创建新的临时集合
+    ipset create "$temp_set" hash:net maxelem 70000
+
+    # 添加 IP 段到临时集合
+    local count=0
+    while IFS= read -r ip; do
+        # 跳过空行和注释
+        [[ -z "$ip" || "$ip" =~ ^# ]] && continue
+
+        # 验证 IP 格式
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+            ipset add "$temp_set" "$ip" 2>/dev/null && ((count++))
+        fi
+    done < "$CN_IP_LIST_FILE"
+
+    echo -e "${gl_lv}✅ 成功添加 $count 条 IP 段到集合${gl_bai}"
+
+    # 交换集合（原子操作）
+    if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        ipset swap "$temp_set" "$CN_IPSET_NAME"
+        ipset destroy "$temp_set"
+    else
+        ipset rename "$temp_set" "$CN_IPSET_NAME"
+    fi
+
+    # 清理临时文件
+    rm -f "$CN_IP_LIST_FILE"
+
+    # 保存 ipset
+    if command -v ipset-persistent &> /dev/null; then
+        ipset-persistent save
+    elif command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save
+    fi
+
+    echo -e "${gl_lv}✅ IP 地址库更新完成${gl_bai}"
+    return 0
+}
+
+# 添加端口封锁规则
+add_port_block_rule() {
+    local port="$1"
+    local note="${2:-手动添加}"
+
+    # 验证端口
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        echo -e "${gl_hong}❌ 无效的端口号: $port${gl_bai}"
+        return 1
+    fi
+
+    # 检查是否已存在
+    if grep -q "^${port}|" "$CN_BLOCK_CONFIG" 2>/dev/null; then
+        echo -e "${gl_huang}⚠ 端口 $port 已在封锁列表中${gl_bai}"
+        return 1
+    fi
+
+    # 确保 ipset 存在
+    if ! ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        echo -e "${gl_huang}IP 地址库不存在，正在创建...${gl_bai}"
+        if ! update_china_ipset; then
+            return 1
+        fi
+    fi
+
+    # 添加 iptables 规则
+    iptables -C INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || \
+        iptables -I INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP
+
+    iptables -C INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || \
+        iptables -I INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP
+
+    # 保存到配置文件
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "${port}|${timestamp}|${note}" >> "$CN_BLOCK_CONFIG"
+
+    # 保存 iptables 规则
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif command -v iptables-save &> /dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    fi
+
+    echo -e "${gl_lv}✅ 端口 $port 封锁规则已添加${gl_bai}"
+    return 0
+}
+
+# 删除端口封锁规则
+remove_port_block_rule() {
+    local port="$1"
+
+    # 验证端口
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        echo -e "${gl_hong}❌ 无效的端口号: $port${gl_bai}"
+        return 1
+    fi
+
+    # 检查是否存在
+    if ! grep -q "^${port}|" "$CN_BLOCK_CONFIG" 2>/dev/null; then
+        echo -e "${gl_huang}⚠ 端口 $port 不在封锁列表中${gl_bai}"
+        return 1
+    fi
+
+    # 删除 iptables 规则
+    iptables -D INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || true
+    iptables -D INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || true
+
+    # 从配置文件删除
+    sed -i "/^${port}|/d" "$CN_BLOCK_CONFIG"
+
+    # 保存 iptables 规则
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif command -v iptables-save &> /dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    fi
+
+    echo -e "${gl_lv}✅ 端口 $port 封锁规则已删除${gl_bai}"
+    return 0
+}
+
+# 获取已封锁端口列表
+get_blocked_ports() {
+    if [ ! -f "$CN_BLOCK_CONFIG" ]; then
+        return 0
+    fi
+
+    grep -v '^#' "$CN_BLOCK_CONFIG" | grep -v '^$' | awk -F'|' '{print $1}'
+}
+
+# 获取 Xray 端口列表
+get_xray_ports() {
+    local xray_config="/usr/local/etc/xray/config.json"
+
+    if [ ! -f "$xray_config" ]; then
+        return 0
+    fi
+
+    if command -v jq &> /dev/null; then
+        jq -r '.inbounds[]?.port // empty' "$xray_config" 2>/dev/null | sort -n
+    fi
+}
+
+# 清空所有封锁规则
+clear_all_block_rules() {
+    echo -e "${gl_huang}正在清空所有封锁规则...${gl_bai}"
+
+    # 读取所有已封锁端口
+    local ports=($(get_blocked_ports))
+
+    if [ ${#ports[@]} -eq 0 ]; then
+        echo -e "${gl_huang}⚠ 没有需要清空的规则${gl_bai}"
+        return 0
+    fi
+
+    # 删除所有 iptables 规则
+    for port in "${ports[@]}"; do
+        iptables -D INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || true
+        iptables -D INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || true
+    done
+
+    # 清空配置文件
+    cat > "$CN_BLOCK_CONFIG" << 'EOF'
+# 中国大陆 IP 封锁端口配置文件
+# 格式: 端口|添加时间|备注
+# 示例: 1234|2025-10-25 12:00:00|SS节点
+EOF
+
+    # 保存 iptables 规则
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif command -v iptables-save &> /dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    fi
+
+    echo -e "${gl_lv}✅ 已清空 ${#ports[@]} 条封锁规则${gl_bai}"
+    return 0
+}
+
+# 菜单：添加端口封锁
+menu_add_port_block() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      添加端口封锁规则${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 显示 Xray 端口
+    local xray_ports=($(get_xray_ports))
+    if [ ${#xray_ports[@]} -gt 0 ]; then
+        echo -e "${gl_zi}检测到 Xray 端口:${gl_bai}"
+        for i in "${!xray_ports[@]}"; do
+            echo "  $((i+1)). ${xray_ports[$i]}"
+        done
+        echo ""
+    fi
+
+    echo "请选择添加方式:"
+    echo "1. 手动输入端口号"
+    if [ ${#xray_ports[@]} -gt 0 ]; then
+        echo "2. 从 Xray 端口列表选择"
+        echo "3. 封锁所有 Xray 端口"
+    fi
+    echo "0. 返回"
+    echo ""
+
+    read -p "请选择 [0-3]: " choice
+
+    case "$choice" in
+        1)
+            echo ""
+            read -p "请输入端口号（多个端口用逗号分隔）: " ports_input
+
+            if [ -z "$ports_input" ]; then
+                echo -e "${gl_hong}❌ 端口号不能为空${gl_bai}"
+                sleep 2
+                return
+            fi
+
+            IFS=',' read -ra ports <<< "$ports_input"
+            local success=0
+            local failed=0
+
+            for port in "${ports[@]}"; do
+                port=$(echo "$port" | xargs)  # 去除空格
+                read -p "为端口 $port 添加备注（可选，回车跳过）: " note
+                [ -z "$note" ] && note="手动添加"
+
+                if add_port_block_rule "$port" "$note"; then
+                    ((success++))
+                else
+                    ((failed++))
+                fi
+            done
+
+            echo ""
+            echo -e "${gl_lv}✅ 成功添加 $success 条规则${gl_bai}"
+            [ $failed -gt 0 ] && echo -e "${gl_hong}❌ 失败 $failed 条${gl_bai}"
+            ;;
+        2)
+            if [ ${#xray_ports[@]} -eq 0 ]; then
+                echo -e "${gl_hong}❌ 无效选择${gl_bai}"
+                sleep 2
+                return
+            fi
+
+            echo ""
+            read -p "请选择端口编号（多个用逗号分隔，0=全部）: " selection
+
+            if [ "$selection" = "0" ]; then
+                local success=0
+                for port in "${xray_ports[@]}"; do
+                    if add_port_block_rule "$port" "Xray端口"; then
+                        ((success++))
+                    fi
+                done
+                echo ""
+                echo -e "${gl_lv}✅ 成功添加 $success 条规则${gl_bai}"
+            else
+                IFS=',' read -ra selections <<< "$selection"
+                local success=0
+                for sel in "${selections[@]}"; do
+                    sel=$(echo "$sel" | xargs)
+                    if [ "$sel" -ge 1 ] && [ "$sel" -le ${#xray_ports[@]} ]; then
+                        local port="${xray_ports[$((sel-1))]}"
+                        if add_port_block_rule "$port" "Xray端口"; then
+                            ((success++))
+                        fi
+                    fi
+                done
+                echo ""
+                echo -e "${gl_lv}✅ 成功添加 $success 条规则${gl_bai}"
+            fi
+            ;;
+        3)
+            if [ ${#xray_ports[@]} -eq 0 ]; then
+                echo -e "${gl_hong}❌ 无效选择${gl_bai}"
+                sleep 2
+                return
+            fi
+
+            echo ""
+            echo -e "${gl_huang}将封锁以下端口:${gl_bai}"
+            printf '%s\n' "${xray_ports[@]}"
+            echo ""
+            read -p "确认执行？[y/N]: " confirm
+
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                local success=0
+                for port in "${xray_ports[@]}"; do
+                    if add_port_block_rule "$port" "Xray端口"; then
+                        ((success++))
+                    fi
+                done
+                echo ""
+                echo -e "${gl_lv}✅ 成功添加 $success 条规则${gl_bai}"
+            else
+                echo "已取消"
+            fi
+            ;;
+        0)
+            return
+            ;;
+        *)
+            echo -e "${gl_hong}❌ 无效选择${gl_bai}"
+            sleep 2
+            return
+            ;;
+    esac
+
+    echo ""
+    read -p "按任意键继续..." -n 1
+}
+
+# 菜单：删除端口封锁
+menu_remove_port_block() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      删除端口封锁规则${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ ! -f "$CN_BLOCK_CONFIG" ]; then
+        echo -e "${gl_huang}⚠ 没有已封锁的端口${gl_bai}"
+        echo ""
+        read -p "按任意键继续..." -n 1
+        return
+    fi
+
+    # 读取已封锁端口
+    local blocked_ports=()
+    local port_info=()
+
+    while IFS='|' read -r port timestamp note; do
+        [[ "$port" =~ ^# ]] && continue
+        [[ -z "$port" ]] && continue
+        blocked_ports+=("$port")
+        port_info+=("$port|$timestamp|$note")
+    done < "$CN_BLOCK_CONFIG"
+
+    if [ ${#blocked_ports[@]} -eq 0 ]; then
+        echo -e "${gl_huang}⚠ 没有已封锁的端口${gl_bai}"
+        echo ""
+        read -p "按任意键继续..." -n 1
+        return
+    fi
+
+    echo -e "${gl_zi}已封锁的端口:${gl_bai}"
+    echo ""
+    printf "%-4s %-8s %-20s %s\n" "编号" "端口" "添加时间" "备注"
+    echo "────────────────────────────────────────────────"
+
+    for i in "${!port_info[@]}"; do
+        IFS='|' read -r port timestamp note <<< "${port_info[$i]}"
+        printf "%-4s %-8s %-20s %s\n" "$((i+1))" "$port" "$timestamp" "$note"
+    done
+
+    echo ""
+    read -p "请选择要删除的端口编号（多个用逗号分隔，0=全部）: " selection
+
+    if [ -z "$selection" ]; then
+        return
+    fi
+
+    if [ "$selection" = "0" ]; then
+        echo ""
+        read -p "确认删除所有封锁规则？[y/N]: " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            clear_all_block_rules
+        else
+            echo "已取消"
+        fi
+    else
+        IFS=',' read -ra selections <<< "$selection"
+        local success=0
+        for sel in "${selections[@]}"; do
+            sel=$(echo "$sel" | xargs)
+            if [ "$sel" -ge 1 ] && [ "$sel" -le ${#blocked_ports[@]} ]; then
+                local port="${blocked_ports[$((sel-1))]}"
+                if remove_port_block_rule "$port"; then
+                    ((success++))
+                fi
+            fi
+        done
+        echo ""
+        echo -e "${gl_lv}✅ 成功删除 $success 条规则${gl_bai}"
+    fi
+
+    echo ""
+    read -p "按任意键继续..." -n 1
+}
+
+# 菜单：查看已封锁端口列表
+menu_list_blocked_ports() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      已封锁端口列表${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ ! -f "$CN_BLOCK_CONFIG" ]; then
+        echo -e "${gl_huang}⚠ 没有已封锁的端口${gl_bai}"
+        echo ""
+        read -p "按任意键继续..." -n 1
+        return
+    fi
+
+    local count=0
+    echo -e "${gl_zi}端口列表:${gl_bai}"
+    echo ""
+    printf "%-8s %-20s %-30s\n" "端口" "添加时间" "备注"
+    echo "────────────────────────────────────────────────────────────"
+
+    while IFS='|' read -r port timestamp note; do
+        [[ "$port" =~ ^# ]] && continue
+        [[ -z "$port" ]] && continue
+        printf "%-8s %-20s %-30s\n" "$port" "$timestamp" "$note"
+        ((count++))
+    done < "$CN_BLOCK_CONFIG"
+
+    echo "────────────────────────────────────────────────────────────"
+    echo -e "${gl_lv}共 $count 个端口被封锁${gl_bai}"
+
+    # 显示 ipset 统计
+    if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        local ip_count=$(ipset list "$CN_IPSET_NAME" | grep -c '^[0-9]')
+        echo -e "${gl_zi}IP 地址库: $ip_count 条中国 IP 段${gl_bai}"
+    fi
+
+    echo ""
+    read -p "按任意键继续..." -n 1
+}
+
+# 菜单：更新 IP 地址库
+menu_update_ip_database() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      更新 IP 地址库${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        local ip_count=$(ipset list "$CN_IPSET_NAME" | grep -c '^[0-9]')
+        echo -e "${gl_zi}当前 IP 地址库: $ip_count 条中国 IP 段${gl_bai}"
+        echo ""
+    fi
+
+    read -p "确认更新 IP 地址库？[y/N]: " confirm
+
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        if update_china_ipset; then
+            echo ""
+            echo -e "${gl_lv}✅ IP 地址库更新成功${gl_bai}"
+
+            # 重新应用所有规则
+            local ports=($(get_blocked_ports))
+            if [ ${#ports[@]} -gt 0 ]; then
+                echo ""
+                echo -e "${gl_kjlan}正在重新应用封锁规则...${gl_bai}"
+                for port in "${ports[@]}"; do
+                    # 删除旧规则
+                    iptables -D INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || true
+                    iptables -D INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null || true
+
+                    # 添加新规则
+                    iptables -I INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP
+                    iptables -I INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP
+                done
+
+                # 保存规则
+                if command -v netfilter-persistent &> /dev/null; then
+                    netfilter-persistent save >/dev/null 2>&1
+                fi
+
+                echo -e "${gl_lv}✅ 已重新应用 ${#ports[@]} 条封锁规则${gl_bai}"
+            fi
+        else
+            echo ""
+            echo -e "${gl_hong}❌ IP 地址库更新失败${gl_bai}"
+        fi
+    else
+        echo "已取消"
+    fi
+
+    echo ""
+    read -p "按任意键继续..." -n 1
+}
+
+# 菜单：查看拦截日志
+menu_view_block_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      拦截日志（最近50条）${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 获取已封锁端口
+    local ports=($(get_blocked_ports))
+
+    if [ ${#ports[@]} -eq 0 ]; then
+        echo -e "${gl_huang}⚠ 没有已封锁的端口${gl_bai}"
+        echo ""
+        read -p "按任意键继续..." -n 1
+        return
+    fi
+
+    echo -e "${gl_zi}正在查询防火墙日志...${gl_bai}"
+    echo ""
+
+    # 构建端口过滤条件
+    local port_filter=""
+    for port in "${ports[@]}"; do
+        port_filter="${port_filter}DPT=${port}|"
+    done
+    port_filter="${port_filter%|}"  # 删除最后一个 |
+
+    # 查询内核日志
+    if dmesg | grep -E "$port_filter" | tail -50 | grep -q .; then
+        dmesg | grep -E "$port_filter" | tail -50
+    elif journalctl -k --no-pager 2>/dev/null | grep -E "$port_filter" | tail -50 | grep -q .; then
+        journalctl -k --no-pager | grep -E "$port_filter" | tail -50
+    else
+        echo -e "${gl_huang}⚠ 暂无拦截日志${gl_bai}"
+        echo ""
+        echo "提示: 如需记录拦截日志，请添加 iptables LOG 规则："
+        echo "  iptables -I INPUT -p tcp --dport <端口> -m set --match-set $CN_IPSET_NAME src -j LOG --log-prefix 'CN-BLOCK: '"
+    fi
+
+    echo ""
+    read -p "按任意键继续..." -n 1
+}
+
+# 主菜单
+manage_cn_ip_block() {
+    # 检查依赖
+    if ! check_cn_block_dependencies; then
+        echo ""
+        read -p "按任意键继续..." -n 1
+        return
+    fi
+
+    # 初始化配置
+    init_cn_block_config
+
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}    禁止端口通过中国大陆直连管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示状态
+        local blocked_count=$(get_blocked_ports | wc -l)
+        local ipset_count=0
+        if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+            ipset_count=$(ipset list "$CN_IPSET_NAME" | grep -c '^[0-9]')
+        fi
+
+        echo -e "${gl_zi}当前状态:${gl_bai}"
+        echo "  • 已封锁端口: $blocked_count 个"
+        echo "  • IP 地址库: $ipset_count 条中国 IP 段"
+        echo ""
+
+        echo "1. 添加端口封锁规则"
+        echo "2. 删除端口封锁规则"
+        echo "3. 查看已封锁端口列表"
+        echo "4. 更新 IP 地址库"
+        echo "5. 查看拦截日志"
+        echo "6. 一键封锁所有 Xray 端口"
+        echo "7. 清空所有封锁规则"
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        read -p "请选择 [0-7]: " choice
+
+        case "$choice" in
+            1)
+                menu_add_port_block
+                ;;
+            2)
+                menu_remove_port_block
+                ;;
+            3)
+                menu_list_blocked_ports
+                ;;
+            4)
+                menu_update_ip_database
+                ;;
+            5)
+                menu_view_block_logs
+                ;;
+            6)
+                clear
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo -e "${gl_kjlan}    一键封锁所有 Xray 端口${gl_bai}"
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo ""
+
+                local xray_ports=($(get_xray_ports))
+                if [ ${#xray_ports[@]} -eq 0 ]; then
+                    echo -e "${gl_huang}⚠ 未检测到 Xray 端口${gl_bai}"
+                else
+                    echo -e "${gl_zi}检测到以下 Xray 端口:${gl_bai}"
+                    printf '%s\n' "${xray_ports[@]}"
+                    echo ""
+                    read -p "确认封锁所有端口？[y/N]: " confirm
+
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        local success=0
+                        for port in "${xray_ports[@]}"; do
+                            if add_port_block_rule "$port" "Xray端口"; then
+                                ((success++))
+                            fi
+                        done
+                        echo ""
+                        echo -e "${gl_lv}✅ 成功添加 $success 条规则${gl_bai}"
+                    else
+                        echo "已取消"
+                    fi
+                fi
+
+                echo ""
+                read -p "按任意键继续..." -n 1
+                ;;
+            7)
+                clear
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo -e "${gl_kjlan}      清空所有封锁规则${gl_bai}"
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo ""
+
+                local blocked_count=$(get_blocked_ports | wc -l)
+                echo -e "${gl_huang}⚠ 将删除所有 $blocked_count 条封锁规则${gl_bai}"
+                echo ""
+                read -p "确认执行？[y/N]: " confirm
+
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    clear_all_block_rules
+                else
+                    echo "已取消"
+                fi
+
+                echo ""
+                read -p "按任意键继续..." -n 1
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo -e "${gl_hong}❌ 无效选择${gl_bai}"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 run_kejilion_script() {
