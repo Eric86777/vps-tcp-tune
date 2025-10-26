@@ -1278,3 +1278,7 @@ MIT
 ---
 
 **⭐ 如果这个脚本对你有帮助，欢迎 Star！**
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Eric86777/vps-tcp-tune&type=Date)](https://www.star-history.com/#Eric86777/vps-tcp-tune&Date)
