@@ -5625,21 +5625,60 @@ build_ss_inbound() {
 
 write_config() {
     local inbounds_json="$1"
+    local enable_routing="${2:-false}"
     local config_content
     
-    config_content=$(jq -n --argjson inbounds "$inbounds_json" \
-    '{
-      "log": {"loglevel": "warning"},
-      "inbounds": $inbounds,
-      "outbounds": [
-        {
-          "protocol": "freedom",
-          "settings": {
-            "domainStrategy": "UseIPv4v6"
+    if [[ "$enable_routing" == "true" ]]; then
+        # 带路由规则的配置
+        config_content=$(jq -n --argjson inbounds "$inbounds_json" \
+        '{
+          "log": {"loglevel": "warning"},
+          "inbounds": $inbounds,
+          "outbounds": [
+            {
+              "protocol": "freedom",
+              "tag": "direct",
+              "settings": {
+                "domainStrategy": "UseIPv4v6"
+              }
+            },
+            {
+              "protocol": "blackhole",
+              "tag": "block"
+            }
+          ],
+          "routing": {
+            "domainStrategy": "IPOnDemand",
+            "rules": [
+              {
+                "type": "field",
+                "domain": [
+                  "geosite:category-ads-all",
+                  "geosite:category-porn",
+                  "regexp:.*missav.*",
+                  "geosite:missav"
+                ],
+                "outboundTag": "block"
+              }
+            ]
           }
-        }
-      ]
-    }')
+        }')
+    else
+        # 不带路由规则的配置（原始）
+        config_content=$(jq -n --argjson inbounds "$inbounds_json" \
+        '{
+          "log": {"loglevel": "warning"},
+          "inbounds": $inbounds,
+          "outbounds": [
+            {
+              "protocol": "freedom",
+              "settings": {
+                "domainStrategy": "UseIPv4v6"
+              }
+            }
+          ]
+        }')
+    fi
     
     # 新增：验证生成的JSON是否有效
     if ! echo "$config_content" | jq . >/dev/null 2>&1; then
@@ -6666,6 +6705,108 @@ view_all_info() {
     fi
 }
 
+# --- 路由过滤规则管理 ---
+manage_routing_rules() {
+    clear
+    echo -e "${cyan}╔════════════════════════════════════════════╗${none}"
+    echo -e "${cyan}║      路由过滤规则管理                      ║${none}"
+    echo -e "${cyan}╚════════════════════════════════════════════╝${none}"
+    echo ""
+    
+    if [[ ! -f "$xray_config_path" ]]; then
+        error "Xray 配置文件不存在！请先安装 Xray。"
+        return 1
+    fi
+    
+    # 检查当前是否启用了路由规则
+    local has_routing
+    has_routing=$(jq -r '.routing // empty' "$xray_config_path" 2>/dev/null)
+    
+    if [[ -n "$has_routing" ]]; then
+        echo -e "${green}✓ 当前状态: 路由过滤规则${green}已启用${none}"
+        echo ""
+        echo -e "${yellow}过滤内容:${none}"
+        echo "  • geosite:category-ads-all  (所有广告)"
+        echo "  • geosite:category-porn     (色情网站)"
+        echo "  • regexp:.*missav.*         (missav相关域名)"
+        echo "  • geosite:missav            (missav站点)"
+        echo ""
+        echo "────────────────────────────────────────────────"
+        echo -e "${cyan}1.${none} 禁用路由过滤规则（恢复纯净代理）"
+        echo -e "${red}0.${none} 返回上级菜单"
+        echo "────────────────────────────────────────────────"
+        read -p " 请选择 [0-1]: " choice || true
+        
+        if [[ "$choice" == "1" ]]; then
+            info "正在禁用路由过滤规则..."
+            
+            # 读取现有的inbounds配置
+            local inbounds_json
+            inbounds_json=$(jq -c '.inbounds' "$xray_config_path")
+            
+            # 重新生成不带路由的配置
+            write_config "$inbounds_json" "false"
+            
+            if restart_xray; then
+                success "路由过滤规则已禁用！现在是纯净代理模式。"
+            else
+                error "Xray 重启失败！"
+                return 1
+            fi
+        fi
+    else
+        echo -e "${yellow}✗ 当前状态: 路由过滤规则${red}未启用${none}"
+        echo ""
+        echo -e "${cyan}启用后将自动屏蔽以下内容:${none}"
+        echo "  • 所有广告 (geosite:category-ads-all)"
+        echo "  • 色情网站 (geosite:category-porn)"
+        echo "  • missav相关域名"
+        echo ""
+        echo -e "${yellow}⚠ 注意: 需要GeoIP/GeoSite数据文件支持${none}"
+        echo ""
+        echo "────────────────────────────────────────────────"
+        echo -e "${green}1.${none} 启用路由过滤规则"
+        echo -e "${red}0.${none} 返回上级菜单"
+        echo "────────────────────────────────────────────────"
+        read -p " 请选择 [0-1]: " choice || true
+        
+        if [[ "$choice" == "1" ]]; then
+            info "正在启用路由过滤规则..."
+            
+            # 检查GeoIP和GeoSite文件是否存在
+            local geo_missing=false
+            if [[ ! -f "/usr/local/share/xray/geosite.dat" ]]; then
+                warning "GeoSite 数据文件不存在，正在下载..."
+                execute_official_script "install-geodata" || geo_missing=true
+            fi
+            
+            if [[ "$geo_missing" == "true" ]]; then
+                error "GeoSite 数据文件下载失败，路由规则可能无法正常工作。"
+                read -p " 是否继续启用？(y/N): " confirm || true
+                if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+                    info "已取消操作"
+                    return 0
+                fi
+            fi
+            
+            # 读取现有的inbounds配置
+            local inbounds_json
+            inbounds_json=$(jq -c '.inbounds' "$xray_config_path")
+            
+            # 重新生成带路由的配置
+            write_config "$inbounds_json" "true"
+            
+            if restart_xray; then
+                success "路由过滤规则已启用！"
+                echo -e "${green}现在将自动屏蔽广告、色情网站和missav${none}"
+            else
+                error "Xray 重启失败！"
+                return 1
+            fi
+        fi
+    fi
+}
+
 # --- 核心安装逻辑函数 ---
 run_install_vless() {
     local port="$1" uuid="$2" domain="$3" node_name="$4"
@@ -6759,10 +6900,12 @@ main_menu() {
         printf "  ${magenta}%-2s${none} %-35s\n" "11." "查看 Xray 日志"
         printf "  ${yellow}%-2s${none} %-35s\n" "12." "查看订阅信息"
         draw_divider
+        printf "  ${green}%-2s${none} %-35s ⭐\n" "13." "路由过滤规则管理"
+        draw_divider
         printf "  ${red}%-2s${none} %-35s\n" "0." "退出脚本"
         draw_divider
 
-        read -p " 请输入选项 [0-12]: " choice || true
+        read -p " 请输入选项 [0-13]: " choice || true
 
         local needs_pause=true
 
@@ -6779,8 +6922,9 @@ main_menu() {
             10) restart_xray ;;
             11) view_xray_log; needs_pause=false ;;
             12) view_all_info ;;
+            13) manage_routing_rules ;;
             0) success "感谢使用！"; exit 0 ;;
-            *) error "无效选项。请输入0到12之间的数字。" ;;
+            *) error "无效选项。请输入0到13之间的数字。" ;;
         esac
 
         if [ "$needs_pause" = true ]; then
