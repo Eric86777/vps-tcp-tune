@@ -5625,9 +5625,26 @@ build_ss_inbound() {
 
 write_config() {
     local inbounds_json="$1"
-    local enable_routing="${2:-false}"
+    local enable_routing="${2:-}"
     local config_content
-    
+
+    # 🔥 核心逻辑：如果调用者没指定 enable_routing，就自动检测现有配置
+    if [[ -z "$enable_routing" ]]; then
+        # 检测现有配置文件是否存在 routing 配置
+        if [[ -f "$xray_config_path" ]]; then
+            local has_routing
+            has_routing=$(jq -r '.routing // empty' "$xray_config_path" 2>/dev/null)
+            if [[ -n "$has_routing" ]]; then
+                enable_routing="true"
+            else
+                enable_routing="false"
+            fi
+        else
+            # 配置文件不存在，默认不启用路由
+            enable_routing="false"
+        fi
+    fi
+
     if [[ "$enable_routing" == "true" ]]; then
         # 带路由规则的配置
         config_content=$(jq -n --argjson inbounds "$inbounds_json" \
