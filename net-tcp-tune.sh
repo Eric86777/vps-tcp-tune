@@ -668,13 +668,25 @@ set_temp_socks5_proxy() {
     local proxy_ip=""
     while true; do
         read -e -p "$(echo -e "${gl_huang}请输入代理服务器IP: ${gl_bai}")" proxy_ip
-        
+
         if [ -z "$proxy_ip" ]; then
             echo -e "${gl_hong}❌ IP地址不能为空${gl_bai}"
         elif [[ "$proxy_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            # 简单的IP格式验证
-            echo -e "${gl_lv}✅ IP地址: ${proxy_ip}${gl_bai}"
-            break
+            # 验证IP格式和范围（每段0-255）
+            local valid_ip=true
+            IFS='.' read -ra octets <<< "$proxy_ip"
+            for octet in "${octets[@]}"; do
+                if [ "$octet" -gt 255 ]; then
+                    valid_ip=false
+                    break
+                fi
+            done
+            if [ "$valid_ip" = true ]; then
+                echo -e "${gl_lv}✅ IP地址: ${proxy_ip}${gl_bai}"
+                break
+            else
+                echo -e "${gl_hong}❌ IP地址范围无效（每段必须在0-255之间）${gl_bai}"
+            fi
         else
             echo -e "${gl_hong}❌ 无效的IP地址格式${gl_bai}"
         fi
@@ -1650,10 +1662,16 @@ enable_realm_ipv4() {
     
     # 使用 sed 和手动编辑来修改配置
     local temp_config="/tmp/realm_config_temp.json"
-    
+
+    # 确保退出时清理临时文件
+    trap "rm -f '$temp_config'" EXIT ERR
+
     # 读取原配置
-    cat /etc/realm/config.json > "$temp_config"
-    
+    if ! cat /etc/realm/config.json > "$temp_config" 2>/dev/null; then
+        echo -e "${gl_hong}❌ 无法读取配置文件${gl_bai}"
+        return 1
+    fi
+
     # 添加 resolve: ipv4 (在第一个 { 后插入)
     if ! grep -q '"resolve"' "$temp_config"; then
         sed -i '0,/{/s/{/{\n    "resolve": "ipv4",/' "$temp_config"
@@ -1661,7 +1679,7 @@ enable_realm_ipv4() {
     else
         echo -e "${gl_lv}✅ resolve 配置已存在${gl_bai}"
     fi
-    
+
     # 替换所有 ::: 为 0.0.0.0
     local listen_count=$(grep ':::' "$temp_config" 2>/dev/null | wc -l)
     listen_count=$(echo "$listen_count" | tr -d ' \n')
@@ -1672,7 +1690,7 @@ enable_realm_ipv4() {
     else
         echo -e "${gl_lv}✅ 监听地址已经是 IPv4 格式${gl_bai}"
     fi
-    
+
     # 验证 JSON 格式
     if command -v jq &>/dev/null; then
         if jq empty "$temp_config" 2>/dev/null; then
@@ -1680,12 +1698,15 @@ enable_realm_ipv4() {
             echo -e "${gl_lv}✅ 配置文件格式验证通过${gl_bai}"
         else
             echo -e "${gl_hong}❌ 配置文件格式错误，已回滚${gl_bai}"
-            rm "$temp_config"
+            rm -f "$temp_config"
             return 1
         fi
     else
         mv "$temp_config" /etc/realm/config.json
     fi
+
+    # 清理 trap
+    trap - EXIT ERR
     
     echo ""
     
@@ -2184,10 +2205,16 @@ check_all_inbound_connections() {
     # 注意：::ffff: 开头的是 IPv4-mapped IPv6，本质是 IPv4
     # 先去掉端口号，再统计
     local connections_no_port=$(echo "$connections" | sed 's/:[0-9]*$//')
-    
-    local ipv4_mapped=$(echo "$connections_no_port" | grep -c "::ffff:")
-    local ipv6_real=$(echo "$connections_no_port" | grep ":" | grep -vc "::ffff:")
-    local ipv4_pure=$(echo "$connections_no_port" | grep -vc ":")
+
+    # 检查是否有有效连接数据
+    if [ -z "$connections_no_port" ]; then
+        echo -e "${gl_huang}⚠️  未检测到有效连接数据${gl_bai}"
+        return 1
+    fi
+
+    local ipv4_mapped=$(echo "$connections_no_port" | grep -c "::ffff:" || echo "0")
+    local ipv6_real=$(echo "$connections_no_port" | grep ":" | grep -vc "::ffff:" || echo "0")
+    local ipv4_pure=$(echo "$connections_no_port" | grep -vc ":" || echo "0")
     local ipv4_connections=$((ipv4_pure + ipv4_mapped))
     local ipv6_connections=$ipv6_real
     local total_connections=$(echo "$connections" | wc -l)
@@ -6883,6 +6910,20 @@ download_china_ip_list() {
 update_china_ipset() {
     echo -e "${gl_kjlan}正在更新 IP 地址库...${gl_bai}"
 
+    # 使用文件锁防止并发执行
+    local lock_file="/var/lock/china-ipset-update.lock"
+    local lock_fd=200
+
+    # 尝试获取锁（最多等待30秒）
+    exec 200>"$lock_file"
+    if ! flock -w 30 200; then
+        echo -e "${gl_hong}❌ 无法获取锁，可能有其他实例正在运行${gl_bai}"
+        return 1
+    fi
+
+    # 确保退出时释放锁和清理临时文件
+    trap "flock -u 200; rm -f '$lock_file' '$CN_IP_LIST_FILE'" EXIT ERR
+
     # 下载 IP 列表
     if ! download_china_ip_list; then
         return 1
@@ -6928,6 +6969,10 @@ update_china_ipset() {
     elif command -v netfilter-persistent &> /dev/null; then
         netfilter-persistent save
     fi
+
+    # 清理 trap 和释放锁
+    trap - EXIT ERR
+    flock -u 200
 
     echo -e "${gl_lv}✅ IP 地址库更新完成${gl_bai}"
     return 0
