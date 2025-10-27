@@ -1164,9 +1164,9 @@ analyze_realm_connections() {
     
     # 合并
     local all_source_ips=$(echo -e "${source_ips}\n${source_ips_v6}" | grep -v "^$" | sort | uniq)
-    
+
     local total_sources=$(echo "$all_source_ips" | wc -l)
-    local total_connections=$(echo "$realm_connections" | wc -c)
+    local total_connections=$(echo "$realm_connections" | wc -l)
     
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "                    分析结果"
@@ -3965,128 +3965,6 @@ optimize_xinchendahai() {
     echo "  ✓ netdev_max_backlog = 5000 （修正过高值）"
     sysctl -w net.ipv4.ip_local_port_range='1024 65535' 2>/dev/null
     echo "  ✓ ip_local_port_range = 1024-65535"
-
-    echo ""
-    echo -e "${gl_lv}星辰大海ヾ优化模式设置完成！${gl_bai}"
-    echo -e "${gl_zi}配置特点: TLS握手加速 + QUIC支持 + 大并发优化 + CAKE兼容${gl_bai}"
-    echo -e "${gl_huang}优化说明: 已修正过激参数，保持用户CAKE设置，适配≥2GB内存${gl_bai}"
-}
-
-#=============================================================================
-# 内核参数优化 - Reality终极优化（方案E）
-#=============================================================================
-
-optimize_reality_ultimate() {
-    echo -e "${gl_lv}切换到Reality终极优化模式...${gl_bai}"
-    echo -e "${gl_zi}基于星辰大海深度改进，性能提升5-10%，资源消耗降低25%${gl_bai}"
-    echo ""
-    echo -e "${gl_hong}⚠️  重要提示 ⚠️${gl_bai}"
-    echo -e "${gl_huang}本配置为临时生效（使用 sysctl -w 命令）${gl_bai}"
-    echo -e "${gl_huang}重启后将恢复到永久配置文件的设置${gl_bai}"
-    echo ""
-    echo "如果你之前执行过："
-    echo "  - CAKE调优 / Debian12调优 / BBR直连优化"
-    echo "重启后会恢复到那些配置，本次优化会消失！"
-    echo ""
-    read -e -p "是否继续？(Y/N) [Y]: " confirm
-    confirm=${confirm:-Y}
-    if [[ "$confirm" =~ ^[Nn]$ ]]; then
-        echo "已取消"
-        return
-    fi
-    echo ""
-
-    # 文件描述符优化
-    echo -e "${gl_lv}优化文件描述符...${gl_bai}"
-    ulimit -n 524288
-    echo "  ✓ 文件描述符: 524288 (50万)"
-
-    # TCP拥塞控制（核心）
-    echo -e "${gl_lv}优化TCP拥塞控制...${gl_bai}"
-    sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null
-    echo "  ✓ tcp_congestion_control = bbr"
-    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
-    if [ "$current_qdisc" = "cake" ]; then
-        echo "  ✓ default_qdisc = cake （保持用户设置）"
-    else
-        echo "  ℹ default_qdisc = $current_qdisc （保持不变）"
-    fi
-
-    # TCP连接优化（TLS握手加速）
-    echo -e "${gl_lv}优化TCP连接（TLS握手加速）...${gl_bai}"
-    sysctl -w net.ipv4.tcp_fastopen=3 2>/dev/null
-    echo "  ✓ tcp_fastopen = 3"
-    sysctl -w net.ipv4.tcp_slow_start_after_idle=0 2>/dev/null
-    echo "  ✓ tcp_slow_start_after_idle = 0 （关键优化）"
-    sysctl -w net.ipv4.tcp_tw_reuse=1 2>/dev/null
-    echo "  ✓ tcp_tw_reuse = 1"
-    sysctl -w net.ipv4.ip_local_port_range='1024 65535' 2>/dev/null
-    echo "  ✓ ip_local_port_range = 1024-65535"
-
-    # Reality特有优化（方案E核心亮点）
-    echo -e "${gl_lv}Reality特有优化...${gl_bai}"
-    sysctl -w net.ipv4.tcp_notsent_lowat=16384 2>/dev/null
-    echo "  ✓ tcp_notsent_lowat = 16384 （减少延迟）"
-    sysctl -w net.ipv4.tcp_fin_timeout=15 2>/dev/null
-    echo "  ✓ tcp_fin_timeout = 15 （快速回收）"
-    sysctl -w net.ipv4.tcp_max_tw_buckets=5000 2>/dev/null
-    echo "  ✓ tcp_max_tw_buckets = 5000"
-
-    # TCP缓冲区（12MB平衡配置）
-    echo -e "${gl_lv}优化TCP缓冲区（12MB）...${gl_bai}"
-    sysctl -w net.core.rmem_max=12582912 2>/dev/null
-    echo "  ✓ rmem_max = 12MB"
-    sysctl -w net.core.wmem_max=12582912 2>/dev/null
-    echo "  ✓ wmem_max = 12MB"
-    sysctl -w net.ipv4.tcp_rmem='4096 87380 12582912' 2>/dev/null
-    echo "  ✓ tcp_rmem = 4K 85K 12MB"
-    sysctl -w net.ipv4.tcp_wmem='4096 65536 12582912' 2>/dev/null
-    echo "  ✓ tcp_wmem = 4K 64K 12MB"
-
-    # 内存管理
-    echo -e "${gl_lv}优化内存管理...${gl_bai}"
-    sysctl -w vm.swappiness=5 2>/dev/null
-    echo "  ✓ swappiness = 5"
-    sysctl -w vm.dirty_ratio=15 2>/dev/null
-    echo "  ✓ dirty_ratio = 15"
-    sysctl -w vm.dirty_background_ratio=5 2>/dev/null
-    echo "  ✓ dirty_background_ratio = 5"
-    sysctl -w vm.overcommit_memory=1 2>/dev/null
-    echo "  ✓ overcommit_memory = 1"
-    sysctl -w vm.vfs_cache_pressure=50 2>/dev/null
-    echo "  ✓ vfs_cache_pressure = 50"
-
-    # 连接保活（更短的检测周期）
-    echo -e "${gl_lv}优化连接保活...${gl_bai}"
-    sysctl -w net.ipv4.tcp_keepalive_time=300 2>/dev/null
-    echo "  ✓ tcp_keepalive_time = 300s (5分钟)"
-    sysctl -w net.ipv4.tcp_keepalive_intvl=30 2>/dev/null
-    echo "  ✓ tcp_keepalive_intvl = 30s"
-    sysctl -w net.ipv4.tcp_keepalive_probes=5 2>/dev/null
-    echo "  ✓ tcp_keepalive_probes = 5"
-
-    # UDP/QUIC优化
-    echo -e "${gl_lv}优化UDP（QUIC支持）...${gl_bai}"
-    sysctl -w net.ipv4.udp_rmem_min=8192 2>/dev/null
-    echo "  ✓ udp_rmem_min = 8192"
-    sysctl -w net.ipv4.udp_wmem_min=8192 2>/dev/null
-    echo "  ✓ udp_wmem_min = 8192"
-
-    # 连接队列优化（科学配置）
-    echo -e "${gl_lv}优化连接队列...${gl_bai}"
-    sysctl -w net.core.somaxconn=4096 2>/dev/null
-    echo "  ✓ somaxconn = 4096"
-    sysctl -w net.ipv4.tcp_max_syn_backlog=8192 2>/dev/null
-    echo "  ✓ tcp_max_syn_backlog = 8192"
-    sysctl -w net.core.netdev_max_backlog=5000 2>/dev/null
-    echo "  ✓ netdev_max_backlog = 5000 （科学值）"
-
-    # TCP安全
-    echo -e "${gl_lv}TCP安全增强...${gl_bai}"
-    sysctl -w net.ipv4.tcp_syncookies=1 2>/dev/null
-    echo "  ✓ tcp_syncookies = 1"
-    sysctl -w net.ipv4.tcp_mtu_probing=1 2>/dev/null
-    echo "  ✓ tcp_mtu_probing = 1"
 
     echo ""
     echo -e "${gl_lv}星辰大海ヾ优化模式设置完成！${gl_bai}"
