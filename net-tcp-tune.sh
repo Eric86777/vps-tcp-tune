@@ -111,8 +111,8 @@ install_package() {
 
     if [[ "$detection" =~ (debian|ubuntu) ]]; then
         pkg_manager="apt"
-        update_cmd=(apt update -y)
-        install_cmd=(apt install -y)
+        update_cmd=(apt-get update)
+        install_cmd=(apt-get install -y)
     elif [[ "$detection" =~ (rhel|centos|fedora|rocky|alma|redhat) ]]; then
         if command -v dnf &>/dev/null; then
             pkg_manager="dnf"
@@ -3588,8 +3588,8 @@ install_xanmod_kernel() {
     echo -e "${gl_lv}将安装: linux-xanmod-x64v${version}${gl_bai}"
     
     # 安装 XanMod 内核
-    apt update -y
-    apt install -y linux-xanmod-x64v$version
+    apt-get update
+    apt-get install -y linux-xanmod-x64v$version
     
     if [ $? -ne 0 ]; then
         echo -e "${gl_hong}内核安装失败！${gl_bai}"
@@ -4749,13 +4749,13 @@ iperf3_single_thread_test() {
         echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo ""
         
-        if command -v apt &>/dev/null; then
+        if command -v apt-get &>/dev/null || command -v apt &>/dev/null; then
             echo "步骤 1/2: 更新软件包列表..."
-            apt update -y
-            
+            apt-get update
+
             echo ""
             echo "步骤 2/2: 安装 iperf3..."
-            apt install -y iperf3
+            apt-get install -y iperf3
             
             if [ $? -ne 0 ]; then
                 echo ""
@@ -5382,7 +5382,7 @@ update_xanmod_kernel() {
     
     # 更新软件包列表
     echo "正在更新软件包列表..."
-    apt update -y > /dev/null 2>&1
+    apt-get update > /dev/null 2>&1
     
     # 检查已安装的 XanMod 内核包
     local installed_packages=$(dpkg -l | grep 'linux-.*xanmod' | awk '{print $2}')
