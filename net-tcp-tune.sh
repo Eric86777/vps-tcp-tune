@@ -5037,42 +5037,42 @@ show_main_menu() {
             if [ $is_installed -eq 0 ]; then
                 manage_ip_priority
             else
-                manage_swap
+                manage_ipv6
             fi
             ;;
         7)
             if [ $is_installed -eq 0 ]; then
                 manage_swap
             else
-                manage_ipv6
+                set_temp_socks5_proxy
             fi
             ;;
         8)
             if [ $is_installed -eq 0 ]; then
                 manage_ipv6
             else
-                set_temp_socks5_proxy
+                manage_swap
             fi
             ;;
         9)
             if [ $is_installed -eq 0 ]; then
                 manage_swap
             else
-                manage_swap
+                show_detailed_status
             fi
             ;;
         10)
             if [ $is_installed -eq 0 ]; then
                 show_detailed_status
             else
-                show_detailed_status
+                analyze_realm_connections
             fi
             ;;
         11)
             if [ $is_installed -eq 0 ]; then
                 analyze_realm_connections
             else
-                analyze_realm_connections
+                realm_ipv4_management
             fi
             ;;
         12)
