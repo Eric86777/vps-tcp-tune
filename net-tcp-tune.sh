@@ -4861,7 +4861,7 @@ show_main_menu() {
     clear
     check_bbr_status
     local is_installed=$?
-    
+
     echo ""
     echo -e "${gl_zi}╔════════════════════════════════════════════╗${gl_bai}"
     echo -e "${gl_zi}║   BBR v3 终极优化脚本 - Ultimate Edition  ║${gl_bai}"
@@ -4869,370 +4869,178 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━ 核心功能 ━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[内核管理]${gl_bai}"
+    echo "1. 安装/更新 XanMod 内核 + BBR v3 ⭐ 推荐"
+    echo "2. 卸载 XanMod 内核"
+    echo ""
+    echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
+    echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
+    echo "4. NS论坛CAKE调优"
+    echo "5. 科技lion高性能模式"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[网络设置]${gl_bai}"
+    echo "6. 设置IPv4/IPv6优先级"
+    echo "7. IPv6管理（临时/永久禁用/取消）"
+    echo "8. 设置临时SOCKS5代理"
+    echo ""
+    echo -e "${gl_kjlan}[系统管理]${gl_bai}"
+    echo "9. 虚拟内存管理"
+    echo "10. 查看系统详细状态"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
+    echo "11. Realm转发连接分析"
+    echo "12. Realm强制使用IPv4 ⭐ 推荐"
+    echo "13. IPv4/IPv6连接检测"
+    echo ""
+    echo -e "${gl_kjlan}[Xray配置]${gl_bai}"
+    echo "14. 查看Xray配置"
+    echo "15. 设置Xray IPv6出站"
+    echo "16. 恢复Xray默认配置"
+    echo ""
+    echo -e "${gl_kjlan}[代理部署]${gl_bai}"
+    echo "17. 星辰大海Xray一键双协议 ⭐ 推荐"
+    echo "18. 禁止端口通过中国大陆直连"
+    echo "19. 一键部署SOCKS5代理"
+    echo "20. Sub-Store多实例管理"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
+    echo "21. IP质量检测（IPv4+IPv6）"
+    echo "22. IP质量检测（仅IPv4）⭐ 推荐"
+    echo ""
+    echo -e "${gl_kjlan}[网络测试]${gl_bai}"
+    echo "23. 服务器带宽测试"
+    echo "24. iperf3单线程测试"
+    echo "25. 国际互联速度测试 ⭐ 推荐"
+    echo "26. 网络延迟质量检测 ⭐ 推荐"
+    echo "27. 三网回程路由测试 ⭐ 推荐"
+    echo ""
+    echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
+    echo "28. IP媒体/AI解锁检测 ⭐ 推荐"
+    echo "29. NS一键检测脚本 ⭐ 推荐"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
+    echo "30. PF_realm转发脚本 ⭐ 推荐"
+    echo "31. F佬一键sing box脚本"
+    echo "32. 科技lion脚本"
+    echo "33. 酷雪云脚本"
 
-    if [ $is_installed -eq 0 ]; then
-        echo "1. 更新 XanMod 内核"
-        echo "2. 卸载 XanMod 内核"
-        echo ""
-        echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
-        echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-        echo "4. NS论坛CAKE调优"
-        echo "5. 科技lion高性能模式"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[网络设置]${gl_bai}"
-        echo "6. 设置IPv4/IPv6优先级"
-        echo "7. IPv6管理（临时/永久禁用/取消）"
-        echo "8. 设置临时SOCKS5代理"
-        echo ""
-        echo -e "${gl_kjlan}[系统管理]${gl_bai}"
-        echo "9. 虚拟内存管理"
-        echo "10. 查看系统详细状态"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
-        echo "11. Realm转发连接分析"
-        echo "12. Realm强制使用IPv4 ⭐ 推荐"
-        echo "13. IPv4/IPv6连接检测"
-        echo ""
-        echo -e "${gl_kjlan}[Xray配置]${gl_bai}"
-        echo "14. 查看Xray配置"
-        echo "15. 设置Xray IPv6出站"
-        echo "16. 恢复Xray默认配置"
-        echo ""
-        echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-        echo "17. 星辰大海Xray一键双协议 ⭐ 推荐"
-        echo "18. 禁止端口通过中国大陆直连"
-        echo "19. 一键部署SOCKS5代理"
-        echo "20. Sub-Store多实例管理"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-        echo "21. IP质量检测（IPv4+IPv6）"
-        echo "22. IP质量检测（仅IPv4）⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-        echo "23. 服务器带宽测试"
-        echo "24. iperf3单线程测试"
-        echo "25. 国际互联速度测试 ⭐ 推荐"
-        echo "26. 网络延迟质量检测 ⭐ 推荐"
-        echo "27. 三网回程路由测试 ⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-        echo "28. IP媒体/AI解锁检测 ⭐ 推荐"
-        echo "29. NS一键检测脚本 ⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-        echo "30. PF_realm转发脚本 ⭐ 推荐"
-        echo "31. F佬一键sing box脚本"
-        echo "32. 科技lion脚本"
-        echo "33. 酷雪云脚本"
-    else
-        echo "1. 安装 XanMod 内核 + BBR v3 ⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
-        echo "2. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-        echo "3. NS论坛CAKE调优"
-        echo "4. 科技lion高性能模式"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[网络设置]${gl_bai}"
-        echo "5. 设置IPv4/IPv6优先级"
-        echo "6. IPv6管理（临时/永久禁用/取消）"
-        echo "7. 设置临时SOCKS5代理"
-        echo ""
-        echo -e "${gl_kjlan}[系统管理]${gl_bai}"
-        echo "8. 虚拟内存管理"
-        echo "9. 查看系统详细状态"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
-        echo "10. Realm转发连接分析"
-        echo "11. Realm强制使用IPv4 ⭐ 推荐"
-        echo "12. IPv4/IPv6连接检测"
-        echo ""
-        echo -e "${gl_kjlan}[Xray配置]${gl_bai}"
-        echo "13. 查看Xray配置"
-        echo "14. 设置Xray IPv6出站"
-        echo "15. 恢复Xray默认配置"
-        echo ""
-        echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-        echo "16. 星辰大海Xray一键双协议 ⭐ 推荐"
-        echo "17. 禁止端口通过中国大陆直连"
-        echo "18. 一键部署SOCKS5代理"
-        echo "19. Sub-Store多实例管理"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-        echo "20. IP质量检测（IPv4+IPv6）"
-        echo "21. IP质量检测（仅IPv4）⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-        echo "22. 服务器带宽测试"
-        echo "23. iperf3单线程测试"
-        echo "24. 国际互联速度测试 ⭐ 推荐"
-        echo "25. 网络延迟质量检测 ⭐ 推荐"
-        echo "26. 三网回程路由测试 ⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-        echo "27. IP媒体/AI解锁检测 ⭐ 推荐"
-        echo "28. NS一键检测脚本 ⭐ 推荐"
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-        echo "29. PF_realm转发脚本 ⭐ 推荐"
-        echo "30. F佬一键sing box脚本"
-        echo "31. 科技lion脚本"
-        echo "32. 酷雪云脚本"
-    fi
-    
     echo ""
     echo "0. 退出脚本"
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     read -e -p "请输入选择: " choice
-    
+
     case $choice in
         1)
             if [ $is_installed -eq 0 ]; then
-                # 更新内核
-                update_xanmod_kernel
-                if [ $? -eq 0 ]; then
-                    server_reboot
-                fi
+                update_xanmod_kernel && server_reboot
             else
-                install_xanmod_kernel
-                if [ $? -eq 0 ]; then
-                    server_reboot
-                fi
+                install_xanmod_kernel && server_reboot
             fi
             ;;
         2)
             if [ $is_installed -eq 0 ]; then
                 uninstall_xanmod
             else
-                bbr_configure_direct
+                echo -e "${gl_huang}当前未检测到 XanMod 内核，无需卸载${gl_bai}"
                 break_end
             fi
             ;;
         3)
-            if [ $is_installed -eq 0 ]; then
-                bbr_configure_direct
-                break_end
-            else
-                startbbrcake
-            fi
+            bbr_configure_direct
+            break_end
             ;;
         4)
-            if [ $is_installed -eq 0 ]; then
-                startbbrcake
-            else
-                Kernel_optimize
-            fi
+            startbbrcake
             ;;
         5)
-            if [ $is_installed -eq 0 ]; then
-                Kernel_optimize
-            else
-                manage_ip_priority
-            fi
+            Kernel_optimize
             ;;
         6)
-            if [ $is_installed -eq 0 ]; then
-                manage_ip_priority
-            else
-                manage_ipv6
-            fi
+            manage_ip_priority
             ;;
         7)
-            if [ $is_installed -eq 0 ]; then
-                manage_swap
-            else
-                set_temp_socks5_proxy
-            fi
+            manage_ipv6
             ;;
         8)
-            if [ $is_installed -eq 0 ]; then
-                manage_ipv6
-            else
-                manage_swap
-            fi
+            set_temp_socks5_proxy
             ;;
         9)
-            if [ $is_installed -eq 0 ]; then
-                manage_swap
-            else
-                show_detailed_status
-            fi
+            manage_swap
             ;;
         10)
-            if [ $is_installed -eq 0 ]; then
-                show_detailed_status
-            else
-                analyze_realm_connections
-            fi
+            show_detailed_status
             ;;
         11)
-            if [ $is_installed -eq 0 ]; then
-                analyze_realm_connections
-            else
-                realm_ipv4_management
-            fi
+            analyze_realm_connections
             ;;
         12)
-            if [ $is_installed -eq 0 ]; then
-                realm_ipv4_management
-            else
-                check_ipv4v6_connections
-            fi
+            realm_ipv4_management
             ;;
         13)
-            if [ $is_installed -eq 0 ]; then
-                check_ipv4v6_connections
-            else
-                show_xray_config
-            fi
+            check_ipv4v6_connections
             ;;
         14)
-            if [ $is_installed -eq 0 ]; then
-                show_xray_config
-            else
-                set_xray_ipv6_outbound
-            fi
+            show_xray_config
             ;;
         15)
-            if [ $is_installed -eq 0 ]; then
-                set_xray_ipv6_outbound
-            else
-                restore_xray_default
-            fi
+            set_xray_ipv6_outbound
             ;;
         16)
-            if [ $is_installed -eq 0 ]; then
-                restore_xray_default
-            else
-                run_xinchendahai_xray
-            fi
+            restore_xray_default
             ;;
         17)
-            if [ $is_installed -eq 0 ]; then
-                run_xinchendahai_xray
-            else
-                manage_cn_ip_block
-            fi
+            run_xinchendahai_xray
             ;;
         18)
-            if [ $is_installed -eq 0 ]; then
-                manage_cn_ip_block
-            else
-                deploy_socks5
-            fi
+            manage_cn_ip_block
             ;;
         19)
-            if [ $is_installed -eq 0 ]; then
-                deploy_socks5
-            else
-                manage_substore
-            fi
+            deploy_socks5
             ;;
         20)
-            if [ $is_installed -eq 0 ]; then
-                manage_substore
-            else
-                run_ip_quality_check
-            fi
+            manage_substore
             ;;
         21)
-            if [ $is_installed -eq 0 ]; then
-                run_ip_quality_check
-            else
-                run_ip_quality_check_ipv4
-            fi
+            run_ip_quality_check
             ;;
         22)
-            if [ $is_installed -eq 0 ]; then
-                run_ip_quality_check_ipv4
-            else
-                run_speedtest
-            fi
+            run_ip_quality_check_ipv4
             ;;
         23)
-            if [ $is_installed -eq 0 ]; then
-                run_speedtest
-            else
-                iperf3_single_thread_test
-            fi
+            run_speedtest
             ;;
         24)
-            if [ $is_installed -eq 0 ]; then
-                iperf3_single_thread_test
-            else
-                run_international_speed_test
-            fi
+            iperf3_single_thread_test
             ;;
         25)
-            if [ $is_installed -eq 0 ]; then
-                run_international_speed_test
-            else
-                run_network_latency_check
-            fi
+            run_international_speed_test
             ;;
         26)
-            if [ $is_installed -eq 0 ]; then
-                run_network_latency_check
-            else
-                run_backtrace
-            fi
+            run_network_latency_check
             ;;
         27)
-            if [ $is_installed -eq 0 ]; then
-                run_backtrace
-            else
-                run_unlock_check
-            fi
+            run_backtrace
             ;;
         28)
-            if [ $is_installed -eq 0 ]; then
-                run_unlock_check
-            else
-                run_ns_detect
-            fi
+            run_unlock_check
             ;;
         29)
-            if [ $is_installed -eq 0 ]; then
-                run_ns_detect
-            else
-                run_pf_realm
-            fi
+            run_ns_detect
             ;;
         30)
-            if [ $is_installed -eq 0 ]; then
-                run_pf_realm
-            else
-                run_fscarmen_singbox
-            fi
+            run_pf_realm
             ;;
         31)
-            if [ $is_installed -eq 0 ]; then
-                run_fscarmen_singbox
-            else
-                run_kejilion_script
-            fi
+            run_fscarmen_singbox
             ;;
         32)
-            if [ $is_installed -eq 0 ]; then
-                run_kejilion_script
-            else
-                run_kxy_script
-            fi
+            run_kejilion_script
             ;;
         33)
-            if [ $is_installed -eq 0 ]; then
-                run_kxy_script
-            else
-                echo "无效选择"
-                sleep 2
-            fi
+            run_kxy_script
             ;;
         0)
             echo "退出脚本"
