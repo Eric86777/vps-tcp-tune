@@ -3446,6 +3446,10 @@ check_bbr_status() {
                     echo -e "BBR 版本: ${gl_huang}v${bbr_version} (不是 v3)${gl_bai}"
                 fi
             fi
+            # 若已启用 BBR 且为 v3，则视为“已安装”状态（兼容非 XanMod 安装方式）
+            if [ "$congestion" = "bbr" ] && [ "$bbr_version" = "3" ]; then
+                return 0
+            fi
         fi
     fi
     
