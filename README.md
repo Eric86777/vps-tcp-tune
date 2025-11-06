@@ -31,6 +31,11 @@ bbr
 - ✅ 无需记忆复杂命令
 - ✅ 支持 bash 和 zsh
 
+**🗑️ 卸载别名**：
+```bash
+bash <(curl -fsSL "https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh?$(date +%s)") uninstall
+```
+
 <details>
 <summary>💡 其他安装方式（点击展开）</summary>
 

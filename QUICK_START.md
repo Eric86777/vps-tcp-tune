@@ -146,7 +146,14 @@ chmod +x bbr.sh
 **A**: 当然可以！别名只是快捷方式，不影响原始命令。
 
 ### Q5: 我想卸载别名怎么办？
-**A**: 编辑你的配置文件，删除相关行：
+**A**: 有两种方法：
+
+**方法1：一键卸载（推荐）**
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh) uninstall
+```
+
+**方法2：手动卸载**
 ```bash
 # 编辑配置文件
 vim ~/.zshrc    # 或 ~/.bashrc

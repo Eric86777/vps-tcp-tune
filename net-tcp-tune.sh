@@ -4926,7 +4926,10 @@ show_main_menu() {
     echo "31. F佬一键sing box脚本"
     echo "32. 科技lion脚本"
     echo "33. 酷雪云脚本"
-
+    echo ""
+    echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}[完全卸载]${gl_bai}"
+    echo -e "${gl_hong}99. 完全卸载脚本（卸载所有内容）${gl_bai}"
     echo ""
     echo "0. 退出脚本"
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -5041,6 +5044,9 @@ show_main_menu() {
             ;;
         33)
             run_kxy_script
+            ;;
+        99)
+            uninstall_all
             ;;
         0)
             echo "退出脚本"
@@ -5194,6 +5200,216 @@ uninstall_xanmod() {
             echo "已取消"
             ;;
     esac
+}
+
+# 完全卸载脚本所有内容
+uninstall_all() {
+    clear
+    echo -e "${gl_hong}╔════════════════════════════════════════════╗${gl_bai}"
+    echo -e "${gl_hong}║       完全卸载脚本 - 所有内容清理          ║${gl_bai}"
+    echo -e "${gl_hong}╚════════════════════════════════════════════╝${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}⚠️  警告：此操作将完全卸载脚本的所有内容，包括：${gl_bai}"
+    echo ""
+    echo "  • XanMod 内核（如果已安装）"
+    echo "  • bbr 快捷别名"
+    echo "  • 所有 BBR/网络优化配置"
+    echo "  • 所有 sysctl 配置文件"
+    echo "  • 其他相关配置文件和备份"
+    echo ""
+    echo -e "${gl_hong}此操作不可逆！${gl_bai}"
+    echo ""
+    
+    read -e -p "确定要完全卸载吗？(输入 YES 确认): " confirm
+    
+    if [ "$confirm" != "YES" ]; then
+        echo -e "${gl_huang}已取消卸载${gl_bai}"
+        break_end
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}开始完全卸载...${gl_bai}"
+    echo ""
+    
+    local uninstall_count=0
+    
+    # 1. 卸载 XanMod 内核
+    echo -e "${gl_huang}[1/6] 检查并卸载 XanMod 内核...${gl_bai}"
+    if dpkg -l | grep -q 'linux-.*xanmod'; then
+        echo "  正在卸载 XanMod 内核..."
+        apt purge -y 'linux-*xanmod1*' > /dev/null 2>&1
+        update-grub > /dev/null 2>&1
+        echo -e "  ${gl_lv}✅ XanMod 内核已卸载${gl_bai}"
+        uninstall_count=$((uninstall_count + 1))
+    else
+        echo -e "  ${gl_huang}未检测到 XanMod 内核，跳过${gl_bai}"
+    fi
+    echo ""
+    
+    # 2. 卸载 bbr 快捷别名
+    echo -e "${gl_huang}[2/6] 卸载 bbr 快捷别名...${gl_bai}"
+    local alias_script_path="/tmp/install-alias-uninstall.sh"
+    
+    # 下载卸载脚本
+    if curl -fsSL "https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh" > "$alias_script_path" 2>/dev/null; then
+        chmod +x "$alias_script_path"
+        # 静默执行卸载（不显示输出）
+        bash "$alias_script_path" uninstall > /dev/null 2>&1
+        rm -f "$alias_script_path"
+        
+        # 检查是否卸载成功
+        local current_shell=$(basename "$SHELL")
+        local rc_file=""
+        if [ "$current_shell" = "zsh" ]; then
+            rc_file="$HOME/.zshrc"
+        elif [ "$current_shell" = "bash" ]; then
+            rc_file="$HOME/.bashrc"
+            if [ ! -f "$rc_file" ]; then
+                rc_file="$HOME/.bash_profile"
+            fi
+        else
+            rc_file="$HOME/.bashrc"
+        fi
+        
+        if [ -f "$rc_file" ] && grep -q "net-tcp-tune 快捷别名" "$rc_file" 2>/dev/null; then
+            # 如果自动卸载失败，手动删除
+            sed -i '/net-tcp-tune 快捷别名/,/^alias bbr=/d' "$rc_file" 2>/dev/null
+            sed -i '/^# ================/,/^# ================/d' "$rc_file" 2>/dev/null
+        fi
+        
+        echo -e "  ${gl_lv}✅ bbr 快捷别名已卸载${gl_bai}"
+        uninstall_count=$((uninstall_count + 1))
+    else
+        echo -e "  ${gl_huang}无法下载卸载脚本，跳过别名卸载${gl_bai}"
+    fi
+    echo ""
+    
+    # 3. 清理 sysctl 配置文件
+    echo -e "${gl_huang}[3/6] 清理 sysctl 配置文件...${gl_bai}"
+    local sysctl_files=(
+        "$SYSCTL_CONF"
+        "/etc/sysctl.d/99-bbr-ultimate.conf"
+        "/etc/sysctl.d/99-sysctl.conf"
+        "/etc/sysctl.d/999-net-bbr-fq.conf"
+    )
+    
+    local sysctl_cleaned=0
+    for file in "${sysctl_files[@]}"; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+            sysctl_cleaned=$((sysctl_cleaned + 1))
+        fi
+    done
+    
+    # 清理 IPv6 管理相关配置
+    if [ -f "/etc/sysctl.d/99-disable-ipv6.conf" ]; then
+        rm -f "/etc/sysctl.d/99-disable-ipv6.conf"
+        sysctl_cleaned=$((sysctl_cleaned + 1))
+    fi
+    if [ -f "/etc/sysctl.d/.ipv6-state-backup.conf" ]; then
+        rm -f "/etc/sysctl.d/.ipv6-state-backup.conf"
+        sysctl_cleaned=$((sysctl_cleaned + 1))
+    fi
+    
+    # 恢复 sysctl.conf 原始配置（如果有备份）
+    if [ -f "/etc/sysctl.conf.bak.original" ]; then
+        cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d_%H%M%S) 2>/dev/null
+        cp /etc/sysctl.conf.bak.original /etc/sysctl.conf 2>/dev/null
+        rm -f /etc/sysctl.conf.bak.original
+        sysctl_cleaned=$((sysctl_cleaned + 1))
+    fi
+    
+    if [ $sysctl_cleaned -gt 0 ]; then
+        echo -e "  ${gl_lv}✅ 已清理 $sysctl_cleaned 个配置文件${gl_bai}"
+        uninstall_count=$((uninstall_count + 1))
+    else
+        echo -e "  ${gl_huang}未找到需要清理的配置文件${gl_bai}"
+    fi
+    echo ""
+    
+    # 4. 清理 XanMod 软件源
+    echo -e "${gl_huang}[4/6] 清理 XanMod 软件源...${gl_bai}"
+    local repo_files=(
+        "/etc/apt/sources.list.d/xanmod-release.list"
+        "/usr/share/keyrings/xanmod-archive-keyring.gpg"
+    )
+    
+    local repo_cleaned=0
+    for file in "${repo_files[@]}"; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+            repo_cleaned=$((repo_cleaned + 1))
+        fi
+    done
+    
+    if [ $repo_cleaned -gt 0 ]; then
+        echo -e "  ${gl_lv}✅ 已清理 XanMod 软件源${gl_bai}"
+        uninstall_count=$((uninstall_count + 1))
+    else
+        echo -e "  ${gl_huang}未找到 XanMod 软件源${gl_bai}"
+    fi
+    echo ""
+    
+    # 5. 清理其他临时文件和备份
+    echo -e "${gl_huang}[5/6] 清理临时文件和备份...${gl_bai}"
+    local temp_files=(
+        "/tmp/socks5_proxy_*.sh"
+        "/root/.realm_backup/"
+    )
+    
+    local temp_cleaned=0
+    for pattern in "${temp_files[@]}"; do
+        if ls $pattern > /dev/null 2>&1; then
+            rm -rf $pattern 2>/dev/null
+            temp_cleaned=$((temp_cleaned + 1))
+        fi
+    done
+    
+    if [ $temp_cleaned -gt 0 ]; then
+        echo -e "  ${gl_lv}✅ 已清理临时文件${gl_bai}"
+    else
+        echo -e "  ${gl_huang}未找到临时文件${gl_bai}"
+    fi
+    echo ""
+    
+    # 6. 应用 sysctl 更改
+    echo -e "${gl_huang}[6/6] 应用系统配置更改...${gl_bai}"
+    sysctl --system > /dev/null 2>&1
+    echo -e "  ${gl_lv}✅ 系统配置已重置${gl_bai}"
+    echo ""
+    
+    # 完成提示
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}✅ 完全卸载完成！${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}卸载统计：${gl_bai}"
+    echo "  • 已卸载 $uninstall_count 个主要组件"
+    echo ""
+    echo -e "${gl_huang}⚠️  重要提示：${gl_bai}"
+    echo "  1. 如果卸载了内核，请重启系统以生效"
+    echo "  2. 如果卸载了别名，请重新加载 Shell 配置："
+    echo -e "     ${gl_kjlan}source ~/.bashrc${gl_bai} 或 ${gl_kjlan}source ~/.zshrc${gl_bai}"
+    echo "  3. 如需重新安装，请重新运行脚本"
+    echo ""
+    
+    # 询问是否重启
+    if dpkg -l | grep -q 'linux-.*xanmod'; then
+        echo -e "${gl_huang}检测到已卸载内核，建议重启系统${gl_bai}"
+        read -e -p "是否立即重启？(Y/n): " reboot_confirm
+        case "${reboot_confirm:-Y}" in
+            [Yy])
+                server_reboot
+                ;;
+            *)
+                echo -e "${gl_huang}请稍后手动重启系统${gl_bai}"
+                break_end
+                ;;
+        esac
+    else
+        break_end
+    fi
 }
 
 run_unlock_check() {
