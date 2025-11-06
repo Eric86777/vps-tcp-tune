@@ -8037,7 +8037,7 @@ deploy_socks5() {
         
         if [ -z "$socks5_port" ]; then
             # 生成随机端口（10000-65535）
-            socks5_port=$((RANDOM % 55536 + 10000))
+            socks5_port=$(( ((RANDOM<<15) | RANDOM) % 55536 + 10000 ))
             echo -e "${gl_lv}✅ 已生成随机端口: ${socks5_port}${gl_bai}"
             break
         elif [[ "$socks5_port" =~ ^[0-9]+$ ]] && [ "$socks5_port" -ge 1024 ] && [ "$socks5_port" -le 65535 ]; then
@@ -8081,6 +8081,8 @@ deploy_socks5() {
             echo -e "${gl_hong}❌ 密码不能为空${gl_bai}"
         elif [ ${#socks5_pass} -lt 6 ]; then
             echo -e "${gl_hong}❌ 密码长度至少6位${gl_bai}"
+        elif [[ "$socks5_pass" == *\"* || "$socks5_pass" == *\\* ]]; then
+            echo -e "${gl_hong}❌ 密码不能包含 \" 或 \\ 字符${gl_bai}"
         else
             echo -e "${gl_lv}✅ 密码已设置${gl_bai}"
             break
@@ -8206,7 +8208,16 @@ SERVICEEOF
     
     systemctl daemon-reload
     systemctl enable sbox-socks5 >/dev/null 2>&1
-    systemctl start sbox-socks5
+    systemctl reset-failed sbox-socks5 >/dev/null 2>&1
+    
+    local systemctl_action="start"
+    if systemctl is-active --quiet sbox-socks5; then
+        systemctl_action="restart"
+    fi
+    
+    if ! systemctl "$systemctl_action" sbox-socks5 >/dev/null 2>&1; then
+        echo -e "${gl_hong}❌ 服务 ${systemctl_action} 命令执行失败，请查看日志${gl_bai}"
+    fi
     
     # 等待服务启动
     sleep 3
