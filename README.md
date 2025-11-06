@@ -4,7 +4,7 @@
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 32+ 实用工具，全面优化你的 VPS 服务器。
 
 > **版本**: 3.0.3 (iperf3 网络测试增强版)  
-> **快速上手**: [📖 快速使用指南](QUICK_START.md) | **视频教程**: [🎬 B站教程](https://www.bilibili.com/video/BV14K421x7BS)
+> **快速上手**: [📖 快速使用指南](QUICK_START.md)
 
 ---
 
