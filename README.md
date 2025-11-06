@@ -30,10 +30,6 @@ bbr
 - ✅ 只需输入 3 个字符即可启动
 - ✅ 无需记忆复杂命令
 - ✅ 支持 bash 和 zsh
-
-**🗑️ 卸载别名**：
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh?$(date +%s)") uninstall
 ```
 
 <details>
