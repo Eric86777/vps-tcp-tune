@@ -3428,17 +3428,23 @@ LIMITSEOF
 
 check_bbr_status() {
     echo -e "${gl_kjlan}=== 当前系统状态 ===${gl_bai}"
-    echo "内核版本: $(uname -r)"
+    local kernel_release
+    kernel_release=$(uname -r)
+    echo "内核版本: $kernel_release"
+    
+    local congestion="未知"
+    local qdisc="未知"
+    local bbr_version=""
+    local bbr_active=0
     
     if command -v sysctl &>/dev/null; then
-        local congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-        local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未知")
+        congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+        qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未知")
         echo "拥塞控制算法: $congestion"
         echo "队列调度算法: $qdisc"
         
-        # 检查 BBR 版本
         if command -v modinfo &>/dev/null; then
-            local bbr_version=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/ {print $2}')
+            bbr_version=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/ {print $2}')
             if [ -n "$bbr_version" ]; then
                 if [ "$bbr_version" = "3" ]; then
                     echo -e "BBR 版本: ${gl_lv}v${bbr_version} ✓${gl_bai}"
@@ -3446,20 +3452,49 @@ check_bbr_status() {
                     echo -e "BBR 版本: ${gl_huang}v${bbr_version} (不是 v3)${gl_bai}"
                 fi
             fi
-            # 若已启用 BBR 且为 v3，则视为“已安装”状态（兼容非 XanMod 安装方式）
-            if [ "$congestion" = "bbr" ] && [ "$bbr_version" = "3" ]; then
-                return 0
-            fi
         fi
     fi
     
-    if dpkg -l 2>/dev/null | grep -q 'linux-xanmod'; then
+    if [ "$congestion" = "bbr" ] && [ "$bbr_version" = "3" ]; then
+        bbr_active=1
+    fi
+    
+    local xanmod_pkg_installed=0
+    local dpkg_available=0
+    if command -v dpkg &>/dev/null; then
+        dpkg_available=1
+        if dpkg -l 2>/dev/null | grep -qE '^ii\s+linux-.*xanmod'; then
+            xanmod_pkg_installed=1
+        fi
+    fi
+    
+    local xanmod_running=0
+    if echo "$kernel_release" | grep -qi 'xanmod'; then
+        xanmod_running=1
+    fi
+    
+    local status=1
+    
+    if [ $xanmod_pkg_installed -eq 1 ]; then
         echo -e "XanMod 内核: ${gl_lv}已安装 ✓${gl_bai}"
-        return 0
+        status=0
+    elif [ $xanmod_running -eq 1 ]; then
+        echo -e "XanMod 内核: ${gl_huang}内核包已卸载，但当前运行版本仍为 ${kernel_release}，请重启系统使卸载完全生效${gl_bai}"
     else
         echo -e "XanMod 内核: ${gl_huang}未安装${gl_bai}"
-        return 1
     fi
+    
+    if [ $status -ne 0 ] && [ $bbr_active -eq 1 ]; then
+        echo -e "${gl_kjlan}提示: 当前仍在运行 BBR v3 模块，重启后将恢复系统默认配置${gl_bai}"
+    fi
+    
+    if [ $status -ne 0 ] && [ $dpkg_available -eq 0 ]; then
+        if [ $xanmod_running -eq 1 ] || [ $bbr_active -eq 1 ]; then
+            status=0
+        fi
+    fi
+    
+    return $status
 }
 
 #=============================================================================
@@ -5332,11 +5367,11 @@ uninstall_all() {
     fi
     
     if [ $alias_removed -eq 1 ]; then
-        # 立即取消当前会话中的别名
+        # 立即尝试取消当前会话中的别名（对子 shell 有效）
         unalias bbr 2>/dev/null || true
         
         echo -e "  ${gl_lv}✅ bbr 快捷别名已卸载${gl_bai}"
-        echo -e "  ${gl_huang}提示: 配置文件已清理，当前会话别名已取消${gl_bai}"
+        echo -e "  ${gl_huang}提示: 配置文件已清理。如当前终端仍可执行 bbr，请手动运行: ${gl_kjlan}unalias bbr${gl_huang}${gl_bai}"
         echo -e "  ${gl_huang}如需在新终端生效，请执行: ${gl_bai}source ~/.bashrc${gl_huang} 或 ${gl_bai}source ~/.zshrc${gl_bai}"
         uninstall_count=$((uninstall_count + 1))
     elif [ $alias_found -eq 1 ]; then
