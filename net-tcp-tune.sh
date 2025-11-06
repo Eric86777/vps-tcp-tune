@@ -5250,39 +5250,95 @@ uninstall_all() {
     
     # 2. 卸载 bbr 快捷别名
     echo -e "${gl_huang}[2/6] 卸载 bbr 快捷别名...${gl_bai}"
-    local alias_script_path="/tmp/install-alias-uninstall.sh"
     
-    # 下载卸载脚本
-    if curl -fsSL "https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh" > "$alias_script_path" 2>/dev/null; then
-        chmod +x "$alias_script_path"
-        # 静默执行卸载（不显示输出）
-        bash "$alias_script_path" uninstall > /dev/null 2>&1
-        rm -f "$alias_script_path"
+    # 检查所有可能的配置文件
+    local rc_files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile")
+    local alias_found=0
+    local alias_removed=0
+    
+    for rc_file in "${rc_files[@]}"; do
+        if [ ! -f "$rc_file" ]; then
+            continue
+        fi
         
-        # 检查是否卸载成功
-        local current_shell=$(basename "$SHELL")
-        local rc_file=""
-        if [ "$current_shell" = "zsh" ]; then
-            rc_file="$HOME/.zshrc"
-        elif [ "$current_shell" = "bash" ]; then
-            rc_file="$HOME/.bashrc"
-            if [ ! -f "$rc_file" ]; then
-                rc_file="$HOME/.bash_profile"
+        # 检查是否存在别名（多种匹配方式）
+        if grep -q "net-tcp-tune 快捷别名\|alias bbr=" "$rc_file" 2>/dev/null; then
+            alias_found=1
+            
+            # 创建临时文件
+            local temp_file=$(mktemp)
+            
+            # 方法1：删除包含 "net-tcp-tune 快捷别名" 的整个块
+            if grep -q "net-tcp-tune 快捷别名" "$rc_file" 2>/dev/null; then
+                # 删除从分隔线到别名结束的整个块
+                sed '/^# ================/,/^alias bbr=/d' "$rc_file" 2>/dev/null | \
+                sed '/net-tcp-tune 快捷别名/,/^alias bbr=/d' > "$temp_file" 2>/dev/null
+            else
+                # 直接复制文件
+                cp "$rc_file" "$temp_file"
             fi
-        else
-            rc_file="$HOME/.bashrc"
+            
+            # 方法2：删除所有包含 alias bbr 且指向脚本的行（多种匹配方式）
+            # 匹配各种可能的格式
+            sed -i '/alias bbr.*net-tcp-tune/d' "$temp_file" 2>/dev/null
+            sed -i '/alias bbr.*vps-tcp-tune/d' "$temp_file" 2>/dev/null
+            sed -i '/alias bbr.*Eric86777/d' "$temp_file" 2>/dev/null
+            sed -i '/alias bbr.*curl.*net-tcp-tune/d' "$temp_file" 2>/dev/null
+            sed -i '/alias bbr.*wget.*net-tcp-tune/d' "$temp_file" 2>/dev/null
+            sed -i '/alias bbr.*raw.githubusercontent.com.*vps-tcp-tune/d' "$temp_file" 2>/dev/null
+            
+            # 方法3：删除所有注释行（可能包含脚本相关信息）
+            sed -i '/#.*net-tcp-tune/d' "$temp_file" 2>/dev/null
+            sed -i '/#.*vps-tcp-tune/d' "$temp_file" 2>/dev/null
+            
+            # 检查是否有变更
+            if ! diff -q "$rc_file" "$temp_file" > /dev/null 2>&1; then
+                # 备份原文件
+                cp "$rc_file" "${rc_file}.bak.uninstall.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+                # 替换文件
+                mv "$temp_file" "$rc_file"
+                alias_removed=1
+                echo -e "  ${gl_lv}✅ 已从 $(basename $rc_file) 中删除别名${gl_bai}"
+            else
+                rm -f "$temp_file"
+            fi
         fi
-        
-        if [ -f "$rc_file" ] && grep -q "net-tcp-tune 快捷别名" "$rc_file" 2>/dev/null; then
-            # 如果自动卸载失败，手动删除
-            sed -i '/net-tcp-tune 快捷别名/,/^alias bbr=/d' "$rc_file" 2>/dev/null
-            sed -i '/^# ================/,/^# ================/d' "$rc_file" 2>/dev/null
-        fi
+    done
+    
+    # 如果没有找到别名，尝试直接删除 alias bbr 定义（更激进的清理）
+    if [ $alias_found -eq 0 ]; then
+        for rc_file in "${rc_files[@]}"; do
+            if [ ! -f "$rc_file" ]; then
+                continue
+            fi
+            
+            # 检查是否有任何 bbr 别名定义
+            if grep -q "^alias bbr=" "$rc_file" 2>/dev/null; then
+                # 删除所有 alias bbr 定义
+                sed -i '/^alias bbr=/d' "$rc_file" 2>/dev/null
+                alias_removed=1
+                echo -e "  ${gl_lv}✅ 已从 $(basename $rc_file) 中删除 bbr 别名${gl_bai}"
+            fi
+        done
+    fi
+    
+    if [ $alias_removed -eq 1 ]; then
+        # 立即取消当前会话中的别名
+        unalias bbr 2>/dev/null || true
         
         echo -e "  ${gl_lv}✅ bbr 快捷别名已卸载${gl_bai}"
+        echo -e "  ${gl_huang}提示: 配置文件已清理，当前会话别名已取消${gl_bai}"
+        echo -e "  ${gl_huang}如需在新终端生效，请执行: ${gl_bai}source ~/.bashrc${gl_huang} 或 ${gl_bai}source ~/.zshrc${gl_bai}"
         uninstall_count=$((uninstall_count + 1))
+    elif [ $alias_found -eq 1 ]; then
+        # 即使删除失败，也尝试取消当前会话的别名
+        unalias bbr 2>/dev/null || true
+        echo -e "  ${gl_huang}警告: 检测到别名但删除失败，请手动检查配置文件${gl_bai}"
+        echo -e "  ${gl_huang}已尝试取消当前会话的别名${gl_bai}"
     else
-        echo -e "  ${gl_huang}无法下载卸载脚本，跳过别名卸载${gl_bai}"
+        # 以防万一，取消当前会话的别名
+        unalias bbr 2>/dev/null || true
+        echo -e "  ${gl_huang}未检测到 bbr 别名，跳过${gl_bai}"
     fi
     echo ""
     
@@ -5400,15 +5456,24 @@ uninstall_all() {
         read -e -p "是否立即重启？(Y/n): " reboot_confirm
         case "${reboot_confirm:-Y}" in
             [Yy])
+                echo ""
+                echo -e "${gl_lv}✅ 完全卸载完成，正在重启系统...${gl_bai}"
+                sleep 2
                 server_reboot
                 ;;
             *)
+                echo ""
                 echo -e "${gl_huang}请稍后手动重启系统${gl_bai}"
-                break_end
+                echo -e "${gl_lv}✅ 完全卸载完成，脚本即将退出${gl_bai}"
+                sleep 2
+                exit 0
                 ;;
         esac
     else
-        break_end
+        echo ""
+        echo -e "${gl_lv}✅ 完全卸载完成，脚本即将退出${gl_bai}"
+        sleep 2
+        exit 0
     fi
 }
 
