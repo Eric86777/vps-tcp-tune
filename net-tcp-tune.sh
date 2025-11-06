@@ -5234,15 +5234,24 @@ uninstall_all() {
     echo ""
     
     local uninstall_count=0
+    local xanmod_removed=0
     
     # 1. 卸载 XanMod 内核
     echo -e "${gl_huang}[1/6] 检查并卸载 XanMod 内核...${gl_bai}"
-    if dpkg -l | grep -q 'linux-.*xanmod'; then
+    if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
         echo "  正在卸载 XanMod 内核..."
-        apt purge -y 'linux-*xanmod1*' > /dev/null 2>&1
-        update-grub > /dev/null 2>&1
-        echo -e "  ${gl_lv}✅ XanMod 内核已卸载${gl_bai}"
-        uninstall_count=$((uninstall_count + 1))
+        if apt purge -y 'linux-*xanmod1*' > /dev/null 2>&1; then
+            update-grub > /dev/null 2>&1
+        else
+            echo -e "  ${gl_hong}❌ XanMod 内核卸载命令执行失败，请手动检查${gl_bai}"
+        fi
+        if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
+            echo -e "  ${gl_hong}❌ 仍检测到 XanMod 内核，请手动检查${gl_bai}"
+        else
+            echo -e "  ${gl_lv}✅ XanMod 内核已卸载${gl_bai}"
+            uninstall_count=$((uninstall_count + 1))
+            xanmod_removed=1
+        fi
     else
         echo -e "  ${gl_huang}未检测到 XanMod 内核，跳过${gl_bai}"
     fi
@@ -5451,7 +5460,7 @@ uninstall_all() {
     echo ""
     
     # 询问是否重启
-    if dpkg -l | grep -q 'linux-.*xanmod'; then
+    if [ "$xanmod_removed" -eq 1 ]; then
         echo -e "${gl_huang}检测到已卸载内核，建议重启系统${gl_bai}"
         read -e -p "是否立即重启？(Y/n): " reboot_confirm
         case "${reboot_confirm:-Y}" in
@@ -5470,10 +5479,17 @@ uninstall_all() {
                 ;;
         esac
     else
-        echo ""
-        echo -e "${gl_lv}✅ 完全卸载完成，脚本即将退出${gl_bai}"
-        sleep 2
-        exit 0
+        if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
+            echo ""
+            echo -e "${gl_hong}❌ 检测到 XanMod 内核仍存在，请手动检查${gl_bai}"
+            sleep 2
+            exit 1
+        else
+            echo ""
+            echo -e "${gl_lv}✅ 完全卸载完成，脚本即将退出${gl_bai}"
+            sleep 2
+            exit 0
+        fi
     fi
 }
 
