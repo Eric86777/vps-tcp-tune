@@ -17,15 +17,16 @@
 # 
 # ⭐ 首选方案（推荐）：
 #    步骤1 → 执行菜单选项 1：BBR v3 内核安装
-#    步骤2 → 执行菜单选项 2：BBR 直连/落地优化（智能带宽检测）
+#    步骤2 → 执行菜单选项 3：BBR 直连/落地优化（智能带宽检测）
 #            选择子选项 1 进行自动检测
+#    步骤3 → 执行菜单选项 4：Realm转发首连超时修复（如使用 Realm 转发）
 # 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 
 # 🔧 次选方案（备用）：
 #    步骤1 → 执行菜单选项 1：BBR v3 内核安装
-#    步骤2 → 执行菜单选项 3：NS论坛CAKE调优
-#    步骤3 → 执行菜单选项 4：科技lion高性能模式内核参数优化
+#    步骤2 → 执行菜单选项 5：NS论坛CAKE调优
+#    步骤3 → 执行菜单选项 6：科技lion高性能模式内核参数优化
 #            选择第一个选项
 # 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4379,6 +4380,192 @@ optimize_xinchendahai_original() {
 }
 
 #=============================================================================
+# Realm 转发首连超时修复（专项优化）
+#=============================================================================
+
+realm_fix_timeout() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}   Realm 转发首连超时修复（针对跨境线路优化）${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}功能说明：${gl_bai}"
+    echo "  • 强制 IPv4（避免 IPv6 路由问题）"
+    echo "  • MSS 钳制（解决 MTU 黑洞）"
+    echo "  • 禁用 TCP Fast Open（提升兼容性）"
+    echo "  • 优化 Realm 配置（nodelay + reuse_port）"
+    echo "  • DNS IPv4 纠偏"
+    echo ""
+    echo -e "${gl_huang}⚠️  注意：本功能不会覆盖已有的 TCP 调优参数${gl_bai}"
+    echo ""
+    read -e -p "是否继续执行修复？(y/n): " confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${gl_huang}已取消操作${gl_bai}"
+        return
+    fi
+
+    # 检查 root 权限
+    if [[ ${EUID:-0} -ne 0 ]]; then
+        echo -e "${gl_hong}错误：请以 root 身份运行（sudo -i 或 sudo bash）${gl_bai}"
+        return 1
+    fi
+
+    # 备份目录
+    BACKUP_DIR="/root/.realm_fix_backup/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    echo -e "${gl_lv}[1/8] 创建备份目录：$BACKUP_DIR${gl_bai}"
+
+    # 加载并持久化 nf_conntrack
+    echo -e "${gl_lv}[2/8] 加载/持久化 nf_conntrack（连接跟踪）${gl_bai}"
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe nf_conntrack 2>/dev/null || true
+    fi
+    mkdir -p /etc/modules-load.d
+    if ! grep -q '^nf_conntrack$' /etc/modules-load.d/conntrack.conf 2>/dev/null; then
+        echo nf_conntrack >> /etc/modules-load.d/conntrack.conf
+    fi
+
+    # 写入 Realm 专属 sysctl 配置（不覆盖已有参数）
+    echo -e "${gl_lv}[3/8] 写入 Realm 专属 sysctl 配置（/etc/sysctl.d/60-realm-tune.conf）${gl_bai}"
+    cat >/etc/sysctl.d/60-realm-tune.conf <<'SYSC'
+# Realm 转发专属优化（不覆盖 net-tcp-tune.sh 的基础配置）
+
+# 连接跟踪容量（转发必需）
+net.netfilter.nf_conntrack_max = 262144
+
+# FIN/TIME_WAIT 收敛（加快连接回收）
+net.ipv4.tcp_fin_timeout = 30
+
+# 禁用 TFO（避免跨境防火墙拦截，解决首连超时）
+net.ipv4.tcp_fastopen = 0
+SYSC
+
+    echo -e "${gl_lv}[4/8] 应用 sysctl 配置${gl_bai}"
+    sysctl --system >/dev/null 2>&1
+
+    # 修改 Realm 配置
+    realm_cfg="/etc/realm/config.json"
+    if [[ -f "$realm_cfg" ]]; then
+        echo -e "${gl_lv}[5/8] 备份并优化 Realm 配置${gl_bai}"
+        cp -a "$realm_cfg" "$BACKUP_DIR/"
+
+        if command -v jq >/dev/null 2>&1; then
+            tmpfile=$(mktemp)
+            jq '.resolve = "ipv4" | .nodelay = true | .reuse_port = true' \
+                "$realm_cfg" >"$tmpfile" && mv "$tmpfile" "$realm_cfg"
+        else
+            echo -e "${gl_huang}  未安装 jq，使用文本方式修改（推荐安装 jq）${gl_bai}"
+            if ! grep -q '"resolve"' "$realm_cfg"; then
+                sed -i.bak '0,/{/s//{\n  "resolve": "ipv4",/' "$realm_cfg" || true
+            fi
+            if ! grep -q '"nodelay"' "$realm_cfg"; then
+                sed -i.bak '0,/{/s//{\n  "nodelay": true,/' "$realm_cfg" || true
+            fi
+            if ! grep -q '"reuse_port"' "$realm_cfg"; then
+                sed -i.bak '0,/{/s//{\n  "reuse_port": true,/' "$realm_cfg" || true
+            fi
+        fi
+        
+        # 统一用文本替换确保 IPv6 监听改为 IPv4
+        sed -i.bak -E 's/"listen"\s*:\s*":::([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
+        sed -i.bak -E 's/"listen"\s*:\s*"\[::\]:([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
+        sed -i.bak 's/:::/0.0.0.0:/g' "$realm_cfg" 2>/dev/null || true
+    else
+        echo -e "${gl_huang}[5/8] 未找到 $realm_cfg，跳过 Realm 配置修改${gl_bai}"
+    fi
+
+    # DNS 纠偏（仅保留 IPv4 DNS）
+    echo -e "${gl_lv}[6/8] 备份并纠偏 DNS 配置${gl_bai}"
+    if [[ -e /etc/resolv.conf ]]; then
+        cp -a /etc/resolv.conf "$BACKUP_DIR/resolv.conf" 2>/dev/null || true
+        ipv4_dns=$(grep -E "^nameserver\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" /etc/resolv.conf 2>/dev/null || true)
+        if [[ -z "$ipv4_dns" ]]; then
+            cat >/etc/resolv.conf <<'DNS'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+DNS
+        else
+            printf "%s\n" "$ipv4_dns" > /etc/resolv.conf
+        fi
+    fi
+
+    # 配置 MSS 钳制（优先 iptables）
+    echo -e "${gl_lv}[7/8] 配置 MSS 钳制规则（OUTPUT 链）${gl_bai}"
+    added_mss_rule=false
+
+    if command -v iptables >/dev/null 2>&1; then
+        if ! iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
+            iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null && added_mss_rule=true
+        else
+            added_mss_rule=true
+        fi
+
+        # 可选：FORWARD 链（路由转发场景）
+        if ! iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
+            iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+        fi
+    fi
+
+    # 备用：nftables
+    if [ "$added_mss_rule" != true ] && command -v nft >/dev/null 2>&1; then
+        nft add table inet mangle 2>/dev/null || true
+        nft add chain inet mangle output '{ type route hook output priority mangle; }' 2>/dev/null || true
+        if ! nft list chain inet mangle output 2>/dev/null | grep -q 'maxseg.*clamp'; then
+            if nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to pmtu 2>/dev/null; then
+                added_mss_rule=true
+            elif nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to mtu 2>/dev/null; then
+                added_mss_rule=true
+            fi
+        else
+            added_mss_rule=true
+        fi
+    fi
+
+    if [[ "$added_mss_rule" == true ]]; then
+        echo -e "${gl_lv}  ✓ MSS 钳制规则已确保存在${gl_bai}"
+    else
+        echo -e "${gl_huang}  ⚠ 未能添加 MSS 钳制规则，请手动检查${gl_bai}"
+    fi
+
+    # realm.service 文件句柄限制
+    echo -e "${gl_lv}[8/8] 提升 realm.service 文件句柄限制${gl_bai}"
+    if systemctl list-unit-files 2>/dev/null | grep -q '^realm\.service'; then
+        mkdir -p /etc/systemd/system/realm.service.d
+        cat >/etc/systemd/system/realm.service.d/override.conf <<'OVR'
+[Service]
+LimitNOFILE=1048576
+OVR
+        systemctl daemon-reload
+        systemctl restart realm 2>/dev/null || echo -e "${gl_huang}  ⚠ realm 重启失败，请手动检查${gl_bai}"
+    else
+        echo -e "${gl_huang}  未发现 realm.service，跳过${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}✅ Realm 首连超时修复完成！${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}📋 备份位置：${gl_bai}$BACKUP_DIR"
+    echo ""
+    echo -e "${gl_huang}🔍 快速验证：${gl_bai}"
+    echo "  • Realm 监听：  ss -tlnp | grep realm"
+    echo "  • DNS 配置：    grep nameserver /etc/resolv.conf"
+    echo "  • MSS 规则：    iptables -t mangle -S OUTPUT | grep TCPMSS"
+    echo "  • Realm 配置：  cat /etc/realm/config.json | grep -E 'resolve|nodelay|reuse_port'"
+    echo ""
+    
+    # 可选：持久化 iptables
+    if command -v iptables >/dev/null 2>&1 && [ "$added_mss_rule" = true ]; then
+        echo -e "${gl_huang}💡 建议持久化 iptables 规则（可选）：${gl_bai}"
+        echo "    apt-get update && apt-get install -y iptables-persistent"
+        echo "    netfilter-persistent save && systemctl enable netfilter-persistent"
+        echo ""
+    fi
+}
+
+#=============================================================================
 # 内核参数优化 - 主菜单
 #=============================================================================
 
@@ -4909,58 +5096,59 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
     echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-    echo "4. NS论坛CAKE调优"
-    echo "5. 科技lion高性能模式"
+    echo "4. Realm转发首连超时修复 ⭐ 推荐"
+    echo "5. NS论坛CAKE调优"
+    echo "6. 科技lion高性能模式"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[网络设置]${gl_bai}"
-    echo "6. 设置IPv4/IPv6优先级"
-    echo "7. IPv6管理（临时/永久禁用/取消）"
-    echo "8. 设置临时SOCKS5代理"
+    echo "7. 设置IPv4/IPv6优先级"
+    echo "8. IPv6管理（临时/永久禁用/取消）"
+    echo "9. 设置临时SOCKS5代理"
     echo ""
     echo -e "${gl_kjlan}[系统管理]${gl_bai}"
-    echo "9. 虚拟内存管理"
-    echo "10. 查看系统详细状态"
+    echo "10. 虚拟内存管理"
+    echo "11. 查看系统详细状态"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
-    echo "11. Realm转发连接分析"
-    echo "12. Realm强制使用IPv4 ⭐ 推荐"
-    echo "13. IPv4/IPv6连接检测"
+    echo "12. Realm转发连接分析"
+    echo "13. Realm强制使用IPv4 ⭐ 推荐"
+    echo "14. IPv4/IPv6连接检测"
     echo ""
     echo -e "${gl_kjlan}[Xray配置]${gl_bai}"
-    echo "14. 查看Xray配置"
-    echo "15. 设置Xray IPv6出站"
-    echo "16. 恢复Xray默认配置"
+    echo "15. 查看Xray配置"
+    echo "16. 设置Xray IPv6出站"
+    echo "17. 恢复Xray默认配置"
     echo ""
     echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-    echo "17. 星辰大海Xray一键双协议 ⭐ 推荐"
-    echo "18. 禁止端口通过中国大陆直连"
-    echo "19. 一键部署SOCKS5代理"
-    echo "20. Sub-Store多实例管理"
+    echo "18. 星辰大海Xray一键双协议 ⭐ 推荐"
+    echo "19. 禁止端口通过中国大陆直连"
+    echo "20. 一键部署SOCKS5代理"
+    echo "21. Sub-Store多实例管理"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-    echo "21. IP质量检测（IPv4+IPv6）"
-    echo "22. IP质量检测（仅IPv4）⭐ 推荐"
+    echo "22. IP质量检测（IPv4+IPv6）"
+    echo "23. IP质量检测（仅IPv4）⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-    echo "23. 服务器带宽测试"
-    echo "24. iperf3单线程测试"
-    echo "25. 国际互联速度测试 ⭐ 推荐"
-    echo "26. 网络延迟质量检测 ⭐ 推荐"
-    echo "27. 三网回程路由测试 ⭐ 推荐"
+    echo "24. 服务器带宽测试"
+    echo "25. iperf3单线程测试"
+    echo "26. 国际互联速度测试 ⭐ 推荐"
+    echo "27. 网络延迟质量检测 ⭐ 推荐"
+    echo "28. 三网回程路由测试 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-    echo "28. IP媒体/AI解锁检测 ⭐ 推荐"
-    echo "29. NS一键检测脚本 ⭐ 推荐"
+    echo "29. IP媒体/AI解锁检测 ⭐ 推荐"
+    echo "30. NS一键检测脚本 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "30. PF_realm转发脚本 ⭐ 推荐"
-    echo "31. F佬一键sing box脚本"
-    echo "32. 科技lion脚本"
-    echo "33. 酷雪云脚本"
+    echo "31. PF_realm转发脚本 ⭐ 推荐"
+    echo "32. F佬一键sing box脚本"
+    echo "33. 科技lion脚本"
+    echo "34. 酷雪云脚本"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -4991,93 +5179,97 @@ show_main_menu() {
             break_end
             ;;
         4)
-            startbbrcake
+            realm_fix_timeout
+            break_end
             ;;
         5)
-            Kernel_optimize
+            startbbrcake
             ;;
         6)
-            manage_ip_priority
+            Kernel_optimize
             ;;
         7)
-            manage_ipv6
+            manage_ip_priority
             ;;
         8)
-            set_temp_socks5_proxy
+            manage_ipv6
             ;;
         9)
-            manage_swap
+            set_temp_socks5_proxy
             ;;
         10)
-            show_detailed_status
+            manage_swap
             ;;
         11)
-            analyze_realm_connections
+            show_detailed_status
             ;;
         12)
-            realm_ipv4_management
+            analyze_realm_connections
             ;;
         13)
-            check_ipv4v6_connections
+            realm_ipv4_management
             ;;
         14)
-            show_xray_config
+            check_ipv4v6_connections
             ;;
         15)
-            set_xray_ipv6_outbound
+            show_xray_config
             ;;
         16)
-            restore_xray_default
+            set_xray_ipv6_outbound
             ;;
         17)
-            run_xinchendahai_xray
+            restore_xray_default
             ;;
         18)
-            manage_cn_ip_block
+            run_xinchendahai_xray
             ;;
         19)
-            deploy_socks5
+            manage_cn_ip_block
             ;;
         20)
-            manage_substore
+            deploy_socks5
             ;;
         21)
-            run_ip_quality_check
+            manage_substore
             ;;
         22)
-            run_ip_quality_check_ipv4
+            run_ip_quality_check
             ;;
         23)
-            run_speedtest
+            run_ip_quality_check_ipv4
             ;;
         24)
-            iperf3_single_thread_test
+            run_speedtest
             ;;
         25)
-            run_international_speed_test
+            iperf3_single_thread_test
             ;;
         26)
-            run_network_latency_check
+            run_international_speed_test
             ;;
         27)
-            run_backtrace
+            run_network_latency_check
             ;;
         28)
-            run_unlock_check
+            run_backtrace
             ;;
         29)
-            run_ns_detect
+            run_unlock_check
             ;;
         30)
-            run_pf_realm
+            run_ns_detect
             ;;
         31)
-            run_fscarmen_singbox
+            run_pf_realm
             ;;
         32)
-            run_kejilion_script
+            run_fscarmen_singbox
             ;;
         33)
+            run_kejilion_script
+            ;;
+        34)
             run_kxy_script
             ;;
         99)
