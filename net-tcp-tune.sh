@@ -4490,11 +4490,13 @@ DNS
         fi
     fi
 
-    # 配置 MSS 钳制（优先 iptables）
+    # 配置 MSS 钳制（自动兼容 iptables/nftables）
     echo -e "${gl_lv}[7/8] 配置 MSS 钳制规则（OUTPUT 链）${gl_bai}"
     added_mss_rule=false
 
+    # 策略1: 优先使用 iptables（兼容性最好）
     if command -v iptables >/dev/null 2>&1; then
+        echo -e "${gl_huang}  检测到 iptables，使用 iptables 添加规则...${gl_bai}"
         if ! iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
             iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null && added_mss_rule=true
         else
@@ -4507,25 +4509,69 @@ DNS
         fi
     fi
 
-    # 备用：nftables
+    # 策略2: 如果没有 iptables，自动安装
+    if [ "$added_mss_rule" != true ] && ! command -v iptables >/dev/null 2>&1; then
+        echo -e "${gl_huang}  未检测到 iptables，正在自动安装...${gl_bai}"
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y iptables >/dev/null 2>&1
+            
+            if command -v iptables >/dev/null 2>&1; then
+                echo -e "${gl_lv}  ✓ iptables 安装成功${gl_bai}"
+                if iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
+                    added_mss_rule=true
+                fi
+                iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+            else
+                echo -e "${gl_huang}  ⚠ iptables 安装失败，尝试使用 nftables...${gl_bai}"
+            fi
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y iptables >/dev/null 2>&1
+            if command -v iptables >/dev/null 2>&1; then
+                echo -e "${gl_lv}  ✓ iptables 安装成功${gl_bai}"
+                if iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
+                    added_mss_rule=true
+                fi
+                iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # 策略3: 备用方案 - 使用 nftables（自动适配语法）
     if [ "$added_mss_rule" != true ] && command -v nft >/dev/null 2>&1; then
+        echo -e "${gl_huang}  使用 nftables 添加规则...${gl_bai}"
         nft add table inet mangle 2>/dev/null || true
         nft add chain inet mangle output '{ type route hook output priority mangle; }' 2>/dev/null || true
-        if ! nft list chain inet mangle output 2>/dev/null | grep -q 'maxseg.*clamp'; then
-            if nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to pmtu 2>/dev/null; then
+        
+        # 检查是否已有 MSS 规则（兼容多种语法）
+        if ! nft list chain inet mangle output 2>/dev/null | grep -qE 'maxseg.*(clamp|rt mtu)'; then
+            # 优先尝试 rt mtu（nftables 1.0+ 推荐语法）
+            if nft add rule inet mangle output tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null; then
                 added_mss_rule=true
+            # 备选：clamp to pmtu（旧语法）
+            elif nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to pmtu 2>/dev/null; then
+                added_mss_rule=true
+            # 最后尝试：clamp to mtu
             elif nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to mtu 2>/dev/null; then
                 added_mss_rule=true
             fi
         else
             added_mss_rule=true
         fi
+
+        # 可选：FORWARD 链（路由转发场景）
+        nft add chain inet mangle forward '{ type filter hook forward priority mangle; }' 2>/dev/null || true
+        if ! nft list chain inet mangle forward 2>/dev/null | grep -qE 'maxseg.*(clamp|rt mtu)'; then
+            nft add rule inet mangle forward tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null || \
+                nft add rule inet mangle forward tcp flags syn tcp option maxseg size set clamp to pmtu 2>/dev/null || \
+                nft add rule inet mangle forward tcp flags syn tcp option maxseg size set clamp to mtu 2>/dev/null
+        fi
     fi
 
     if [[ "$added_mss_rule" == true ]]; then
         echo -e "${gl_lv}  ✓ MSS 钳制规则已确保存在${gl_bai}"
     else
-        echo -e "${gl_huang}  ⚠ 未能添加 MSS 钳制规则，请手动检查${gl_bai}"
+        echo -e "${gl_hong}  ✗ 未能添加 MSS 钳制规则，请手动排查${gl_bai}"
     fi
 
     # realm.service 文件句柄限制
@@ -4542,34 +4588,56 @@ OVR
         echo -e "${gl_huang}  未发现 realm.service，跳过${gl_bai}"
     fi
 
-    # 持久化 iptables 规则（自动执行）
-    if command -v iptables >/dev/null 2>&1 && [ "$added_mss_rule" = true ]; then
-        echo -e "${gl_lv}[9/9] 持久化 iptables 规则（确保重启后生效）${gl_bai}"
+    # 持久化防火墙规则（自动执行，兼容 iptables/nftables）
+    if [ "$added_mss_rule" = true ]; then
+        echo -e "${gl_lv}[9/9] 持久化防火墙规则（确保重启后生效）${gl_bai}"
         
-        # 检查是否已安装 iptables-persistent
-        if ! dpkg -l | grep -q iptables-persistent 2>/dev/null; then
-            echo -e "${gl_huang}  正在安装 iptables-persistent...${gl_bai}"
-            DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
-            DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1
-            if [ $? -eq 0 ]; then
-                echo -e "${gl_lv}  ✓ iptables-persistent 安装成功${gl_bai}"
+        # 判断使用的是哪种防火墙
+        if command -v iptables >/dev/null 2>&1; then
+            # 持久化 iptables
+            echo -e "${gl_huang}  持久化 iptables 规则...${gl_bai}"
+            
+            # 检查是否已安装 iptables-persistent
+            if ! dpkg -l | grep -q iptables-persistent 2>/dev/null; then
+                echo -e "${gl_huang}  正在安装 iptables-persistent...${gl_bai}"
+                DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+                DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1
+                if [ $? -eq 0 ]; then
+                    echo -e "${gl_lv}  ✓ iptables-persistent 安装成功${gl_bai}"
+                else
+                    echo -e "${gl_huang}  ⚠ iptables-persistent 安装失败${gl_bai}"
+                fi
             else
-                echo -e "${gl_huang}  ⚠ iptables-persistent 安装失败，规则重启后会丢失${gl_bai}"
+                echo -e "${gl_lv}  ✓ iptables-persistent 已安装${gl_bai}"
             fi
-        else
-            echo -e "${gl_lv}  ✓ iptables-persistent 已安装${gl_bai}"
-        fi
-        
-        # 保存当前规则
-        if command -v netfilter-persistent >/dev/null 2>&1; then
-            netfilter-persistent save >/dev/null 2>&1
-            systemctl enable netfilter-persistent >/dev/null 2>&1
-            echo -e "${gl_lv}  ✓ iptables 规则已保存，重启后自动恢复${gl_bai}"
-        elif command -v iptables-save >/dev/null 2>&1; then
-            # 备用方案：直接用 iptables-save
-            mkdir -p /etc/iptables
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null
-            echo -e "${gl_lv}  ✓ iptables 规则已保存到 /etc/iptables/rules.v4${gl_bai}"
+            
+            # 保存当前规则
+            if command -v netfilter-persistent >/dev/null 2>&1; then
+                netfilter-persistent save >/dev/null 2>&1
+                systemctl enable netfilter-persistent >/dev/null 2>&1
+                echo -e "${gl_lv}  ✓ iptables 规则已保存，重启后自动恢复${gl_bai}"
+            elif command -v iptables-save >/dev/null 2>&1; then
+                mkdir -p /etc/iptables
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null
+                echo -e "${gl_lv}  ✓ iptables 规则已保存到 /etc/iptables/rules.v4${gl_bai}"
+            fi
+            
+        elif command -v nft >/dev/null 2>&1; then
+            # 持久化 nftables
+            echo -e "${gl_huang}  持久化 nftables 规则...${gl_bai}"
+            
+            # Debian/Ubuntu: nftables 规则自动持久化到 /etc/nftables.conf
+            if [ -f /etc/nftables.conf ]; then
+                nft list ruleset > /etc/nftables.conf 2>/dev/null
+                systemctl enable nftables >/dev/null 2>&1
+                echo -e "${gl_lv}  ✓ nftables 规则已保存到 /etc/nftables.conf${gl_bai}"
+            else
+                # 创建配置文件
+                mkdir -p /etc
+                nft list ruleset > /etc/nftables.conf 2>/dev/null
+                systemctl enable nftables >/dev/null 2>&1
+                echo -e "${gl_lv}  ✓ nftables 规则已创建并保存${gl_bai}"
+            fi
         fi
     fi
 
