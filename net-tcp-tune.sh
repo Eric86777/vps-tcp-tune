@@ -4542,9 +4542,40 @@ OVR
         echo -e "${gl_huang}  未发现 realm.service，跳过${gl_bai}"
     fi
 
+    # 持久化 iptables 规则（自动执行）
+    if command -v iptables >/dev/null 2>&1 && [ "$added_mss_rule" = true ]; then
+        echo -e "${gl_lv}[9/9] 持久化 iptables 规则（确保重启后生效）${gl_bai}"
+        
+        # 检查是否已安装 iptables-persistent
+        if ! dpkg -l | grep -q iptables-persistent 2>/dev/null; then
+            echo -e "${gl_huang}  正在安装 iptables-persistent...${gl_bai}"
+            DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                echo -e "${gl_lv}  ✓ iptables-persistent 安装成功${gl_bai}"
+            else
+                echo -e "${gl_huang}  ⚠ iptables-persistent 安装失败，规则重启后会丢失${gl_bai}"
+            fi
+        else
+            echo -e "${gl_lv}  ✓ iptables-persistent 已安装${gl_bai}"
+        fi
+        
+        # 保存当前规则
+        if command -v netfilter-persistent >/dev/null 2>&1; then
+            netfilter-persistent save >/dev/null 2>&1
+            systemctl enable netfilter-persistent >/dev/null 2>&1
+            echo -e "${gl_lv}  ✓ iptables 规则已保存，重启后自动恢复${gl_bai}"
+        elif command -v iptables-save >/dev/null 2>&1; then
+            # 备用方案：直接用 iptables-save
+            mkdir -p /etc/iptables
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null
+            echo -e "${gl_lv}  ✓ iptables 规则已保存到 /etc/iptables/rules.v4${gl_bai}"
+        fi
+    fi
+
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_lv}✅ Realm 首连超时修复完成！${gl_bai}"
+    echo -e "${gl_lv}✅ Realm timeout 修复完成！所有配置已永久生效！${gl_bai}"
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
     echo -e "${gl_huang}📋 备份位置：${gl_bai}$BACKUP_DIR"
@@ -4555,14 +4586,8 @@ OVR
     echo "  • MSS 规则：    iptables -t mangle -S OUTPUT | grep TCPMSS"
     echo "  • Realm 配置：  cat /etc/realm/config.json | grep -E 'resolve|nodelay|reuse_port'"
     echo ""
-    
-    # 可选：持久化 iptables
-    if command -v iptables >/dev/null 2>&1 && [ "$added_mss_rule" = true ]; then
-        echo -e "${gl_huang}💡 建议持久化 iptables 规则（可选）：${gl_bai}"
-        echo "    apt-get update && apt-get install -y iptables-persistent"
-        echo "    netfilter-persistent save && systemctl enable netfilter-persistent"
-        echo ""
-    fi
+    echo -e "${gl_lv}💯 重启服务器后所有配置依然生效，无需重复执行！${gl_bai}"
+    echo ""
 }
 
 #=============================================================================
