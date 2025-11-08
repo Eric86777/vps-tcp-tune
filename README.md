@@ -221,6 +221,50 @@ bbr
 7. **🔌 第三方工具** - PF_realm + 御坂美琴 + sing-box + 科技lion + NS论坛 + 酷雪云
 8. **🚀 代理部署** - 一键部署 SOCKS5 代理（基于 Sing-box） + **Sub-Store 多实例管理（NEW）**
 9. **📋 系统信息** - CPU/内存/网络流量/地理位置统计
+---
+
+## 📋 功能菜单
+
+## 🛠️ Realm 一键首连修复（NEW）
+
+适用场景：仅使用本机 Realm 转发，Loon/Shadowrocket 等客户端首次连接 timeout、后续长时间超时。
+
+作用摘要：
+- 强制 Realm 解析与监听为 IPv4（保留备份）
+- 修正 `/etc/resolv.conf` 仅保留 IPv4 DNS
+- 为 SYN 包添加 MSS 钳制（OUTPUT 链，避免 PMTU 黑洞）
+- 安全 TCP/sysctl 调优（端口范围、队列、BBR、TFO 关闭等）
+- 提升 realm.service 文件句柄并自动重启
+
+使用方法（任选一种）：
+
+- 在线一键运行（推荐）
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/realm-oneclick-fix.sh -o realm-oneclick-fix.sh
+  chmod +x realm-oneclick-fix.sh
+  sudo ./realm-oneclick-fix.sh
+  ```
+
+- 已下载本地运行
+  ```bash
+  chmod +x ./realm-oneclick-fix.sh
+  sudo ./realm-oneclick-fix.sh
+  ```
+
+运行后可用以下命令验证：
+
+```bash
+# 监听应为 0.0.0.0:PORT（IPv4）
+ss -tlnp | grep realm
+
+# DNS 仅为 IPv4
+grep nameserver /etc/resolv.conf
+
+# MSS 钳制规则（优先 iptables）
+iptables -t mangle -S OUTPUT || nft list chain inet mangle output | sed -n '1,50p'
+```
+
+备份位置：`/root/.realm_oneclick_backup/<时间戳>/`
 
 ---
 
