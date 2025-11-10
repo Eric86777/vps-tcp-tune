@@ -312,7 +312,7 @@ systemctl status systemd-resolved
 - 仅支持使用 systemd-resolved 的系统（Debian 10+, Ubuntu 18.04+）
 - 云平台元数据服务（169.254.169.254）不受影响
 
-**贡献者**：NSdesk (原始) + AI优化
+**贡献者**：NSdesk
 **更多信息**：https://www.nodeseek.com/space/23129/
 
 ---

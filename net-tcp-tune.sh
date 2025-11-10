@@ -4504,8 +4504,13 @@ DNSOverTLS=yes
     # 安装 systemd-resolved（如果需要）
     if ! command -v resolvectl &> /dev/null; then
         echo "正在安装 systemd-resolved..."
-        apt-get update -y > /dev/null
-        apt-get install -y systemd-resolved > /dev/null
+        echo "  → 更新软件包列表..."
+        apt-get update -y 2>&1 | grep -E "^(Hit|Get|Fetched|Reading)" || true
+        echo "  → 安装 systemd-resolved 软件包..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y systemd-resolved 2>&1 | grep -E "^(Selecting|Unpacking|Setting up|Processing)" || echo "    安装中，请稍候..."
+        echo -e "${gl_lv}✅ systemd-resolved 安装完成${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ systemd-resolved 已安装${gl_bai}"
     fi
 
     # 处理 Debian 11 的 resolvconf 冲突
@@ -4544,7 +4549,7 @@ DNSOverTLS=yes
     echo "===================================================="
     echo ""
     echo -e "${gl_lv}DNS净化脚本执行完成${gl_bai}"
-    echo "贡献者：NSdesk (原始) + AI优化"
+    echo "贡献者：NSdesk"
     echo "更多信息：https://www.nodeseek.com/space/23129/"
     echo "===================================================="
     echo ""
