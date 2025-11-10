@@ -4380,6 +4380,179 @@ optimize_xinchendahai_original() {
 }
 
 #=============================================================================
+# DNS净化与安全加固功能（NS论坛）
+#=============================================================================
+
+# DNS净化 - 智能检测并修复 systemd-resolved
+dns_purify_fix_systemd_resolved() {
+    echo -e "${gl_kjlan}正在检测 systemd-resolved 服务状态...${gl_bai}"
+
+    # 检查服务是否被 masked
+    if systemctl is-enabled systemd-resolved &>/dev/null; then
+        echo -e "${gl_lv}✅ systemd-resolved 服务状态正常${gl_bai}"
+        return 0
+    fi
+
+    # 检查是否被 masked
+    if systemctl status systemd-resolved 2>&1 | grep -q "masked"; then
+        echo -e "${gl_huang}检测到 systemd-resolved 被屏蔽 (masked)，正在修复...${gl_bai}"
+
+        # 解除屏蔽
+        if systemctl unmask systemd-resolved 2>/dev/null; then
+            echo -e "${gl_lv}✅ 已成功解除 systemd-resolved 的屏蔽状态${gl_bai}"
+        else
+            echo -e "${gl_hong}解除屏蔽失败，尝试手动修复...${gl_bai}"
+            # 手动删除屏蔽链接
+            rm -f /etc/systemd/system/systemd-resolved.service 2>/dev/null || true
+            systemctl daemon-reload
+            echo -e "${gl_lv}✅ 已手动移除屏蔽链接${gl_bai}"
+        fi
+
+        # 启用服务
+        if systemctl enable systemd-resolved 2>/dev/null; then
+            echo -e "${gl_lv}✅ 已启用 systemd-resolved 服务${gl_bai}"
+        else
+            echo -e "${gl_hong}启用服务失败${gl_bai}"
+            return 1
+        fi
+
+        # 启动服务
+        if systemctl start systemd-resolved 2>/dev/null; then
+            echo -e "${gl_lv}✅ 已启动 systemd-resolved 服务${gl_bai}"
+        else
+            echo -e "${gl_hong}启动服务失败${gl_bai}"
+            return 1
+        fi
+
+        # 等待服务完全启动
+        sleep 2
+
+        # 验证服务状态
+        if systemctl is-active --quiet systemd-resolved; then
+            echo -e "${gl_lv}✅ systemd-resolved 服务运行正常${gl_bai}"
+            return 0
+        else
+            echo -e "${gl_hong}服务启动后状态异常${gl_bai}"
+            systemctl status systemd-resolved --no-pager || true
+            return 1
+        fi
+    else
+        echo -e "${gl_huang}systemd-resolved 未启用，正在启用...${gl_bai}"
+        systemctl enable systemd-resolved 2>/dev/null || true
+        systemctl start systemd-resolved 2>/dev/null || true
+        return 0
+    fi
+}
+
+# DNS净化 - 主执行函数
+dns_purify_and_harden() {
+    clear
+    echo -e "${gl_kjlan}╔════════════════════════════════════════════════════════════╗${gl_bai}"
+    echo -e "${gl_kjlan}║       DNS净化与安全加固脚本 - 智能修复版                    ║${gl_bai}"
+    echo -e "${gl_kjlan}╚════════════════════════════════════════════════════════════╝${gl_bai}"
+    echo ""
+
+    # 目标DNS配置
+    local TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
+    local SECURE_RESOLVED_CONFIG="[Resolve]
+DNS=${TARGET_DNS}
+LLMNR=no
+MulticastDNS=no
+DNSSEC=allow-downgrade
+DNSOverTLS=yes
+"
+
+    echo "--- 开始执行DNS净化与安全加固流程 ---"
+    echo ""
+
+    local debian_version
+    debian_version=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+
+    echo -e "${gl_kjlan}阶段一：正在清除所有潜在的DNS冲突源...${gl_bai}"
+
+    # 处理 dhclient
+    local dhclient_conf="/etc/dhcp/dhclient.conf"
+    if [[ -f "$dhclient_conf" ]]; then
+        if ! grep -q "ignore domain-name-servers;" "$dhclient_conf" || ! grep -q "ignore domain-search;" "$dhclient_conf"; then
+            echo "正在驯服 DHCP 客户端 (dhclient)..."
+            echo "" >> "$dhclient_conf"
+            echo "ignore domain-name-servers;" >> "$dhclient_conf"
+            echo "ignore domain-search;" >> "$dhclient_conf"
+            echo -e "${gl_lv}✅ 已确保 'ignore' 指令存在于 ${dhclient_conf}${gl_bai}"
+        fi
+    fi
+
+    # 处理 if-up.d 脚本
+    local ifup_script="/etc/network/if-up.d/resolved"
+    if [[ -f "$ifup_script" ]] && [[ -x "$ifup_script" ]]; then
+        echo "正在禁用有冲突的 if-up.d 兼容性脚本..."
+        chmod -x "$ifup_script"
+        echo -e "${gl_lv}✅ 已移除 ${ifup_script} 的可执行权限。${gl_bai}"
+    fi
+
+    # 处理 /etc/network/interfaces
+    local interfaces_file="/etc/network/interfaces"
+    if [[ -f "$interfaces_file" ]] && grep -qE '^[[:space:]]*dns-(nameservers|search|domain)' "$interfaces_file"; then
+        echo "正在净化 /etc/network/interfaces 中的厂商残留DNS配置..."
+        sed -i -E 's/^[[:space:]]*(dns-(nameservers|search|domain).*)/# \1/' "$interfaces_file"
+        echo -e "${gl_lv}✅ 旧有DNS配置已成功注释禁用。${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}阶段二：正在配置 systemd-resolved...${gl_bai}"
+
+    # 安装 systemd-resolved（如果需要）
+    if ! command -v resolvectl &> /dev/null; then
+        echo "正在安装 systemd-resolved..."
+        apt-get update -y > /dev/null
+        apt-get install -y systemd-resolved > /dev/null
+    fi
+
+    # 处理 Debian 11 的 resolvconf 冲突
+    if [[ "$debian_version" == "11" ]] && dpkg -s resolvconf &> /dev/null; then
+        echo "检测到 Debian 11 上的 'resolvconf'，正在卸载..."
+        apt-get remove -y resolvconf > /dev/null
+        rm -f /etc/resolv.conf
+        echo -e "${gl_lv}✅ 'resolvconf' 已成功卸载。${gl_bai}"
+    fi
+
+    # 🔧 关键修复：调用智能修复函数
+    if ! dns_purify_fix_systemd_resolved; then
+        echo -e "${gl_hong}无法修复 systemd-resolved 服务，脚本终止${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在应用最终的DNS安全配置 (DoT, DNSSEC...)"
+    echo -e "${SECURE_RESOLVED_CONFIG}" > /etc/systemd/resolved.conf
+    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    systemctl restart systemd-resolved
+    sleep 2
+
+    echo ""
+    echo -e "${gl_kjlan}阶段三：正在安全地重启网络服务以应用所有更改...${gl_bai}"
+    if systemctl is-enabled --quiet networking.service 2>/dev/null; then
+        systemctl restart networking.service
+        echo -e "${gl_lv}✅ networking.service 已安全重启。${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_lv}✅ 全部操作完成！以下是最终的 DNS 配置状态：${gl_bai}"
+    echo "===================================================="
+    resolvectl status 2>/dev/null || echo "无法获取状态信息"
+    echo "===================================================="
+    echo ""
+    echo -e "${gl_lv}DNS净化脚本执行完成${gl_bai}"
+    echo "贡献者：NSdesk (原始) + AI优化"
+    echo "更多信息：https://www.nodeseek.com/space/23129/"
+    echo "===================================================="
+    echo ""
+
+    break_end
+}
+
+#=============================================================================
 # Realm 转发首连超时修复（专项优化）
 #=============================================================================
 
@@ -5189,59 +5362,60 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
     echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-    echo "4. Realm转发timeout修复 ⭐ 推荐"
-    echo "5. NS论坛CAKE调优"
-    echo "6. 科技lion高性能模式"
+    echo "4. NS论坛-DNS净化（抗污染/驯服DHCP）"
+    echo "5. Realm转发timeout修复 ⭐ 推荐"
+    echo "6. NS论坛CAKE调优"
+    echo "7. 科技lion高性能模式"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[网络设置]${gl_bai}"
-    echo "7. 设置IPv4/IPv6优先级"
-    echo "8. IPv6管理（临时/永久禁用/取消）"
-    echo "9. 设置临时SOCKS5代理"
+    echo "8. 设置IPv4/IPv6优先级"
+    echo "9. IPv6管理（临时/永久禁用/取消）"
+    echo "10. 设置临时SOCKS5代理"
     echo ""
     echo -e "${gl_kjlan}[系统管理]${gl_bai}"
-    echo "10. 虚拟内存管理"
-    echo "11. 查看系统详细状态"
+    echo "11. 虚拟内存管理"
+    echo "12. 查看系统详细状态"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
-    echo "12. Realm转发连接分析"
-    echo "13. Realm强制使用IPv4 ⭐ 推荐"
-    echo "14. IPv4/IPv6连接检测"
+    echo "13. Realm转发连接分析"
+    echo "14. Realm强制使用IPv4 ⭐ 推荐"
+    echo "15. IPv4/IPv6连接检测"
     echo ""
     echo -e "${gl_kjlan}[Xray配置]${gl_bai}"
-    echo "15. 查看Xray配置"
-    echo "16. 设置Xray IPv6出站"
-    echo "17. 恢复Xray默认配置"
+    echo "16. 查看Xray配置"
+    echo "17. 设置Xray IPv6出站"
+    echo "18. 恢复Xray默认配置"
     echo ""
     echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-    echo "18. 星辰大海Xray一键双协议 ⭐ 推荐"
-    echo "19. 禁止端口通过中国大陆直连"
-    echo "20. 一键部署SOCKS5代理"
-    echo "21. Sub-Store多实例管理"
+    echo "19. 星辰大海Xray一键双协议 ⭐ 推荐"
+    echo "20. 禁止端口通过中国大陆直连"
+    echo "21. 一键部署SOCKS5代理"
+    echo "22. Sub-Store多实例管理"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-    echo "22. IP质量检测（IPv4+IPv6）"
-    echo "23. IP质量检测（仅IPv4）⭐ 推荐"
+    echo "23. IP质量检测（IPv4+IPv6）"
+    echo "24. IP质量检测（仅IPv4）⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-    echo "24. 服务器带宽测试"
-    echo "25. iperf3单线程测试"
-    echo "26. 国际互联速度测试 ⭐ 推荐"
-    echo "27. 网络延迟质量检测 ⭐ 推荐"
-    echo "28. 三网回程路由测试 ⭐ 推荐"
+    echo "25. 服务器带宽测试"
+    echo "26. iperf3单线程测试"
+    echo "27. 国际互联速度测试 ⭐ 推荐"
+    echo "28. 网络延迟质量检测 ⭐ 推荐"
+    echo "29. 三网回程路由测试 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-    echo "29. IP媒体/AI解锁检测 ⭐ 推荐"
-    echo "30. NS一键检测脚本 ⭐ 推荐"
+    echo "30. IP媒体/AI解锁检测 ⭐ 推荐"
+    echo "31. NS一键检测脚本 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "31. PF_realm转发脚本 ⭐ 推荐"
-    echo "32. F佬一键sing box脚本"
-    echo "33. 科技lion脚本"
-    echo "34. 酷雪云脚本"
+    echo "32. PF_realm转发脚本 ⭐ 推荐"
+    echo "33. F佬一键sing box脚本"
+    echo "34. 科技lion脚本"
+    echo "35. 酷雪云脚本"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -5272,97 +5446,100 @@ show_main_menu() {
             break_end
             ;;
         4)
+            dns_purify_and_harden
+            ;;
+        5)
             realm_fix_timeout
             break_end
             ;;
-        5)
+        6)
             startbbrcake
             ;;
-        6)
+        7)
             Kernel_optimize
             ;;
-        7)
+        8)
             manage_ip_priority
             ;;
-        8)
+        9)
             manage_ipv6
             ;;
-        9)
+        10)
             set_temp_socks5_proxy
             ;;
-        10)
+        11)
             manage_swap
             ;;
-        11)
+        12)
             show_detailed_status
             ;;
-        12)
+        13)
             analyze_realm_connections
             ;;
-        13)
+        14)
             realm_ipv4_management
             ;;
-        14)
+        15)
             check_ipv4v6_connections
             ;;
-        15)
+        16)
             show_xray_config
             ;;
-        16)
+        17)
             set_xray_ipv6_outbound
             ;;
-        17)
+        18)
             restore_xray_default
             ;;
-        18)
+        19)
             run_xinchendahai_xray
             ;;
-        19)
+        20)
             manage_cn_ip_block
             ;;
-        20)
+        21)
             deploy_socks5
             ;;
-        21)
+        22)
             manage_substore
             ;;
-        22)
+        23)
             run_ip_quality_check
             ;;
-        23)
+        24)
             run_ip_quality_check_ipv4
             ;;
-        24)
+        25)
             run_speedtest
             ;;
-        25)
+        26)
             iperf3_single_thread_test
             ;;
-        26)
+        27)
             run_international_speed_test
             ;;
-        27)
+        28)
             run_network_latency_check
             ;;
-        28)
+        29)
             run_backtrace
             ;;
-        29)
+        30)
             run_unlock_check
             ;;
-        30)
+        31)
             run_ns_detect
             ;;
-        31)
+        32)
             run_pf_realm
             ;;
-        32)
+        33)
             run_fscarmen_singbox
             ;;
-        33)
+        34)
             run_kejilion_script
             ;;
-        34)
+        35)
             run_kxy_script
             ;;
         99)

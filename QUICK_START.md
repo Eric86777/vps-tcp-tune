@@ -197,6 +197,65 @@ chmod +x bbr.sh
 
 ---
 
+## 🌟 常用功能快速参考
+
+### DNS净化与安全加固（NEW）⭐
+
+**适用场景**：VPS提供商DNS污染、DHCP强制覆盖DNS、systemd-resolved被屏蔽
+
+**快速使用**：
+```bash
+# 运行主脚本
+bbr
+
+# 选择菜单
+选择 4（未安装内核）或 4（已安装内核）
+→ NS论坛-DNS净化（抗污染/驯服DHCP）
+```
+
+**核心功能**：
+- ✅ 自动解除 systemd-resolved 屏蔽（DMIT等VPS常见问题）
+- ✅ 启用 DNS over TLS (DoT) 加密查询
+- ✅ 启用 DNSSEC 安全验证
+- ✅ 驯服 DHCP 客户端（忽略DHCP推送的DNS）
+- ✅ 使用安全DNS：Google (8.8.8.8) + Cloudflare (1.1.1.1)
+
+**验证配置**：
+```bash
+# 查看DNS状态
+resolvectl status
+
+# 测试DNS解析
+dig google.com
+```
+
+---
+
+### Realm转发timeout修复⭐
+
+**适用场景**：Realm转发首次连接超时、长时间timeout
+
+**快速使用**：
+```bash
+bbr
+→ 选择 5（未安装）或 5（已安装）
+```
+
+---
+
+### BBR直连/落地优化⭐
+
+**推荐流程**：
+```bash
+# 步骤1：安装BBR v3内核
+bbr → 选择 1 → 重启
+
+# 步骤2：BBR智能优化
+bbr → 选择 3 → 选择 1（自动检测）
+```
+
+---
+
 ## 📞 需要帮助？
 
 - **GitHub Issues**: https://github.com/Eric86777/vps-tcp-tune/issues
