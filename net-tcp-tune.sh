@@ -5394,33 +5394,34 @@ show_main_menu() {
     echo "18. 恢复Xray默认配置"
     echo ""
     echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-    echo "19. 星辰大海Xray一键双协议 ⭐ 推荐"
-    echo "20. 禁止端口通过中国大陆直连"
-    echo "21. 一键部署SOCKS5代理"
-    echo "22. Sub-Store多实例管理"
+    echo "19. 星辰大海Snell协议 ⭐ 推荐"
+    echo "20. 星辰大海Xray一键双协议 ⭐ 推荐"
+    echo "21. 禁止端口通过中国大陆直连"
+    echo "22. 一键部署SOCKS5代理"
+    echo "23. Sub-Store多实例管理"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-    echo "23. IP质量检测（IPv4+IPv6）"
-    echo "24. IP质量检测（仅IPv4）⭐ 推荐"
+    echo "24. IP质量检测（IPv4+IPv6）"
+    echo "25. IP质量检测（仅IPv4）⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-    echo "25. 服务器带宽测试"
-    echo "26. iperf3单线程测试"
-    echo "27. 国际互联速度测试 ⭐ 推荐"
-    echo "28. 网络延迟质量检测 ⭐ 推荐"
-    echo "29. 三网回程路由测试 ⭐ 推荐"
+    echo "26. 服务器带宽测试"
+    echo "27. iperf3单线程测试"
+    echo "28. 国际互联速度测试 ⭐ 推荐"
+    echo "29. 网络延迟质量检测 ⭐ 推荐"
+    echo "30. 三网回程路由测试 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-    echo "30. IP媒体/AI解锁检测 ⭐ 推荐"
-    echo "31. NS一键检测脚本 ⭐ 推荐"
+    echo "31. IP媒体/AI解锁检测 ⭐ 推荐"
+    echo "32. NS一键检测脚本 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "32. PF_realm转发脚本 ⭐ 推荐"
-    echo "33. F佬一键sing box脚本"
-    echo "34. 科技lion脚本"
-    echo "35. 酷雪云脚本"
+    echo "33. PF_realm转发脚本 ⭐ 推荐"
+    echo "34. F佬一键sing box脚本"
+    echo "35. 科技lion脚本"
+    echo "36. 酷雪云脚本"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -5497,54 +5498,57 @@ show_main_menu() {
             restore_xray_default
             ;;
         19)
-            run_xinchendahai_xray
+            run_xinchendahai_snell
             ;;
         20)
-            manage_cn_ip_block
+            run_xinchendahai_xray
             ;;
         21)
-            deploy_socks5
+            manage_cn_ip_block
             ;;
         22)
-            manage_substore
+            deploy_socks5
             ;;
         23)
-            run_ip_quality_check
+            manage_substore
             ;;
         24)
-            run_ip_quality_check_ipv4
+            run_ip_quality_check
             ;;
         25)
-            run_speedtest
+            run_ip_quality_check_ipv4
             ;;
         26)
-            iperf3_single_thread_test
+            run_speedtest
             ;;
         27)
-            run_international_speed_test
+            iperf3_single_thread_test
             ;;
         28)
-            run_network_latency_check
+            run_international_speed_test
             ;;
         29)
-            run_backtrace
+            run_network_latency_check
             ;;
         30)
-            run_unlock_check
+            run_backtrace
             ;;
         31)
-            run_ns_detect
+            run_unlock_check
             ;;
         32)
-            run_pf_realm
+            run_ns_detect
             ;;
         33)
-            run_fscarmen_singbox
+            run_pf_realm
             ;;
         34)
-            run_kejilion_script
+            run_fscarmen_singbox
             ;;
         35)
+            run_kejilion_script
+            ;;
+        36)
             run_kxy_script
             ;;
         99)
@@ -6052,6 +6056,501 @@ run_kxy_script() {
     echo "------------------------------------------------"
     break_end
 }
+
+#=============================================================================
+# 星辰大海 Snell 协议管理
+#=============================================================================
+
+# Snell 颜色定义（使用主脚本的颜色变量）
+SNELL_RED="${gl_hong}"
+SNELL_GREEN="${gl_lv}"
+SNELL_YELLOW="${gl_huang}"
+SNELL_BLUE="${gl_kjlan}"
+SNELL_PURPLE="${gl_zi}"
+SNELL_CYAN="${gl_kjlan}"
+SNELL_RESET="${gl_bai}"
+
+# Snell 日志文件路径
+SNELL_LOG_FILE="/var/log/snell_manager.log"
+
+# Snell 服务名称
+SNELL_SERVICE_NAME="snell.service"
+
+# 检测系统类型（Snell）
+get_system_type_snell() {
+    if [ -f /etc/debian_version ]; then
+        echo "debian"
+    elif [ -f /etc/redhat-release ]; then
+        echo "centos"
+    else
+        echo "unknown"
+    fi
+}
+
+# 等待包管理器锁（Snell）
+wait_for_package_manager_snell() {
+    local system_type=$(get_system_type_snell)
+    if [ "$system_type" = "debian" ]; then
+        while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+            echo -e "${SNELL_YELLOW}等待其他 apt 进程完成${SNELL_RESET}"
+            sleep 1
+        done
+    fi
+}
+
+# 安装必要的软件包（Snell）
+install_required_packages_snell() {
+    local system_type=$(get_system_type_snell)
+    echo -e "${SNELL_GREEN}安装必要的软件包${SNELL_RESET}"
+
+    if [ "$system_type" = "debian" ]; then
+        apt update
+        apt install -y wget unzip curl
+    elif [ "$system_type" = "centos" ]; then
+        yum -y update
+        yum -y install wget unzip curl
+    else
+        echo -e "${SNELL_RED}不支持的系统类型${SNELL_RESET}"
+        exit 1
+    fi
+}
+
+# 检查是否以 root 权限运行（Snell）
+check_root_snell() {
+    if [ "$(id -u)" != "0" ]; then
+        echo -e "${SNELL_RED}请以 root 权限运行此脚本.${SNELL_RESET}"
+        exit 1
+    fi
+}
+
+# 检查 Snell 是否已安装
+check_snell_installed() {
+    if command -v snell-server &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 检查 Snell 是否正在运行
+check_snell_running() {
+    systemctl is-active --quiet "$SNELL_SERVICE_NAME"
+    return $?
+}
+
+# 启动 Snell 服务
+start_snell() {
+    systemctl start "$SNELL_SERVICE_NAME"
+    if [ $? -eq 0 ]; then
+        echo -e "${SNELL_GREEN}Snell 启动成功${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 启动成功" >> "$SNELL_LOG_FILE"
+    else
+        echo -e "${SNELL_RED}Snell 启动失败${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 启动失败" >> "$SNELL_LOG_FILE"
+    fi
+}
+
+# 停止 Snell 服务
+stop_snell() {
+    systemctl stop "$SNELL_SERVICE_NAME"
+    if [ $? -eq 0 ]; then
+        echo -e "${SNELL_GREEN}Snell 停止成功${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 停止成功" >> "$SNELL_LOG_FILE"
+    else
+        echo -e "${SNELL_RED}Snell 停止失败${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 停止失败" >> "$SNELL_LOG_FILE"
+    fi
+}
+
+# 安装 Snell
+install_snell() {
+    echo -e "${SNELL_GREEN}正在安装 Snell${SNELL_RESET}"
+
+    # 等待包管理器
+    wait_for_package_manager_snell
+
+    # 安装必要的软件包
+    if ! install_required_packages_snell; then
+        echo -e "${SNELL_RED}安装必要软件包失败，请检查您的网络连接。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 安装必要软件包失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 下载 Snell 服务器文件
+    ARCH=$(arch)
+    VERSION="v5.0.0"
+    SNELL_URL=""
+    INSTALL_DIR="/usr/local/bin"
+    SYSTEMD_SERVICE_FILE="/lib/systemd/system/snell.service"
+    CONF_DIR="/etc/snell"
+    CONF_FILE="${CONF_DIR}/snell-server.conf"
+
+    if [[ ${ARCH} == "aarch64" ]]; then
+        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
+    else
+        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
+    fi
+
+    # 下载 Snell 服务器文件
+    wget ${SNELL_URL} -O snell-server.zip
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 解压缩文件到指定目录
+    unzip -o snell-server.zip -d ${INSTALL_DIR}
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 删除下载的 zip 文件
+    rm snell-server.zip
+
+    # 赋予执行权限
+    chmod +x ${INSTALL_DIR}/snell-server
+
+    # 生成随机端口和密码
+    RANDOM_PORT=$(shuf -i 30000-65000 -n 1)
+    RANDOM_PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
+
+    # 检查 snell 用户是否已存在
+    if ! id "snell" &>/dev/null; then
+        # 创建 Snell 用户
+        useradd -r -s /usr/sbin/nologin snell
+    fi
+
+    # 创建配置文件目录
+    mkdir -p ${CONF_DIR}
+
+    # 询问用户选择监听模式
+    echo -e "${SNELL_CYAN}请选择监听模式:${SNELL_RESET}"
+    echo "1. 仅 IPv4 (0.0.0.0)"
+    echo "2. 仅 IPv6 (::0)"
+    echo "3. 双栈 (同时支持 IPv4 和 IPv6)"
+    read -p "请输入选项 [1-3，默认为 1]: " listen_mode
+    listen_mode=${listen_mode:-1}
+
+    case $listen_mode in
+        1)
+            LISTEN_ADDR="0.0.0.0:${RANDOM_PORT}"
+            IPV6_ENABLED="false"
+            echo -e "${SNELL_GREEN}已选择：仅 IPv4 模式${SNELL_RESET}"
+            ;;
+        2)
+            LISTEN_ADDR="::0:${RANDOM_PORT}"
+            IPV6_ENABLED="true"
+            echo -e "${SNELL_GREEN}已选择：仅 IPv6 模式${SNELL_RESET}"
+            ;;
+        3)
+            LISTEN_ADDR="::0:${RANDOM_PORT}"
+            IPV6_ENABLED="true"
+            echo -e "${SNELL_GREEN}已选择：双栈模式 (同时支持 IPv4 和 IPv6)${SNELL_RESET}"
+            ;;
+        *)
+            LISTEN_ADDR="0.0.0.0:${RANDOM_PORT}"
+            IPV6_ENABLED="false"
+            echo -e "${SNELL_YELLOW}无效选项，默认使用 IPv4 模式${SNELL_RESET}"
+            ;;
+    esac
+
+    # 创建配置文件
+    cat > ${CONF_FILE} << EOF
+[snell-server]
+listen = ${LISTEN_ADDR}
+psk = ${RANDOM_PSK}
+ipv6 = ${IPV6_ENABLED}
+EOF
+
+    # 创建 Systemd 服务文件
+    cat > ${SYSTEMD_SERVICE_FILE} << EOF
+[Unit]
+Description=Snell Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=snell
+Group=snell
+ExecStart=${INSTALL_DIR}/snell-server -c ${CONF_FILE}
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+LimitNOFILE=32768
+Restart=on-failure
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=snell-server
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # 重载 Systemd 配置
+    systemctl daemon-reload
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}重载 Systemd 配置失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 重载 Systemd 配置失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 开机自启动 Snell
+    systemctl enable snell
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}开机自启动 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 开机自启动 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 启动 Snell 服务
+    systemctl start snell
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}启动 Snell 服务失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 启动 Snell 服务失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 查看 Snell 日志
+    echo -e "${SNELL_GREEN}Snell 安装成功${SNELL_RESET}"
+    sleep 3 && journalctl -u snell.service -n 8 --no-pager
+
+    # 获取本机IP地址
+    HOST_IP=$(curl -s http://checkip.amazonaws.com)
+
+    # 获取IP所在国家
+    IP_COUNTRY=$(curl -s http://ipinfo.io/${HOST_IP}/country)
+
+    echo -e "${SNELL_GREEN}Snell 示例配置，非TF版本请改为version = 4，项目地址: https://github.com/passeway/Snell${SNELL_RESET}"
+    cat << EOF > /etc/snell/config.txt
+${IP_COUNTRY} = snell, ${HOST_IP}, ${RANDOM_PORT}, psk = ${RANDOM_PSK}, version = 5, reuse = true
+EOF
+    cat /etc/snell/config.txt
+}
+
+# 更新 Snell
+update_snell() {
+    # 检查 Snell 是否已安装
+    INSTALL_DIR="/usr/local/bin"
+    SNELL_BIN="${INSTALL_DIR}/snell-server"
+    if [ ! -f "${SNELL_BIN}" ]; then
+        echo -e "${SNELL_YELLOW}Snell 未安装，跳过更新${SNELL_RESET}"
+        return
+    fi
+
+    echo -e "${SNELL_GREEN}Snell 正在更新${SNELL_RESET}"
+
+    # 停止 Snell
+    if ! systemctl stop snell; then
+        echo -e "${SNELL_RED}停止 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 停止 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 等待包管理器
+    wait_for_package_manager_snell
+
+    # 安装必要的软件包
+    if ! install_required_packages_snell; then
+        echo -e "${SNELL_RED}安装必要软件包失败，请检查您的网络连接。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 安装必要软件包失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 下载 Snell 服务器文件
+    ARCH=$(arch)
+    VERSION="v5.0.0"
+    SNELL_URL=""
+
+    if [[ ${ARCH} == "aarch64" ]]; then
+        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
+    else
+        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
+    fi
+
+    # 下载 Snell 服务器文件
+    if ! wget ${SNELL_URL} -O snell-server.zip; then
+        echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 解压缩文件到指定目录
+    if ! unzip -o snell-server.zip -d ${INSTALL_DIR}; then
+        echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 删除下载的 zip 文件
+    rm snell-server.zip
+
+    # 赋予执行权限
+    chmod +x ${SNELL_BIN}
+
+    # 重启 Snell
+    if ! systemctl restart snell; then
+        echo -e "${SNELL_RED}重启 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 重启 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    echo -e "${SNELL_GREEN}Snell 更新成功，非TF版本请改为version = 4${SNELL_RESET}"
+    cat /etc/snell/config.txt
+}
+
+# 卸载 Snell
+uninstall_snell() {
+    echo -e "${SNELL_GREEN}正在卸载 Snell${SNELL_RESET}"
+
+    # 停止 Snell 服务
+    systemctl stop snell
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}停止 Snell 服务失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 停止 Snell 服务失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 禁用开机自启动
+    systemctl disable snell
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}禁用开机自启动失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 禁用开机自启动失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 删除 Systemd 服务文件
+    rm /lib/systemd/system/snell.service
+    if [ $? -ne 0 ]; then
+        echo -e "${SNELL_RED}删除 Systemd 服务文件失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 删除 Systemd 服务文件失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 重载 Systemd 配置
+    systemctl daemon-reload
+
+    # 删除安装的文件和目录
+    rm /usr/local/bin/snell-server
+    rm -rf /etc/snell
+
+    echo -e "${SNELL_GREEN}Snell 卸载成功${SNELL_RESET}"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 卸载成功" >> "$SNELL_LOG_FILE"
+}
+
+# Snell 菜单显示
+show_snell_menu() {
+    clear
+    check_snell_installed
+    snell_installed=$?
+    check_snell_running
+    snell_running=$?
+
+    if [ $snell_installed -eq 0 ]; then
+        installation_status="${SNELL_GREEN}已安装${SNELL_RESET}"
+        if version_output=$(/usr/local/bin/snell-server -version 2>&1); then
+            snell_version=$(echo "$version_output" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+            if [ -n "$snell_version" ]; then
+                version_status="${SNELL_GREEN}${snell_version}${SNELL_RESET}"
+            else
+                version_status="${SNELL_RED}未知版本${SNELL_RESET}"
+            fi
+        else
+            version_status="${SNELL_RED}未知版本${SNELL_RESET}"
+        fi
+
+        if [ $snell_running -eq 0 ]; then
+            running_status="${SNELL_GREEN}已启动${SNELL_RESET}"
+        else
+            running_status="${SNELL_RED}未启动${SNELL_RESET}"
+        fi
+    else
+        installation_status="${SNELL_RED}未安装${SNELL_RESET}"
+        running_status="${SNELL_RED}未启动${SNELL_RESET}"
+        version_status="—"
+    fi
+
+    echo -e "${SNELL_GREEN}=== Snell 管理工具 ===${SNELL_RESET}"
+    echo -e "安装状态: ${installation_status}"
+    echo -e "运行状态: ${running_status}"
+    echo -e "运行版本: ${version_status}"
+    echo ""
+    echo "1. 安装 Snell 服务"
+    echo "2. 卸载 Snell 服务"
+    if [ $snell_installed -eq 0 ]; then
+        if [ $snell_running -eq 0 ]; then
+            echo "3. 停止 Snell 服务"
+        else
+            echo "3. 启动 Snell 服务"
+        fi
+    fi
+    echo "4. 更新 Snell 服务"
+    echo "5. 查看 Snell 配置"
+    echo "0. 返回主菜单"
+    echo -e "${SNELL_GREEN}======================${SNELL_RESET}"
+    read -p "请输入选项编号: " snell_choice
+    echo ""
+}
+
+# Snell 主函数
+run_xinchendahai_snell() {
+    check_root_snell
+
+    while true; do
+        show_snell_menu
+        case "${snell_choice}" in
+            1)
+                install_snell
+                ;;
+            2)
+                if [ $snell_installed -eq 0 ]; then
+                    uninstall_snell
+                else
+                    echo -e "${SNELL_RED}Snell 尚未安装${SNELL_RESET}"
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - 尝试卸载但 Snell 尚未安装" >> "$SNELL_LOG_FILE"
+                fi
+                ;;
+            3)
+                if [ $snell_installed -eq 0 ]; then
+                    if [ $snell_running -eq 0 ]; then
+                        stop_snell
+                    else
+                        start_snell
+                    fi
+                else
+                    echo -e "${SNELL_RED}Snell 尚未安装${SNELL_RESET}"
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - 尝试管理服务但 Snell 尚未安装" >> "$SNELL_LOG_FILE"
+                fi
+                ;;
+            4)
+                update_snell
+                ;;
+            5)
+                if [ -f /etc/snell/config.txt ]; then
+                    cat /etc/snell/config.txt
+                else
+                    echo -e "${SNELL_RED}配置文件不存在${SNELL_RESET}"
+                fi
+                ;;
+            0)
+                echo -e "${SNELL_GREEN}返回主菜单${SNELL_RESET}"
+                break
+                ;;
+            *)
+                echo -e "${SNELL_RED}无效的选项${SNELL_RESET}"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - 用户输入无效选项: $snell_choice" >> "$SNELL_LOG_FILE"
+                ;;
+        esac
+        if [ "${snell_choice}" != "0" ]; then
+            read -p "按 enter 键继续..."
+        fi
+    done
+}
+
+#=============================================================================
+# 星辰大海 Xray 一键双协议
+#=============================================================================
 
 run_xinchendahai_xray() {
     clear
