@@ -5399,29 +5399,30 @@ show_main_menu() {
     echo "21. 禁止端口通过中国大陆直连"
     echo "22. 一键部署SOCKS5代理"
     echo "23. Sub-Store多实例管理"
+    echo "24. 一键反代 🎯 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-    echo "24. IP质量检测（IPv4+IPv6）"
-    echo "25. IP质量检测（仅IPv4）⭐ 推荐"
+    echo "25. IP质量检测（IPv4+IPv6）"
+    echo "26. IP质量检测（仅IPv4）⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-    echo "26. 服务器带宽测试"
-    echo "27. iperf3单线程测试"
-    echo "28. 国际互联速度测试 ⭐ 推荐"
-    echo "29. 网络延迟质量检测 ⭐ 推荐"
-    echo "30. 三网回程路由测试 ⭐ 推荐"
+    echo "27. 服务器带宽测试"
+    echo "28. iperf3单线程测试"
+    echo "29. 国际互联速度测试 ⭐ 推荐"
+    echo "30. 网络延迟质量检测 ⭐ 推荐"
+    echo "31. 三网回程路由测试 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-    echo "31. IP媒体/AI解锁检测 ⭐ 推荐"
-    echo "32. NS一键检测脚本 ⭐ 推荐"
+    echo "32. IP媒体/AI解锁检测 ⭐ 推荐"
+    echo "33. NS一键检测脚本 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "33. PF_realm转发脚本 ⭐ 推荐"
-    echo "34. F佬一键sing box脚本"
-    echo "35. 科技lion脚本"
-    echo "36. 酷雪云脚本"
+    echo "34. PF_realm转发脚本 ⭐ 推荐"
+    echo "35. F佬一键sing box脚本"
+    echo "36. 科技lion脚本"
+    echo "37. 酷雪云脚本"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -5513,42 +5514,45 @@ show_main_menu() {
             manage_substore
             ;;
         24)
-            run_ip_quality_check
+            manage_reverse_proxy
             ;;
         25)
-            run_ip_quality_check_ipv4
+            run_ip_quality_check
             ;;
         26)
-            run_speedtest
+            run_ip_quality_check_ipv4
             ;;
         27)
-            iperf3_single_thread_test
+            run_speedtest
             ;;
         28)
-            run_international_speed_test
+            iperf3_single_thread_test
             ;;
         29)
-            run_network_latency_check
+            run_international_speed_test
             ;;
         30)
-            run_backtrace
+            run_network_latency_check
             ;;
         31)
-            run_unlock_check
+            run_backtrace
             ;;
         32)
-            run_ns_detect
+            run_unlock_check
             ;;
         33)
-            run_pf_realm
+            run_ns_detect
             ;;
         34)
-            run_fscarmen_singbox
+            run_pf_realm
             ;;
         35)
-            run_kejilion_script
+            run_fscarmen_singbox
             ;;
         36)
+            run_kejilion_script
+            ;;
+        37)
             run_kxy_script
             ;;
         99)
@@ -10202,10 +10206,515 @@ manage_substore() {
     done
 }
 
+#=============================================================================
+# 一键反代功能 - 通用反向代理管理
+#=============================================================================
 
-#=============================================================================
-# 脚本入口
-#=============================================================================
+# 配置文件路径
+REVERSE_PROXY_CONFIG_DIR="/root/reverse-proxy-configs"
+REVERSE_PROXY_CONFIG_FILE="$REVERSE_PROXY_CONFIG_DIR/config.json"
+
+# 初始化配置目录
+init_reverse_proxy_config() {
+    if [ ! -d "$REVERSE_PROXY_CONFIG_DIR" ]; then
+        mkdir -p "$REVERSE_PROXY_CONFIG_DIR"
+        mkdir -p "$REVERSE_PROXY_CONFIG_DIR/caddy"
+        mkdir -p "$REVERSE_PROXY_CONFIG_DIR/cf-tunnel"
+    fi
+
+    if [ ! -f "$REVERSE_PROXY_CONFIG_FILE" ]; then
+        echo '{"proxies":[]}' > "$REVERSE_PROXY_CONFIG_FILE"
+    fi
+}
+
+# 检查端口是否在监听
+check_port_listening() {
+    local port=$1
+    if ss -tuln 2>/dev/null | grep -q ":$port " || netstat -tuln 2>/dev/null | grep -q ":$port "; then
+        return 0
+    fi
+    return 1
+}
+
+# 安装 cloudflared
+install_cloudflared() {
+    if command -v cloudflared &>/dev/null; then
+        echo -e "${gl_lv}✅ cloudflared 已安装${gl_bai}"
+        return 0
+    fi
+
+    echo -e "${gl_huang}正在安装 cloudflared...${gl_bai}"
+
+    local cpu_arch=$(uname -m)
+    local download_url
+
+    case "$cpu_arch" in
+        x86_64)
+            download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+            ;;
+        aarch64)
+            download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+            ;;
+        *)
+            echo -e "${gl_hong}❌ 不支持的架构: $cpu_arch${gl_bai}"
+            return 1
+            ;;
+    esac
+
+    if wget -O /usr/local/bin/cloudflared "$download_url" && chmod +x /usr/local/bin/cloudflared; then
+        echo -e "${gl_lv}✅ cloudflared 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ cloudflared 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 安装 Caddy
+install_caddy() {
+    if command -v caddy &>/dev/null; then
+        echo -e "${gl_lv}✅ Caddy 已安装${gl_bai}"
+        return 0
+    fi
+
+    echo -e "${gl_huang}正在安装 Caddy...${gl_bai}"
+
+    if apt install -y caddy; then
+        echo -e "${gl_lv}✅ Caddy 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ Caddy 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 快速部署 - Cloudflare Tunnel
+quick_deploy_cf_tunnel() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键反代 - Cloudflare Tunnel${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 初始化配置
+    init_reverse_proxy_config
+
+    # 检查并安装 cloudflared
+    if ! install_cloudflared; then
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo -e "${gl_zi}[步骤 1/4] 输入本地端口${gl_bai}"
+    echo ""
+
+    local port
+    while true; do
+        read -e -p "请输入要反代的本地端口（如 5555）: " port
+
+        if [ -z "$port" ]; then
+            echo -e "${gl_hong}端口不能为空${gl_bai}"
+            continue
+        fi
+
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+            echo -e "${gl_hong}端口号无效（1-65535）${gl_bai}"
+            continue
+        fi
+
+        # 检查端口是否在监听
+        if ! check_port_listening "$port"; then
+            echo -e "${gl_huang}⚠️  警告: 端口 $port 当前未在监听${gl_bai}"
+            read -e -p "是否继续？(y/n): " continue_anyway
+            if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+                continue
+            fi
+        else
+            echo -e "${gl_lv}✅ 检测到端口 $port 正在监听${gl_bai}"
+        fi
+
+        break
+    done
+
+    echo ""
+    echo -e "${gl_zi}[步骤 2/4] 输入域名${gl_bai}"
+    echo ""
+
+    local domain
+    while true; do
+        read -e -p "请输入你的域名（如 app.example.com）: " domain
+
+        if [ -z "$domain" ]; then
+            echo -e "${gl_hong}域名不能为空${gl_bai}"
+            continue
+        fi
+
+        # 简单的域名格式验证
+        if ! [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+            echo -e "${gl_hong}域名格式无效${gl_bai}"
+            continue
+        fi
+
+        break
+    done
+
+    echo ""
+    echo -e "${gl_zi}[步骤 3/4] 输入应用名称（可选）${gl_bai}"
+    echo ""
+
+    local app_name
+    read -e -p "请输入应用名称（回车跳过，如 MyApp）: " app_name
+
+    if [ -z "$app_name" ]; then
+        app_name="port-$port"
+    fi
+
+    # 生成安全的隧道名称
+    local tunnel_name=$(echo "$app_name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+    tunnel_name="tunnel-$tunnel_name-$(date +%s)"
+
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_huang}配置确认${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo "应用名称: $app_name"
+    echo "本地端口: $port"
+    echo "访问域名: https://$domain"
+    echo "隧道名称: $tunnel_name"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    read -e -p "确认开始部署？(y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消部署"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo -e "${gl_zi}[步骤 4/4] 配置 Cloudflare Tunnel${gl_bai}"
+    echo ""
+
+    # 检查是否已登录
+    if [ ! -d "/root/.cloudflared" ] || [ -z "$(ls -A /root/.cloudflared/*.json 2>/dev/null)" ]; then
+        echo "首次使用需要登录 Cloudflare..."
+        echo -e "${gl_huang}即将打开浏览器，请在浏览器中完成授权${gl_bai}"
+        echo ""
+        read -e -p "按回车继续..."
+
+        cloudflared tunnel login
+
+        if [ $? -ne 0 ]; then
+            echo -e "${gl_hong}❌ 登录失败${gl_bai}"
+            break_end
+            return 1
+        fi
+
+        echo -e "${gl_lv}✅ 登录成功${gl_bai}"
+        echo ""
+    else
+        echo -e "${gl_lv}✅ 已登录 Cloudflare${gl_bai}"
+        echo ""
+    fi
+
+    # 创建隧道
+    echo "正在创建隧道: $tunnel_name"
+    cloudflared tunnel create "$tunnel_name"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 创建隧道失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 获取 tunnel ID
+    local tunnel_id=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+
+    if [ -z "$tunnel_id" ]; then
+        echo -e "${gl_hong}❌ 无法获取 tunnel ID${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_lv}✅ 隧道创建成功${gl_bai}"
+    echo "Tunnel ID: $tunnel_id"
+    echo ""
+
+    # 配置 DNS 路由
+    echo "正在配置 DNS 路由..."
+    cloudflared tunnel route dns "$tunnel_id" "$domain"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ DNS 配置失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_lv}✅ DNS 配置成功${gl_bai}"
+    echo ""
+
+    # 生成配置文件
+    local config_file="$REVERSE_PROXY_CONFIG_DIR/cf-tunnel/$tunnel_name.yaml"
+    cat > "$config_file" << EOF
+tunnel: $tunnel_id
+credentials-file: /root/.cloudflared/$tunnel_id.json
+
+ingress:
+  - hostname: $domain
+    service: http://127.0.0.1:$port
+  - service: http_status:404
+EOF
+
+    echo "正在创建 systemd 服务..."
+
+    # 创建 systemd 服务
+    cat > /etc/systemd/system/cloudflared-$tunnel_name.service << EOF
+[Unit]
+Description=Cloudflare Tunnel - $app_name
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --config $config_file run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable cloudflared-$tunnel_name
+    systemctl start cloudflared-$tunnel_name
+
+    sleep 3
+
+    if systemctl is-active --quiet cloudflared-$tunnel_name; then
+        echo -e "${gl_lv}✅ 服务启动成功${gl_bai}"
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_lv}🎉 部署完成！${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo -e "访问地址: ${gl_lv}https://$domain${gl_bai}"
+        echo ""
+        echo "服务管理："
+        echo "  - 查看状态: systemctl status cloudflared-$tunnel_name"
+        echo "  - 查看日志: journalctl -u cloudflared-$tunnel_name -f"
+        echo "  - 重启服务: systemctl restart cloudflared-$tunnel_name"
+        echo "  - 停止服务: systemctl stop cloudflared-$tunnel_name"
+        echo ""
+
+        # 保存配置到 JSON
+        local timestamp=$(date +%s)
+        local temp_file=$(mktemp)
+
+        if command -v jq &>/dev/null; then
+            jq --arg name "$app_name" \
+               --arg port "$port" \
+               --arg domain "$domain" \
+               --arg tunnel "$tunnel_name" \
+               --arg tunnel_id "$tunnel_id" \
+               --arg type "cf-tunnel" \
+               --arg time "$timestamp" \
+               '.proxies += [{
+                   "name": $name,
+                   "port": $port,
+                   "domain": $domain,
+                   "tunnel_name": $tunnel,
+                   "tunnel_id": $tunnel_id,
+                   "type": $type,
+                   "created_at": $time,
+                   "service": "cloudflared-\($tunnel)",
+                   "config_file": $tunnel + ".yaml"
+               }]' "$REVERSE_PROXY_CONFIG_FILE" > "$temp_file" && mv "$temp_file" "$REVERSE_PROXY_CONFIG_FILE"
+        fi
+    else
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+        echo "查看日志: journalctl -u cloudflared-$tunnel_name -n 50"
+    fi
+
+    break_end
+}
+
+# 查看所有反代配置
+list_reverse_proxies() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  已部署的反向代理${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    init_reverse_proxy_config
+
+    # 列出所有 cloudflared 服务
+    local services=$(systemctl list-units --type=service --all | grep "cloudflared-tunnel" | awk '{print $1}')
+
+    if [ -z "$services" ]; then
+        echo -e "${gl_huang}暂无已部署的反向代理${gl_bai}"
+        echo ""
+        break_end
+        return 0
+    fi
+
+    local count=0
+    for service in $services; do
+        count=$((count + 1))
+        local tunnel_name=$(echo "$service" | sed 's/cloudflared-//' | sed 's/.service//')
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "[$count] $tunnel_name"
+
+        # 检查服务状态
+        if systemctl is-active --quiet "$service"; then
+            echo -e "  状态: ${gl_lv}运行中${gl_bai}"
+        else
+            echo -e "  状态: ${gl_hong}已停止${gl_bai}"
+        fi
+
+        # 读取配置文件
+        local config_file="$REVERSE_PROXY_CONFIG_DIR/cf-tunnel/$tunnel_name.yaml"
+        if [ -f "$config_file" ]; then
+            local domain=$(grep "hostname:" "$config_file" | head -1 | awk '{print $3}')
+            local port=$(grep "service:" "$config_file" | head -1 | grep -oP ':\K[0-9]+')
+
+            echo "  域名: https://$domain"
+            echo "  端口: $port"
+            echo "  配置: $config_file"
+        fi
+
+        echo "  服务: $service"
+        echo ""
+    done
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "总计: $count 个反向代理"
+    echo ""
+
+    break_end
+}
+
+# 删除反代配置
+delete_reverse_proxy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  删除反向代理${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 列出所有服务
+    local services=$(systemctl list-units --type=service --all | grep "cloudflared-tunnel" | awk '{print $1}')
+
+    if [ -z "$services" ]; then
+        echo -e "${gl_huang}暂无已部署的反向代理${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    local services_array=($services)
+    local count=0
+
+    for service in "${services_array[@]}"; do
+        count=$((count + 1))
+        local tunnel_name=$(echo "$service" | sed 's/cloudflared-//' | sed 's/.service//')
+
+        if systemctl is-active --quiet "$service"; then
+            echo -e "  $count. $tunnel_name ${gl_lv}[运行中]${gl_bai}"
+        else
+            echo -e "  $count. $tunnel_name ${gl_hong}[已停止]${gl_bai}"
+        fi
+    done
+
+    echo ""
+    read -e -p "请选择要删除的反代编号 (1-$count, 0取消): " choice
+
+    if [ "$choice" = "0" ]; then
+        return 0
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt $count ]; then
+        echo -e "${gl_hong}无效的选择${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local selected_service="${services_array[$((choice-1))]}"
+    local tunnel_name=$(echo "$selected_service" | sed 's/cloudflared-//' | sed 's/.service//')
+
+    echo ""
+    echo -e "${gl_huang}将要删除: $tunnel_name${gl_bai}"
+    echo ""
+    read -e -p "确认删除？(y/n): " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在停止服务..."
+    systemctl stop "$selected_service"
+    systemctl disable "$selected_service"
+
+    echo "正在删除服务文件..."
+    rm -f "/etc/systemd/system/$selected_service"
+    systemctl daemon-reload
+
+    echo "正在删除配置文件..."
+    rm -f "$REVERSE_PROXY_CONFIG_DIR/cf-tunnel/$tunnel_name.yaml"
+
+    # 删除隧道（可选）
+    read -e -p "是否同时删除 Cloudflare Tunnel？(y/n): " delete_tunnel
+    if [[ "$delete_tunnel" =~ ^[Yy]$ ]]; then
+        echo "正在删除隧道..."
+        cloudflared tunnel delete "$tunnel_name" 2>/dev/null || true
+    fi
+
+    echo ""
+    echo -e "${gl_lv}✅ 删除完成${gl_bai}"
+
+    break_end
+}
+
+# 一键反代主菜单
+manage_reverse_proxy() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  一键反代 🎯${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "1. 快速部署（输入端口+域名）"
+        echo "2. 查看已部署的反代"
+        echo "3. 删除反代配置"
+        echo "0. 返回主菜单"
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        read -e -p "请选择操作 [0-3]: " choice
+
+        case $choice in
+            1)
+                quick_deploy_cf_tunnel
+                ;;
+            2)
+                list_reverse_proxies
+                ;;
+            3)
+                delete_reverse_proxy
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
 
 main() {
     check_root
