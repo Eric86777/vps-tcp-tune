@@ -10526,8 +10526,8 @@ EOF
                    "tunnel_id": $tunnel_id,
                    "type": $type,
                    "created_at": $time,
-                   "service": "cloudflared-\($tunnel)",
-                   "config_file": $tunnel + ".yaml"
+                   "service": ("cloudflared-" + $tunnel),
+                   "config_file": ($tunnel + ".yaml")
                }]' "$REVERSE_PROXY_CONFIG_FILE" > "$temp_file" && mv "$temp_file" "$REVERSE_PROXY_CONFIG_FILE"
         fi
     else
