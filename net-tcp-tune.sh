@@ -4536,7 +4536,60 @@ DNSOverTLS=yes
     sleep 2
 
     echo ""
-    echo -e "${gl_kjlan}阶段三：正在安全地重启网络服务以应用所有更改...${gl_bai}"
+    echo -e "${gl_kjlan}阶段三：正在配置网卡级别的 DNS（持久化）...${gl_bai}"
+
+    # 自动检测主网卡
+    local main_interface=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
+
+    if [[ -n "$main_interface" ]]; then
+        echo "检测到主网卡: ${main_interface}"
+
+        # 临时配置（立即生效）
+        echo "正在应用临时 DNS 配置..."
+        resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null || true
+        resolvectl domain "$main_interface" ~. 2>/dev/null || true
+        resolvectl default-route "$main_interface" yes 2>/dev/null || true
+        echo -e "${gl_lv}✅ 临时 DNS 配置已应用${gl_bai}"
+
+        # 持久化配置（重启不丢失）
+        echo "正在创建持久化配置文件..."
+        mkdir -p /etc/systemd/network/
+        cat > /etc/systemd/network/10-${main_interface}.network << EOF
+# DNS 持久化配置 - 由 net-tcp-tune.sh 自动生成
+# 网卡: ${main_interface}
+# 生成时间: $(date)
+
+[Match]
+Name=${main_interface}
+
+[Network]
+DNS=8.8.8.8
+DNS=1.1.1.1
+Domains=~.
+
+[DHCP]
+UseDNS=no
+EOF
+        echo -e "${gl_lv}✅ 持久化配置已写入 /etc/systemd/network/10-${main_interface}.network${gl_bai}"
+
+        # 启用 systemd-networkd（如果未启用）
+        if ! systemctl is-enabled --quiet systemd-networkd 2>/dev/null; then
+            echo "正在启用 systemd-networkd..."
+            systemctl enable systemd-networkd 2>/dev/null || true
+            echo -e "${gl_lv}✅ systemd-networkd 已启用${gl_bai}"
+        fi
+
+        echo -e "${gl_lv}✅ 网卡 ${main_interface} 的 DNS 配置完成（已持久化）${gl_bai}"
+    else
+        echo -e "${gl_huang}⚠️ 无法检测到主网卡，跳过网卡级别配置${gl_bai}"
+        echo -e "${gl_huang}   如果 DNS 解析失败，请手动执行：${gl_bai}"
+        echo -e "${gl_huang}   resolvectl dns <网卡名> 8.8.8.8 1.1.1.1${gl_bai}"
+        echo -e "${gl_huang}   resolvectl domain <网卡名> ~.${gl_bai}"
+        echo -e "${gl_huang}   resolvectl default-route <网卡名> yes${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}阶段四：正在安全地重启网络服务以应用所有更改...${gl_bai}"
     if systemctl is-enabled --quiet networking.service 2>/dev/null; then
         systemctl restart networking.service
         echo -e "${gl_lv}✅ networking.service 已安全重启。${gl_bai}"
