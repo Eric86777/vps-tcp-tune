@@ -4537,9 +4537,29 @@ DNSOverTLS=yes
 
     echo ""
     echo -e "${gl_kjlan}阶段三：正在安全地重启网络服务以应用所有更改...${gl_bai}"
-    if systemctl is-enabled --quiet networking.service 2>/dev/null; then
-        systemctl restart networking.service
-        echo -e "${gl_lv}✅ networking.service 已安全重启。${gl_bai}"
+
+    # 智能检测 networking.service 状态
+    if systemctl is-active --quiet networking.service 2>/dev/null; then
+        echo "检测到 networking.service 正在运行，尝试重启..."
+
+        # 尝试重启，捕获错误
+        if systemctl restart networking.service 2>/dev/null; then
+            echo -e "${gl_lv}✅ networking.service 已安全重启${gl_bai}"
+        else
+            # 重启失败，说明网络由其他服务管理
+            echo -e "${gl_huang}⚠️ networking.service 重启失败（网络可能由其他服务管理）${gl_bai}"
+            echo -e "${gl_huang}   检测到网络配置冲突，正在自动修复...${gl_bai}"
+
+            # 自动屏蔽 networking.service 避免冲突
+            systemctl stop networking.service 2>/dev/null || true
+            systemctl disable networking.service 2>/dev/null || true
+            systemctl mask networking.service 2>/dev/null || true
+
+            echo -e "${gl_lv}✅ 已自动屏蔽 networking.service，避免与其他网络管理器冲突${gl_bai}"
+            echo -e "${gl_lv}   网络将由 systemd-networkd 或 cloud-init 管理${gl_bai}"
+        fi
+    else
+        echo -e "${gl_lv}✅ networking.service 未运行，跳过重启（网络由其他服务管理）${gl_bai}"
     fi
 
     echo ""
