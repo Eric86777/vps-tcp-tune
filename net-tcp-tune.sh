@@ -6287,6 +6287,18 @@ install_snell() {
             fi
         done
     fi
+    
+    # 定义特定端口的配置文件和服务文件
+    CONF_FILE="${CONF_DIR}/snell-${SNELL_PORT}.conf"
+    SYSTEMD_SERVICE_FILE="/etc/systemd/system/snell-${SNELL_PORT}.service"
+    SNELL_SERVICE_NAME="snell-${SNELL_PORT}.service"
+
+    # 检查端口是否被占用
+    if ss -tulpn | grep -q ":${SNELL_PORT} "; then
+        echo -e "${SNELL_RED}端口 ${SNELL_PORT} 已被占用，请选择其他端口。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 端口 ${SNELL_PORT} 已被占用" >> "$SNELL_LOG_FILE"
+        return 1
+    fi
 
     # 询问用户选择监听模式
     echo -e "${SNELL_CYAN}请选择监听模式:${SNELL_RESET}"
@@ -6330,7 +6342,7 @@ EOF
     # 创建 Systemd 服务文件
     cat > ${SYSTEMD_SERVICE_FILE} << EOF
 [Unit]
-Description=Snell Proxy Service
+Description=Snell Proxy Service (Port ${SNELL_PORT})
 After=network.target
 
 [Service]
@@ -6344,7 +6356,7 @@ LimitNOFILE=32768
 Restart=on-failure
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=snell-server
+SyslogIdentifier=snell-${SNELL_PORT}
 
 [Install]
 WantedBy=multi-user.target
@@ -6359,7 +6371,7 @@ EOF
     fi
 
     # 开机自启动 Snell
-    systemctl enable snell
+    systemctl enable ${SNELL_SERVICE_NAME}
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}开机自启动 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 开机自启动 Snell 失败" >> "$SNELL_LOG_FILE"
@@ -6367,7 +6379,7 @@ EOF
     fi
 
     # 启动 Snell 服务
-    systemctl start snell
+    systemctl start ${SNELL_SERVICE_NAME}
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}启动 Snell 服务失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 启动 Snell 服务失败" >> "$SNELL_LOG_FILE"
@@ -6375,8 +6387,8 @@ EOF
     fi
 
     # 查看 Snell 日志
-    echo -e "${SNELL_GREEN}Snell 安装成功${SNELL_RESET}"
-    sleep 3 && journalctl -u snell.service -n 8 --no-pager
+    echo -e "${SNELL_GREEN}Snell (端口 ${SNELL_PORT}) 安装成功${SNELL_RESET}"
+    sleep 3 && journalctl -u ${SNELL_SERVICE_NAME} -n 8 --no-pager
 
     # 获取本机IP地址
     HOST_IP=$(curl -s http://checkip.amazonaws.com)
@@ -6385,10 +6397,10 @@ EOF
     IP_COUNTRY=$(curl -s http://ipinfo.io/${HOST_IP}/country)
 
     echo -e "${SNELL_GREEN}Snell 示例配置，非TF版本请改为version = 4，项目地址: https://github.com/passeway/Snell${SNELL_RESET}"
-    cat << EOF > /etc/snell/config.txt
-${IP_COUNTRY} = snell, ${HOST_IP}, ${RANDOM_PORT}, psk = ${RANDOM_PSK}, version = 5, reuse = true
+    cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
+${IP_COUNTRY} = snell, ${HOST_IP}, ${SNELL_PORT}, psk = ${RANDOM_PSK}, version = 5, reuse = true
 EOF
-    cat /etc/snell/config.txt
+    cat /etc/snell/config-${SNELL_PORT}.txt
 }
 
 # 更新 Snell
@@ -6462,42 +6474,152 @@ update_snell() {
     cat /etc/snell/config.txt
 }
 
+# 列出所有 Snell 实例
+list_snell_instances() {
+    echo -e "${SNELL_CYAN}当前已安装的 Snell 实例：${SNELL_RESET}"
+    echo "------------------------------------------------"
+    printf "%-10s %-15s %-10s\n" "端口" "状态" "版本"
+    echo "------------------------------------------------"
+
+    local count=0
+    
+    # 检查新版多实例服务
+    for service_file in /etc/systemd/system/snell-*.service; do
+        if [ -f "$service_file" ]; then
+            local port=$(echo "$service_file" | sed -E 's/.*snell-([0-9]+)\.service/\1/')
+            local status="停止"
+            if systemctl is-active --quiet "snell-${port}.service"; then
+                status="${SNELL_GREEN}运行中${SNELL_RESET}"
+            else
+                status="${SNELL_RED}已停止${SNELL_RESET}"
+            fi
+            
+            # 尝试从配置文件读取版本（如果有）
+            local version="v5"
+            
+            printf "%-10s %-25s %-10s\n" "$port" "$status" "$version"
+            ((count++))
+        fi
+    done
+
+    # 检查旧版单实例服务
+    if [ -f "/lib/systemd/system/snell.service" ] || [ -f "/etc/systemd/system/snell.service" ]; then
+        local status="停止"
+        if systemctl is-active --quiet "snell.service"; then
+            status="${SNELL_GREEN}运行中${SNELL_RESET}"
+        else
+            status="${SNELL_RED}已停止${SNELL_RESET}"
+        fi
+        # 尝试从配置文件读取端口
+        local port="未知"
+        if [ -f "/etc/snell/snell-server.conf" ]; then
+            port=$(grep "listen" /etc/snell/snell-server.conf | awk -F':' '{print $NF}')
+        fi
+        printf "%-10s %-25s %-10s (旧版)\n" "$port" "$status" "v5"
+        ((count++))
+    fi
+
+    if [ "$count" -eq 0 ]; then
+        echo "暂无安装任何 Snell 实例"
+    fi
+    echo "------------------------------------------------"
+    echo ""
+    return $count
+}
+
 # 卸载 Snell
 uninstall_snell() {
-    echo -e "${SNELL_GREEN}正在卸载 Snell${SNELL_RESET}"
-
-    # 停止 Snell 服务
-    systemctl stop snell
-    if [ $? -ne 0 ]; then
-        echo -e "${SNELL_RED}停止 Snell 服务失败。${SNELL_RESET}"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 停止 Snell 服务失败" >> "$SNELL_LOG_FILE"
-        exit 1
+    echo -e "${SNELL_GREEN}=== 卸载 Snell 服务 ===${SNELL_RESET}"
+    
+    list_snell_instances
+    local instance_count=$?
+    
+    if [ "$instance_count" -eq 0 ]; then
+        echo -e "${SNELL_YELLOW}未检测到任何 Snell 实例，无需卸载。${SNELL_RESET}"
+        return
     fi
 
-    # 禁用开机自启动
-    systemctl disable snell
-    if [ $? -ne 0 ]; then
-        echo -e "${SNELL_RED}禁用开机自启动失败。${SNELL_RESET}"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 禁用开机自启动失败" >> "$SNELL_LOG_FILE"
-        exit 1
-    fi
+    echo "请选择卸载方式："
+    echo "1. 卸载指定端口的实例"
+    echo "2. 卸载所有实例"
+    echo "0. 取消"
+    read -p "请输入选项 [0-2]: " uninstall_choice
 
-    # 删除 Systemd 服务文件
-    rm /lib/systemd/system/snell.service
-    if [ $? -ne 0 ]; then
-        echo -e "${SNELL_RED}删除 Systemd 服务文件失败。${SNELL_RESET}"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 删除 Systemd 服务文件失败" >> "$SNELL_LOG_FILE"
-        exit 1
-    fi
-
-    # 重载 Systemd 配置
-    systemctl daemon-reload
-
-    # 删除安装的文件和目录
-    rm /usr/local/bin/snell-server
-    rm -rf /etc/snell
-
-    echo -e "${SNELL_GREEN}Snell 卸载成功${SNELL_RESET}"
+    case "$uninstall_choice" in
+        1)
+            read -p "请输入要卸载的端口号: " port_to_uninstall
+            if [ -z "$port_to_uninstall" ]; then
+                echo "端口号不能为空"
+                return
+            fi
+            
+            # 检查是否存在该端口的服务
+            local service_name=""
+            if [ -f "/etc/systemd/system/snell-${port_to_uninstall}.service" ]; then
+                service_name="snell-${port_to_uninstall}.service"
+            elif [ -f "/lib/systemd/system/snell.service" ] || [ -f "/etc/systemd/system/snell.service" ]; then
+                # 检查旧版服务是否使用该端口
+                if grep -q ":${port_to_uninstall}" /etc/snell/snell-server.conf 2>/dev/null; then
+                    service_name="snell.service"
+                fi
+            fi
+            
+            if [ -z "$service_name" ]; then
+                echo -e "${SNELL_RED}未找到端口为 ${port_to_uninstall} 的 Snell 实例${SNELL_RESET}"
+                return
+            fi
+            
+            echo "正在卸载服务: ${service_name} ..."
+            systemctl stop "$service_name"
+            systemctl disable "$service_name"
+            rm "/etc/systemd/system/${service_name}" 2>/dev/null
+            rm "/lib/systemd/system/${service_name}" 2>/dev/null
+            
+            if [ "$service_name" == "snell.service" ]; then
+                rm /etc/snell/snell-server.conf 2>/dev/null
+            else
+                rm "/etc/snell/snell-${port_to_uninstall}.conf" 2>/dev/null
+                rm "/etc/snell/config-${port_to_uninstall}.txt" 2>/dev/null
+            fi
+            
+            systemctl daemon-reload
+            echo -e "${SNELL_GREEN}实例 ${port_to_uninstall} 卸载成功${SNELL_RESET}"
+            ;;
+        2)
+            echo "正在卸载所有 Snell 实例..."
+            # 卸载新版多实例
+            for service_file in /etc/systemd/system/snell-*.service; do
+                if [ -f "$service_file" ]; then
+                    local port=$(echo "$service_file" | sed -E 's/.*snell-([0-9]+)\.service/\1/')
+                    echo "卸载端口 $port ..."
+                    systemctl stop "snell-${port}.service"
+                    systemctl disable "snell-${port}.service"
+                    rm "$service_file"
+                fi
+            done
+            
+            # 卸载旧版实例
+            if systemctl list-unit-files | grep -q "snell.service"; then
+                echo "卸载旧版默认实例..."
+                systemctl stop snell.service
+                systemctl disable snell.service
+                rm /lib/systemd/system/snell.service 2>/dev/null
+                rm /etc/systemd/system/snell.service 2>/dev/null
+            fi
+            
+            # 清理配置目录
+            rm -rf /etc/snell
+            # 清理二进制文件
+            rm /usr/local/bin/snell-server
+            
+            systemctl daemon-reload
+            echo -e "${SNELL_GREEN}所有 Snell 实例已卸载${SNELL_RESET}"
+            ;;
+        *)
+            echo "已取消"
+            ;;
+    esac
+}
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 卸载成功" >> "$SNELL_LOG_FILE"
 }
 
@@ -6556,57 +6678,84 @@ show_snell_menu() {
 }
 
 # Snell 主函数
-run_xinchendahai_snell() {
-    check_root_snell
-
+# Snell 管理菜单
+snell_menu() {
     while true; do
-        show_snell_menu
-        case "${snell_choice}" in
-            1)
-                install_snell
-                ;;
-            2)
-                if [ $snell_installed -eq 0 ]; then
-                    uninstall_snell
-                else
-                    echo -e "${SNELL_RED}Snell 尚未安装${SNELL_RESET}"
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') - 尝试卸载但 Snell 尚未安装" >> "$SNELL_LOG_FILE"
+        clear
+        echo -e "${SNELL_CYAN}=== Snell 管理工具 ===${SNELL_RESET}"
+        
+        # 统计实例数量
+        local instance_count=0
+        local running_count=0
+        
+        # 统计新版实例
+        for service_file in /etc/systemd/system/snell-*.service; do
+            if [ -f "$service_file" ]; then
+                ((instance_count++))
+                local port=$(echo "$service_file" | sed -E 's/.*snell-([0-9]+)\.service/\1/')
+                if systemctl is-active --quiet "snell-${port}.service"; then
+                    ((running_count++))
                 fi
-                ;;
-            3)
-                if [ $snell_installed -eq 0 ]; then
-                    if [ $snell_running -eq 0 ]; then
-                        stop_snell
-                    else
-                        start_snell
-                    fi
-                else
-                    echo -e "${SNELL_RED}Snell 尚未安装${SNELL_RESET}"
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') - 尝试管理服务但 Snell 尚未安装" >> "$SNELL_LOG_FILE"
-                fi
-                ;;
-            4)
-                update_snell
-                ;;
-            5)
-                if [ -f /etc/snell/config.txt ]; then
-                    cat /etc/snell/config.txt
-                else
-                    echo -e "${SNELL_RED}配置文件不存在${SNELL_RESET}"
-                fi
-                ;;
-            0)
-                echo -e "${SNELL_GREEN}返回主菜单${SNELL_RESET}"
-                break
-                ;;
-            *)
-                echo -e "${SNELL_RED}无效的选项${SNELL_RESET}"
-                echo "$(date '+%Y-%m-%d %H:%M:%S') - 用户输入无效选项: $snell_choice" >> "$SNELL_LOG_FILE"
-                ;;
-        esac
-        if [ "${snell_choice}" != "0" ]; then
-            read -p "按 enter 键继续..."
+            fi
+        done
+        
+        # 统计旧版实例
+        if [ -f "/lib/systemd/system/snell.service" ] || [ -f "/etc/systemd/system/snell.service" ]; then
+            ((instance_count++))
+            if systemctl is-active --quiet "snell.service"; then
+                ((running_count++))
+            fi
         fi
+        
+        echo -e "已安装实例: ${SNELL_GREEN}${instance_count}${SNELL_RESET} 个"
+        echo -e "运行中实例: ${SNELL_GREEN}${running_count}${SNELL_RESET} 个"
+        echo -e "运行版本: v5.0.0"
+        echo ""
+        echo "1. 安装/添加 Snell 服务"
+        echo "2. 卸载/删除 Snell 服务"
+        echo "3. 查看所有 Snell 实例"
+        echo "4. 更新 Snell 服务 (更新核心程序)"
+        echo "5. 查看 Snell 配置"
+        echo "0. 返回主菜单"
+        echo "======================"
+        read -p "请输入选项编号: " snell_choice
+
+        case "$snell_choice" in
+            1) install_snell ;;
+            2) uninstall_snell ;;
+            3) 
+                list_snell_instances 
+                echo ""
+                read -n 1 -s -r -p "按任意键继续..."
+                ;;
+            4) update_snell ;;
+            5) 
+                echo ""
+                list_snell_instances
+                local count=$?
+                if [ "$count" -gt 0 ]; then
+                    echo ""
+                    read -p "请输入要查看配置的端口号: " view_port
+                    if [ -f "/etc/snell/config-${view_port}.txt" ]; then
+                        echo ""
+                        cat "/etc/snell/config-${view_port}.txt"
+                    elif [ -f "/etc/snell/snell-server.conf" ] && grep -q ":${view_port}" /etc/snell/snell-server.conf; then
+                         # 旧版配置查看 (这里只是简单处理，实际上旧版没有 config.txt 备份可能需要解析 conf 文件)
+                         echo "旧版配置 (端口 ${view_port}):"
+                         cat /etc/snell/snell-server.conf
+                    else
+                        echo -e "${SNELL_RED}未找到端口 ${view_port} 的配置文件${SNELL_RESET}"
+                    fi
+                    echo ""
+                    read -n 1 -s -r -p "按任意键继续..."
+                else
+                    echo ""
+                    read -n 1 -s -r -p "按任意键继续..."
+                fi
+                ;;
+            0) return ;;
+            *) echo -e "${SNELL_RED}无效选项${SNELL_RESET}"; sleep 1 ;;
+        esac
     done
 }
 
