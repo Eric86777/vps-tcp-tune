@@ -6695,7 +6695,11 @@ snell_menu() {
         read -p "请输入选项编号: " snell_choice
 
         case "$snell_choice" in
-            1) install_snell ;;
+            1) 
+                install_snell
+                echo ""
+                read -n 1 -s -r -p "按任意键继续..."
+                ;;
             2) uninstall_snell ;;
             3) 
                 list_snell_instances 
