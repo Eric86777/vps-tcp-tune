@@ -5541,7 +5541,7 @@ show_main_menu() {
             restore_xray_default
             ;;
         19)
-            run_xinchendahai_snell
+            snell_menu
             ;;
         20)
             run_xinchendahai_xray
@@ -6633,62 +6633,7 @@ uninstall_snell() {
             ;;
     esac
 }
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 卸载成功" >> "$SNELL_LOG_FILE"
-}
 
-# Snell 菜单显示
-show_snell_menu() {
-    clear
-    check_snell_installed
-    snell_installed=$?
-    check_snell_running
-    snell_running=$?
-
-    if [ $snell_installed -eq 0 ]; then
-        installation_status="${SNELL_GREEN}已安装${SNELL_RESET}"
-        if version_output=$(/usr/local/bin/snell-server -version 2>&1); then
-            snell_version=$(echo "$version_output" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
-            if [ -n "$snell_version" ]; then
-                version_status="${SNELL_GREEN}${snell_version}${SNELL_RESET}"
-            else
-                version_status="${SNELL_RED}未知版本${SNELL_RESET}"
-            fi
-        else
-            version_status="${SNELL_RED}未知版本${SNELL_RESET}"
-        fi
-
-        if [ $snell_running -eq 0 ]; then
-            running_status="${SNELL_GREEN}已启动${SNELL_RESET}"
-        else
-            running_status="${SNELL_RED}未启动${SNELL_RESET}"
-        fi
-    else
-        installation_status="${SNELL_RED}未安装${SNELL_RESET}"
-        running_status="${SNELL_RED}未启动${SNELL_RESET}"
-        version_status="—"
-    fi
-
-    echo -e "${SNELL_GREEN}=== Snell 管理工具 ===${SNELL_RESET}"
-    echo -e "安装状态: ${installation_status}"
-    echo -e "运行状态: ${running_status}"
-    echo -e "运行版本: ${version_status}"
-    echo ""
-    echo "1. 安装 Snell 服务"
-    echo "2. 卸载 Snell 服务"
-    if [ $snell_installed -eq 0 ]; then
-        if [ $snell_running -eq 0 ]; then
-            echo "3. 停止 Snell 服务"
-        else
-            echo "3. 启动 Snell 服务"
-        fi
-    fi
-    echo "4. 更新 Snell 服务"
-    echo "5. 查看 Snell 配置"
-    echo "0. 返回主菜单"
-    echo -e "${SNELL_GREEN}======================${SNELL_RESET}"
-    read -p "请输入选项编号: " snell_choice
-    echo ""
-}
 
 # Snell 主函数
 # Snell 管理菜单
