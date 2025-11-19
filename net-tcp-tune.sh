@@ -6288,6 +6288,14 @@ install_snell() {
         done
     fi
     
+    # 询问节点名称
+    echo -e "${SNELL_CYAN}请输入节点名称 (例如: 🇯🇵【Gen2】Fxtransit JP T1):${SNELL_RESET}"
+    read -p "节点名称: " NODE_NAME
+    if [ -z "$NODE_NAME" ]; then
+        NODE_NAME="Snell-Node-${SNELL_PORT}"
+        echo -e "${SNELL_YELLOW}未输入名称，使用默认名称: ${NODE_NAME}${SNELL_RESET}"
+    fi
+
     # 定义特定端口的配置文件和服务文件
     CONF_FILE="${CONF_DIR}/snell-${SNELL_PORT}.conf"
     SYSTEMD_SERVICE_FILE="/etc/systemd/system/snell-${SNELL_PORT}.service"
@@ -6308,25 +6316,30 @@ install_snell() {
     read -p "请输入选项 [1-3，默认为 1]: " listen_mode
     listen_mode=${listen_mode:-1}
 
+    local IP_VERSION_STR=""
     case $listen_mode in
         1)
             LISTEN_ADDR="0.0.0.0:${SNELL_PORT}"
             IPV6_ENABLED="false"
+            IP_VERSION_STR=", ip-version=v4-only"
             echo -e "${SNELL_GREEN}已选择：仅 IPv4 模式${SNELL_RESET}"
             ;;
         2)
             LISTEN_ADDR="::0:${SNELL_PORT}"
             IPV6_ENABLED="true"
+            IP_VERSION_STR=", ip-version=v6-only"
             echo -e "${SNELL_GREEN}已选择：仅 IPv6 模式${SNELL_RESET}"
             ;;
         3)
             LISTEN_ADDR="::0:${SNELL_PORT}"
             IPV6_ENABLED="true"
+            IP_VERSION_STR="" # 双栈模式不强制指定 ip-version，或者根据需求设为 prefer-v4
             echo -e "${SNELL_GREEN}已选择：双栈模式 (同时支持 IPv4 和 IPv6)${SNELL_RESET}"
             ;;
         *)
             LISTEN_ADDR="0.0.0.0:${SNELL_PORT}"
             IPV6_ENABLED="false"
+            IP_VERSION_STR=", ip-version=v4-only"
             echo -e "${SNELL_YELLOW}无效选项，默认使用 IPv4 模式${SNELL_RESET}"
             ;;
     esac
@@ -6393,12 +6406,12 @@ EOF
     # 获取本机IP地址
     HOST_IP=$(curl -s http://checkip.amazonaws.com)
 
-    # 获取IP所在国家
-    IP_COUNTRY=$(curl -s http://ipinfo.io/${HOST_IP}/country)
+    # 构造最终配置字符串
+    local FINAL_CONFIG="${NODE_NAME} = snell, ${HOST_IP}, ${SNELL_PORT}, psk=${RANDOM_PSK}, version=5, reuse=true${IP_VERSION_STR}"
 
-    echo -e "${SNELL_GREEN}Snell 示例配置，非TF版本请改为version = 4，项目地址: https://github.com/passeway/Snell${SNELL_RESET}"
+    echo -e "${SNELL_GREEN}默认IPV4，如果需要6或者双栈请自行APP设置${SNELL_RESET}"
     cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
-${IP_COUNTRY} = snell, ${HOST_IP}, ${SNELL_PORT}, psk = ${RANDOM_PSK}, version = 5, reuse = true
+${FINAL_CONFIG}
 EOF
     cat /etc/snell/config-${SNELL_PORT}.txt
 }
