@@ -6401,19 +6401,28 @@ EOF
 
     # 查看 Snell 日志
     echo -e "${SNELL_GREEN}Snell (端口 ${SNELL_PORT}) 安装成功${SNELL_RESET}"
-    sleep 3 && journalctl -u ${SNELL_SERVICE_NAME} -n 8 --no-pager
+    sleep 3
+    journalctl -u ${SNELL_SERVICE_NAME} -n 8 --no-pager || echo -e "${SNELL_YELLOW}无法获取日志，但不影响服务运行${SNELL_RESET}"
 
     # 获取本机IP地址
-    HOST_IP=$(curl -s http://checkip.amazonaws.com)
+    HOST_IP=$(curl -s --max-time 5 http://checkip.amazonaws.com)
+    if [ -z "$HOST_IP" ]; then
+        HOST_IP=$(curl -s --max-time 5 http://ifconfig.me)
+    fi
+    if [ -z "$HOST_IP" ]; then
+        HOST_IP="127.0.0.1"
+    fi
 
     # 构造最终配置字符串
     local FINAL_CONFIG="${NODE_NAME} = snell, ${HOST_IP}, ${SNELL_PORT}, psk=${RANDOM_PSK}, version=5, reuse=true${IP_VERSION_STR}"
 
+    echo ""
     echo -e "${SNELL_GREEN}默认IPV4，如果需要6或者双栈请自行APP设置${SNELL_RESET}"
+    echo -e "${SNELL_CYAN}${FINAL_CONFIG}${SNELL_RESET}"
+    
     cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
 ${FINAL_CONFIG}
 EOF
-    cat /etc/snell/config-${SNELL_PORT}.txt
 }
 
 # 更新 Snell
