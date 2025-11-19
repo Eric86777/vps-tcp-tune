@@ -6506,9 +6506,9 @@ update_snell() {
 # 列出所有 Snell 实例
 list_snell_instances() {
     echo -e "${SNELL_CYAN}当前已安装的 Snell 实例：${SNELL_RESET}"
-    echo "------------------------------------------------"
-    printf "%-10s %-15s %-10s\n" "端口" "状态" "版本"
-    echo "------------------------------------------------"
+    echo "----------------------------------------------------------------"
+    printf "%-25s %-10s %-20s %-10s\n" "节点名称" "端口" "状态" "版本"
+    echo "----------------------------------------------------------------"
 
     local count=0
     
@@ -6523,10 +6523,17 @@ list_snell_instances() {
                 status="${SNELL_RED}已停止${SNELL_RESET}"
             fi
             
+            # 从配置文件读取节点名称
+            local node_name="未命名"
+            if [ -f "/etc/snell/config-${port}.txt" ]; then
+                # 提取 "节点名 = snell" 中的节点名
+                node_name=$(head -n 1 "/etc/snell/config-${port}.txt" | awk -F' = ' '{print $1}')
+            fi
+            
             # 尝试从配置文件读取版本（如果有）
             local version="v5"
             
-            printf "%-10s %-25s %-10s\n" "$port" "$status" "$version"
+            printf "%-25s %-10s %-30s %-10s\n" "$node_name" "$port" "$status" "$version"
             ((count++))
         fi
     done
@@ -6544,14 +6551,21 @@ list_snell_instances() {
         if [ -f "/etc/snell/snell-server.conf" ]; then
             port=$(grep "listen" /etc/snell/snell-server.conf | awk -F':' '{print $NF}')
         fi
-        printf "%-10s %-25s %-10s (旧版)\n" "$port" "$status" "v5"
+        
+        # 尝试读取旧版节点名称
+        local node_name="旧版实例"
+        if [ -f "/etc/snell/config.txt" ]; then
+            node_name=$(head -n 1 "/etc/snell/config.txt" | awk -F' = ' '{print $1}')
+        fi
+        
+        printf "%-25s %-10s %-30s %-10s\n" "$node_name" "$port" "$status" "v5"
         ((count++))
     fi
 
     if [ "$count" -eq 0 ]; then
         echo "暂无安装任何 Snell 实例"
     fi
-    echo "------------------------------------------------"
+    echo "----------------------------------------------------------------"
     echo ""
     return $count
 }
