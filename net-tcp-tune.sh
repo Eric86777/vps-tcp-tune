@@ -6260,7 +6260,7 @@ install_snell() {
     chmod +x ${INSTALL_DIR}/snell-server
 
     # 生成随机端口和密码
-    RANDOM_PORT=$(shuf -i 30000-65000 -n 1)
+    SNELL_PORT=$(shuf -i 30000-65000 -n 1)
     RANDOM_PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
 
     # 检查 snell 用户是否已存在
@@ -6272,6 +6272,22 @@ install_snell() {
     # 创建配置文件目录
     mkdir -p ${CONF_DIR}
 
+    # 询问用户是否自定义端口
+    echo -e "${SNELL_CYAN}默认端口为随机生成的 ${SNELL_PORT}，是否需要自定义端口？[y/N]${SNELL_RESET}"
+    read -p "请输入选项: " custom_port_choice
+    if [[ "$custom_port_choice" == "y" || "$custom_port_choice" == "Y" ]]; then
+        while true; do
+            read -p "请输入自定义端口 (1-65535): " custom_port
+            if [[ "$custom_port" =~ ^[0-9]+$ ]] && [ "$custom_port" -ge 1 ] && [ "$custom_port" -le 65535 ]; then
+                SNELL_PORT=$custom_port
+                echo -e "${SNELL_GREEN}已设置端口为: ${SNELL_PORT}${SNELL_RESET}"
+                break
+            else
+                echo -e "${SNELL_RED}无效端口，请输入 1-65535 之间的数字${SNELL_RESET}"
+            fi
+        done
+    fi
+
     # 询问用户选择监听模式
     echo -e "${SNELL_CYAN}请选择监听模式:${SNELL_RESET}"
     echo "1. 仅 IPv4 (0.0.0.0)"
@@ -6282,22 +6298,22 @@ install_snell() {
 
     case $listen_mode in
         1)
-            LISTEN_ADDR="0.0.0.0:${RANDOM_PORT}"
+            LISTEN_ADDR="0.0.0.0:${SNELL_PORT}"
             IPV6_ENABLED="false"
             echo -e "${SNELL_GREEN}已选择：仅 IPv4 模式${SNELL_RESET}"
             ;;
         2)
-            LISTEN_ADDR="::0:${RANDOM_PORT}"
+            LISTEN_ADDR="::0:${SNELL_PORT}"
             IPV6_ENABLED="true"
             echo -e "${SNELL_GREEN}已选择：仅 IPv6 模式${SNELL_RESET}"
             ;;
         3)
-            LISTEN_ADDR="::0:${RANDOM_PORT}"
+            LISTEN_ADDR="::0:${SNELL_PORT}"
             IPV6_ENABLED="true"
             echo -e "${SNELL_GREEN}已选择：双栈模式 (同时支持 IPv4 和 IPv6)${SNELL_RESET}"
             ;;
         *)
-            LISTEN_ADDR="0.0.0.0:${RANDOM_PORT}"
+            LISTEN_ADDR="0.0.0.0:${SNELL_PORT}"
             IPV6_ENABLED="false"
             echo -e "${SNELL_YELLOW}无效选项，默认使用 IPv4 模式${SNELL_RESET}"
             ;;
