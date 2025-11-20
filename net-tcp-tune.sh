@@ -4563,19 +4563,55 @@ DNSOverTLS=yes
     fi
 
     echo ""
-    echo -e "${gl_kjlan}阶段四：正在配置网卡 DNS（临时配置）...${gl_bai}"
+    echo -e "${gl_kjlan}阶段四：正在配置网卡 DNS（永久配置）...${gl_bai}"
 
     # 自动检测主网卡
     local main_interface=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
 
     if [[ -n "$main_interface" ]]; then
         echo "检测到主网卡: ${main_interface}"
-        echo "正在应用 DNS 配置..."
+        
+        # 创建 systemd-networkd 配置目录
+        mkdir -p /etc/systemd/network
+        
+        # 创建永久网卡 DNS 配置文件
+        local network_config="/etc/systemd/network/10-${main_interface}.network"
+        echo "正在创建永久 DNS 配置文件: ${network_config}"
+        
+        cat > "${network_config}" << 'NETWORKEOF'
+[Match]
+Name=INTERFACE_NAME
+
+[Network]
+DHCP=yes
+DNS=8.8.8.8
+DNS=1.1.1.1
+Domains=~.
+DNSDefaultRoute=yes
+
+[DHCP]
+UseDNS=false
+NETWORKEOF
+        
+        # 替换网卡名称
+        sed -i "s/INTERFACE_NAME/${main_interface}/g" "${network_config}"
+        
+        echo -e "${gl_lv}✅ 已创建永久配置文件: ${network_config}${gl_bai}"
+        
+        # 启用 systemd-networkd（如果未启用）
+        if ! systemctl is-enabled systemd-networkd &>/dev/null; then
+            echo "正在启用 systemd-networkd 服务..."
+            systemctl enable systemd-networkd &>/dev/null || true
+        fi
+        
+        # 应用临时配置（立即生效）
+        echo "正在应用临时 DNS 配置（立即生效）..."
         resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null || true
         resolvectl domain "$main_interface" ~. 2>/dev/null || true
         resolvectl default-route "$main_interface" yes 2>/dev/null || true
-        echo -e "${gl_lv}✅ 已为 ${main_interface} 配置 DNS${gl_bai}"
-        echo -e "${gl_huang}⚠️  注意：此配置为临时配置，重启后需重新运行脚本${gl_bai}"
+        
+        echo -e "${gl_lv}✅ 已为 ${main_interface} 配置永久 DNS${gl_bai}"
+        echo -e "${gl_lv}✅ 配置已写入 ${network_config}，重启后自动生效${gl_bai}"
     else
         echo -e "${gl_huang}⚠️ 无法检测到主网卡，跳过网卡配置${gl_bai}"
         echo -e "${gl_huang}   如果 DNS 解析失败，请手动执行：${gl_bai}"
