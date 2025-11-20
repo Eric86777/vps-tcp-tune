@@ -4604,14 +4604,13 @@ NETWORKEOF
             systemctl enable systemd-networkd &>/dev/null || true
         fi
         
-        # 应用临时配置（立即生效）
-        echo "正在应用临时 DNS 配置（立即生效）..."
+        # 应用当前会话配置（立即生效，无需重启）
+        echo "正在应用 DNS 配置到当前会话（立即生效）..."
         resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null || true
         resolvectl domain "$main_interface" ~. 2>/dev/null || true
         resolvectl default-route "$main_interface" yes 2>/dev/null || true
         
-        echo -e "${gl_lv}✅ 已为 ${main_interface} 配置永久 DNS${gl_bai}"
-        echo -e "${gl_lv}✅ 配置已写入 ${network_config}，重启后自动生效${gl_bai}"
+        echo -e "${gl_lv}✅ DNS 永久配置已完成，当前立即生效${gl_bai}"
     else
         echo -e "${gl_huang}⚠️ 无法检测到主网卡，跳过网卡配置${gl_bai}"
         echo -e "${gl_huang}   如果 DNS 解析失败，请手动执行：${gl_bai}"
