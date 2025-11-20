@@ -6458,7 +6458,7 @@ EOF
     local FINAL_CONFIG="${NODE_NAME} = snell, ${HOST_IP}, ${SNELL_PORT}, psk=${RANDOM_PSK}, version=5, reuse=true${IP_VERSION_STR}"
 
     echo ""
-    echo -e "${SNELL_GREEN}默认IPV4，如果需要6或者双栈请自行APP设置${SNELL_RESET}"
+    echo -e "${SNELL_GREEN}节点信息输出：${SNELL_RESET}"
     echo -e "${SNELL_CYAN}${FINAL_CONFIG}${SNELL_RESET}"
     
     cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
