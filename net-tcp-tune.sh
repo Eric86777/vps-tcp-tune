@@ -8091,7 +8091,11 @@ add_socks5_proxy() {
     fi
 
     clear
-    draw_section_header "新增 SOCKS5 链式代理"
+    draw_menu_header
+    echo -e "${cyan}╔════════════════════════════════════════════╗${none}"
+    echo -e "${cyan}║      新增 SOCKS5 链式代理                   ║${none}"
+    echo -e "${cyan}╚════════════════════════════════════════════╝${none}"
+    echo ""
     
     # 获取所有inbounds (VLESS 和 SS)
     local inbound_count
@@ -8297,7 +8301,11 @@ list_socks5_proxies() {
     fi
 
     clear
-    draw_section_header "SOCKS5 链式代理列表"
+    draw_menu_header
+    echo -e "${cyan}╔════════════════════════════════════════════╗${none}"
+    echo -e "${cyan}║      SOCKS5 链式代理列表                    ║${none}"
+    echo -e "${cyan}╚════════════════════════════════════════════╝${none}"
+    echo ""
     
     # 获取所有routing rules中指向socks outbound的规则
     local socks5_rules
@@ -8343,7 +8351,11 @@ delete_socks5_proxy() {
     fi
 
     clear
-    draw_section_header "删除 SOCKS5 链式代理"
+    draw_menu_header
+    echo -e "${cyan}╔════════════════════════════════════════════╗${none}"
+    echo -e "${cyan}║      删除 SOCKS5 链式代理                   ║${none}"
+    echo -e "${cyan}╚════════════════════════════════════════════╝${none}"
+    echo ""
     
     # 获取所有配置了socks5的节点
     local socks5_rules
