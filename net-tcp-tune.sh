@@ -6272,21 +6272,26 @@ install_snell() {
     # 创建配置文件目录
     mkdir -p ${CONF_DIR}
 
-    # 询问用户是否自定义端口
-    echo -e "${SNELL_CYAN}默认端口为随机生成的 ${SNELL_PORT}，是否需要自定义端口？[y/N]${SNELL_RESET}"
-    read -p "请输入选项: " custom_port_choice
-    if [[ "$custom_port_choice" == "y" || "$custom_port_choice" == "Y" ]]; then
-        while true; do
-            read -p "请输入自定义端口 (1-65535): " custom_port
-            if [[ "$custom_port" =~ ^[0-9]+$ ]] && [ "$custom_port" -ge 1 ] && [ "$custom_port" -le 65535 ]; then
-                SNELL_PORT=$custom_port
-                echo -e "${SNELL_GREEN}已设置端口为: ${SNELL_PORT}${SNELL_RESET}"
-                break
-            else
-                echo -e "${SNELL_RED}无效端口，请输入 1-65535 之间的数字${SNELL_RESET}"
-            fi
-        done
-    fi
+    # 询问端口（直接输入或回车使用随机）
+    echo -e "${SNELL_CYAN}请输入端口号 (1-65535)，直接回车使用随机端口 [默认: ${SNELL_PORT}]:${SNELL_RESET}"
+    while true; do
+        read -p "端口: " custom_port
+        
+        # 如果用户直接回车，使用随机端口
+        if [ -z "$custom_port" ]; then
+            echo -e "${SNELL_GREEN}使用随机端口: ${SNELL_PORT}${SNELL_RESET}"
+            break
+        fi
+        
+        # 如果用户输入了端口，验证端口号
+        if [[ "$custom_port" =~ ^[0-9]+$ ]] && [ "$custom_port" -ge 1 ] && [ "$custom_port" -le 65535 ]; then
+            SNELL_PORT=$custom_port
+            echo -e "${SNELL_GREEN}已设置端口为: ${SNELL_PORT}${SNELL_RESET}"
+            break
+        else
+            echo -e "${SNELL_RED}无效端口，请输入 1-65535 之间的数字，或直接回车使用随机端口${SNELL_RESET}"
+        fi
+    done
     
     # 询问节点名称
     echo -e "${SNELL_CYAN}请输入节点名称 (例如: 🇯🇵【Gen2】Fxtransit JP T1):${SNELL_RESET}"
