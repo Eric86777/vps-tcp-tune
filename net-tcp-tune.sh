@@ -8081,6 +8081,372 @@ view_all_info() {
     fi
 }
 
+# --- SOCKS5 链式代理管理 ---
+
+# 新增 SOCKS5 链式代理
+add_socks5_proxy() {
+    if [[ ! -f "$xray_config_path" ]]; then
+        error "错误: Xray 配置文件不存在。"
+        return
+    fi
+
+    clear
+    draw_section_header "新增 SOCKS5 链式代理"
+    
+    # 获取所有inbounds (VLESS 和 SS)
+    local inbound_count
+    inbound_count=$(jq '[.inbounds[] | select(.protocol == "vless" or .protocol == "shadowsocks")] | length' "$xray_config_path")
+    
+    if [[ "$inbound_count" -eq 0 ]]; then
+        error "未找到任何 VLESS 或 Shadowsocks 节点。"
+        return
+    fi
+    
+    echo -e "${cyan} 当前节点列表${none}"
+    draw_divider
+    
+    # 列出所有节点（避免子shell问题）
+    local index=1
+    while IFS='|' read -r protocol port tag; do
+        printf "  ${green}%-2s${none} [%-12s] 端口: ${cyan}%-6s${none} 名称: ${cyan}%s${none}\n" "$index." "$protocol" "$port" "$tag"
+        ((index++))
+    done < <(jq -r '.inbounds[] | select(.protocol == "vless" or .protocol == "shadowsocks") | "\(.protocol)|\(.port)|\(.tag // "未命名")"' "$xray_config_path")
+    
+    draw_divider
+    printf "  ${yellow}%-2s${none} %-35s\n" "0." "返回主菜单"
+    draw_divider
+    
+    read -p " 请选择要配置链式代理的节点编号 [0-$inbound_count]: " choice || true
+    
+    if [[ "$choice" == "0" ]]; then
+        return
+    fi
+    
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt "$inbound_count" ]]; then
+        error "无效选项。"
+        return
+    fi
+    
+    # 获取选中节点的信息
+    local selected_info
+    selected_info=$(jq -r --argjson idx "$((choice - 1))" '[.inbounds[] | select(.protocol == "vless" or .protocol == "shadowsocks")][$idx] | "\(.tag // "inbound-\(.port)")|\(.port)"' "$xray_config_path")
+    
+    if [[ -z "$selected_info" ]]; then
+        error "无法获取节点信息"
+        return
+    fi
+    
+    local selected_tag=$(echo "$selected_info" | cut -d'|' -f1)
+    local selected_port=$(echo "$selected_info" | cut -d'|' -f2)
+    
+    echo ""
+    info "已选择节点: ${cyan}${selected_tag}${none} (端口: ${cyan}${selected_port}${none})"
+    
+    # 检查是否已配置链式代理
+    local existing_rule
+    existing_rule=$(jq -r --arg tag "$selected_tag" '.routing.rules[]? | select(.inboundTag[0] == $tag and (.outboundTag | startswith("socks5-"))) | .outboundTag' "$xray_config_path" 2>/dev/null)
+    
+    if [[ -n "$existing_rule" ]]; then
+        echo ""
+        warn "⚠️  该节点已配置链式代理: ${cyan}${existing_rule}${none}"
+        read -p " 是否覆盖现有配置? [y/N]: " overwrite || true
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            return
+        fi
+    fi
+    
+    echo ""
+    
+    # 输入SOCKS5信息
+    draw_divider
+    echo -e "${cyan}请输入 SOCKS5 代理信息${none}"
+    draw_divider
+    
+    local socks5_addr socks5_port socks5_user socks5_pass need_auth
+    
+    read -p " SOCKS5 代理地址: " socks5_addr || true
+    if [[ -z "$socks5_addr" ]]; then
+        error "地址不能为空"
+        return
+    fi
+    
+    read -p " SOCKS5 代理端口: " socks5_port || true
+    if ! [[ "$socks5_port" =~ ^[0-9]+$ ]] || [[ "$socks5_port" -lt 1 ]] || [[ "$socks5_port" -gt 65535 ]]; then
+        error "无效端口"
+        return
+    fi
+    
+    read -p " 是否需要认证? [y/N]: " need_auth || true
+    if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+        read -p " 用户名: " socks5_user || true
+        read -p " 密码: " socks5_pass || true
+    fi
+    
+    # 生成唯一的outbound tag
+    local socks5_tag="socks5-${selected_tag}"
+    
+    # 读取现有配置
+    local config
+    config=$(cat "$xray_config_path")
+    
+    # 构建SOCKS5 outbound
+    local socks5_outbound
+    if [[ "$need_auth" =~ ^[Yy]$ ]]; then
+        socks5_outbound=$(jq -n --arg addr "$socks5_addr" --arg port "$socks5_port" --arg user "$socks5_user" --arg pass "$socks5_pass" --arg tag "$socks5_tag" '{
+            tag: $tag,
+            protocol: "socks",
+            settings: {
+                servers: [{
+                    address: $addr,
+                    port: ($port | tonumber),
+                    users: [{
+                        user: $user,
+                        pass: $pass
+                    }]
+                }]
+            }
+        }')
+    else
+        socks5_outbound=$(jq -n --arg addr "$socks5_addr" --arg port "$socks5_port" --arg tag "$socks5_tag" '{
+            tag: $tag,
+            protocol: "socks",
+            settings: {
+                servers: [{
+                    address: $addr,
+                    port: ($port | tonumber)
+                }]
+            }
+        }')
+    fi
+    
+    # 检查是否已存在相同的socks5 outbound
+    local existing_outbound
+    existing_outbound=$(echo "$config" | jq --arg tag "$socks5_tag" '.outbounds[]? | select(.tag == $tag)')
+    
+    if [[ -n "$existing_outbound" ]]; then
+        # 更新现有的outbound
+        config=$(echo "$config" | jq --argjson new_outbound "$socks5_outbound" --arg tag "$socks5_tag" '
+            .outbounds |= map(if .tag == $tag then $new_outbound else . end)
+        ')
+    else
+        # 添加新的outbound
+        config=$(echo "$config" | jq --argjson new_outbound "$socks5_outbound" '
+            .outbounds += [$new_outbound]
+        ')
+    fi
+    
+    # 添加或更新路由规则
+    config=$(echo "$config" | jq --arg inbound_tag "$selected_tag" --arg outbound_tag "$socks5_tag" '
+        if .routing.rules then
+            # 删除旧规则（如果存在）
+            .routing.rules |= map(select(.inboundTag[0] != $inbound_tag)) |
+            # 添加新规则（放在最前面，优先级高）
+            .routing.rules = [{
+                type: "field",
+                inboundTag: [$inbound_tag],
+                outboundTag: $outbound_tag
+            }] + .routing.rules
+        else
+            # 如果没有routing，创建一个
+            .routing = {
+                rules: [{
+                    type: "field",
+                    inboundTag: [$inbound_tag],
+                    outboundTag: $outbound_tag
+                }]
+            }
+        end
+    ')
+    
+    # 验证JSON有效性
+    if ! echo "$config" | jq . > /dev/null 2>&1; then
+        error "生成的配置文件格式错误！"
+        return 1
+    fi
+    
+    # 备份原配置
+    cp "$xray_config_path" "${xray_config_path}.bak.$(date +%s)"
+    
+    # 保存配置
+    echo "$config" > "$xray_config_path"
+    chmod 644 "$xray_config_path"
+    
+    success "✅ 已为节点 ${cyan}${selected_tag}${none} 配置 SOCKS5 链式代理"
+    info "SOCKS5: ${cyan}${socks5_addr}:${socks5_port}${none}"
+    
+    # 重启Xray
+    echo ""
+    read -p " 是否立即重启 Xray 使配置生效? [Y/n]: " restart_choice || true
+    if [[ ! "$restart_choice" =~ ^[Nn]$ ]]; then
+        systemctl restart xray
+        sleep 1
+        if systemctl is-active --quiet xray; then
+            success "✅ Xray 已重启"
+        else
+            error "❌ Xray 重启失败，请检查日志: journalctl -u xray -n 20"
+            warn "已创建备份: ${xray_config_path}.bak.*"
+        fi
+    fi
+}
+
+# 查看 SOCKS5 链式代理列表
+list_socks5_proxies() {
+    if [[ ! -f "$xray_config_path" ]]; then
+        error "错误: Xray 配置文件不存在。"
+        return
+    fi
+
+    clear
+    draw_section_header "SOCKS5 链式代理列表"
+    
+    # 获取所有routing rules中指向socks outbound的规则
+    local socks5_rules
+    socks5_rules=$(jq -r '
+        .routing.rules[]? | 
+        select(.outboundTag? | startswith("socks5-")) | 
+        "\(.inboundTag[0])|\(.outboundTag)"
+    ' "$xray_config_path" 2>/dev/null)
+    
+    if [[ -z "$socks5_rules" ]]; then
+        info "当前没有配置任何 SOCKS5 链式代理"
+        return
+    fi
+    
+    echo -e "${cyan} 已配置链式代理的节点${none}"
+    draw_divider
+    printf "  ${cyan}%-20s${none} ${cyan}%-30s${none} ${cyan}%s${none}\n" "节点" "SOCKS5地址" "状态"
+    draw_divider
+    
+    while IFS='|' read -r inbound_tag outbound_tag; do
+        # 获取SOCKS5 outbound信息
+        local socks5_info
+        socks5_info=$(jq -r --arg tag "$outbound_tag" '
+            .outbounds[]? | select(.tag == $tag) | 
+            "\(.settings.servers[0].address):\(.settings.servers[0].port)"
+        ' "$xray_config_path" 2>/dev/null)
+        
+        if [[ -n "$socks5_info" ]]; then
+            printf "  ${green}%-20s${none} → ${yellow}%-30s${none} ${green}%s${none}\n" "$inbound_tag" "$socks5_info" "✓"
+        else
+            printf "  ${red}%-20s${none} → ${red}%-30s${none} ${red}%s${none}\n" "$inbound_tag" "配置丢失" "✗"
+        fi
+    done <<< "$socks5_rules"
+    
+    draw_divider
+}
+
+# 删除 SOCKS5 链式代理
+delete_socks5_proxy() {
+    if [[ ! -f "$xray_config_path" ]]; then
+        error "错误: Xray 配置文件不存在。"
+        return
+    fi
+
+    clear
+    draw_section_header "删除 SOCKS5 链式代理"
+    
+    # 获取所有配置了socks5的节点
+    local socks5_rules
+    socks5_rules=$(jq -r '
+        .routing.rules[]? | 
+        select(.outboundTag? | startswith("socks5-")) | 
+        "\(.inboundTag[0])|\(.outboundTag)"
+    ' "$xray_config_path" 2>/dev/null)
+    
+    if [[ -z "$socks5_rules" ]]; then
+        info "当前没有配置任何 SOCKS5 链式代理"
+        return
+    fi
+    
+    echo -e "${cyan} 已配置链式代理的节点${none}"
+    draw_divider
+    
+    # 使用数组存储，避免子shell问题
+    local index=1
+    local -a node_list
+    while IFS='|' read -r inbound_tag outbound_tag; do
+        local socks5_info
+        socks5_info=$(jq -r --arg tag "$outbound_tag" '
+            .outbounds[]? | select(.tag == $tag) | 
+            "\(.settings.servers[0].address):\(.settings.servers[0].port)"
+        ' "$xray_config_path" 2>/dev/null)
+        
+        printf "  ${green}%-2s${none} 节点: ${cyan}%-20s${none} SOCKS5: ${yellow}%s${none}\n" "$index." "$inbound_tag" "$socks5_info"
+        node_list[$index]="$inbound_tag|$outbound_tag"
+        ((index++))
+    done <<< "$socks5_rules"
+    
+    local proxy_count=$((index - 1))
+    
+    draw_divider
+    printf "  ${yellow}%-2s${none} %-35s\n" "0." "返回主菜单"
+    draw_divider
+    
+    read -p " 请选择要删除的链式代理编号 [0-$proxy_count]: " choice || true
+    
+    if [[ "$choice" == "0" ]]; then
+        return
+    fi
+    
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt "$proxy_count" ]]; then
+        error "无效选项。"
+        return
+    fi
+    
+    # 获取选中的inbound和outbound tag
+    local selected_info="${node_list[$choice]}"
+    if [[ -z "$selected_info" ]]; then
+        error "无法获取节点信息"
+        return
+    fi
+    
+    local inbound_tag=$(echo "$selected_info" | cut -d'|' -f1)
+    local outbound_tag=$(echo "$selected_info" | cut -d'|' -f2)
+    
+    # 读取配置
+    local config
+    config=$(cat "$xray_config_path")
+    
+    # 删除routing rule
+    config=$(echo "$config" | jq --arg inbound_tag "$inbound_tag" '
+        .routing.rules |= map(select(.inboundTag[0] != $inbound_tag or (.outboundTag | startswith("socks5-") | not)))
+    ')
+    
+    # 删除socks5 outbound
+    config=$(echo "$config" | jq --arg outbound_tag "$outbound_tag" '
+        .outbounds |= map(select(.tag != $outbound_tag))
+    ')
+    
+    # 验证JSON有效性
+    if ! echo "$config" | jq . > /dev/null 2>&1; then
+        error "生成的配置文件格式错误！"
+        return 1
+    fi
+    
+    # 备份原配置
+    cp "$xray_config_path" "${xray_config_path}.bak.$(date +%s)"
+    
+    # 保存配置
+    echo "$config" > "$xray_config_path"
+    chmod 644 "$xray_config_path"
+    
+    success "✅ 已删除节点 ${cyan}${inbound_tag}${none} 的链式代理配置"
+    
+    # 重启Xray
+    echo ""
+    read -p " 是否立即重启 Xray 使配置生效? [Y/n]: " restart_choice || true
+    if [[ ! "$restart_choice" =~ ^[Nn]$ ]]; then
+        systemctl restart xray
+        sleep 1
+        if systemctl is-active --quiet xray; then
+            success "✅ Xray 已重启"
+        else
+            error "❌ Xray 重启失败，请检查日志: journalctl -u xray -n 20"
+            warn "已创建备份: ${xray_config_path}.bak.*"
+        fi
+    fi
+}
+
 # --- 路由过滤规则管理 ---
 manage_routing_rules() {
     clear
@@ -8262,26 +8628,35 @@ main_menu() {
         draw_menu_header
         printf "  ${green}%-2s${none} %-35s\n" "1." "安装 Xray (VLESS/Shadowsocks)"
         draw_divider
+        echo -e "${cyan}[VLESS 协议管理]${none}"
         printf "  ${cyan}%-2s${none} %-35s\n" "2." "增加 VLESS 协议"
         printf "  ${magenta}%-2s${none} %-35s\n" "3." "删除指定 VLESS 节点"
         printf "  ${yellow}%-2s${none} %-35s\n" "4." "修改 VLESS 配置"
         draw_divider
+        echo -e "${cyan}[Shadowsocks-2022 协议管理]${none}"
         printf "  ${cyan}%-2s${none} %-35s\n" "5." "增加 Shadowsocks-2022 协议"
         printf "  ${magenta}%-2s${none} %-35s\n" "6." "删除指定 Shadowsocks-2022 节点"
         printf "  ${yellow}%-2s${none} %-35s\n" "7." "修改 Shadowsocks-2022 配置"
         draw_divider
-        printf "  ${green}%-2s${none} %-35s\n" "8." "更新 Xray"
-        printf "  ${red}%-2s${none} %-35s\n" "9." "卸载 Xray"
-        printf "  ${cyan}%-2s${none} %-35s\n" "10." "重启 Xray"
-        printf "  ${magenta}%-2s${none} %-35s\n" "11." "查看 Xray 日志"
-        printf "  ${yellow}%-2s${none} %-35s\n" "12." "查看订阅信息"
+        echo -e "${cyan}[SOCKS5 链式代理管理] 🆕${none}"
+        printf "  ${green}%-2s${none} %-35s\n" "8." "🔗 新增 SOCKS5 链式代理"
+        printf "  ${cyan}%-2s${none} %-35s\n" "9." "📋 查看 SOCKS5 链式代理列表"
+        printf "  ${magenta}%-2s${none} %-35s\n" "10." "❌ 删除 SOCKS5 链式代理"
         draw_divider
-        printf "  ${green}%-2s${none} %-35s ⭐\n" "13." "路由过滤规则管理"
+        echo -e "${cyan}[Xray 服务管理]${none}"
+        printf "  ${green}%-2s${none} %-35s\n" "11." "更新 Xray"
+        printf "  ${red}%-2s${none} %-35s\n" "12." "卸载 Xray"
+        printf "  ${cyan}%-2s${none} %-35s\n" "13." "重启 Xray"
+        printf "  ${magenta}%-2s${none} %-35s\n" "14." "查看 Xray 日志"
+        printf "  ${yellow}%-2s${none} %-35s\n" "15." "查看订阅信息"
+        draw_divider
+        echo -e "${cyan}[高级功能]${none}"
+        printf "  ${green}%-2s${none} %-35s ⭐\n" "16." "路由过滤规则管理"
         draw_divider
         printf "  ${red}%-2s${none} %-35s\n" "0." "退出脚本"
         draw_divider
 
-        read -p " 请输入选项 [0-13]: " choice || true
+        read -p " 请输入选项 [0-16]: " choice || true
 
         local needs_pause=true
 
@@ -8293,14 +8668,17 @@ main_menu() {
             5) add_new_ss ;;
             6) delete_ss_node ;;
             7) modify_ss_config ;;
-            8) update_xray ;;
-            9) uninstall_xray ;;
-            10) restart_xray ;;
-            11) view_xray_log; needs_pause=false ;;
-            12) view_all_info ;;
-            13) manage_routing_rules ;;
+            8) add_socks5_proxy ;;
+            9) list_socks5_proxies ;;
+            10) delete_socks5_proxy ;;
+            11) update_xray ;;
+            12) uninstall_xray ;;
+            13) restart_xray ;;
+            14) view_xray_log; needs_pause=false ;;
+            15) view_all_info ;;
+            16) manage_routing_rules ;;
             0) success "感谢使用！"; exit 0 ;;
-            *) error "无效选项。请输入0到13之间的数字。" ;;
+            *) error "无效选项。请输入0到16之间的数字。" ;;
         esac
 
         if [ "$needs_pause" = true ]; then
