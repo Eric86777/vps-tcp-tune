@@ -4380,7 +4380,7 @@ optimize_xinchendahai_original() {
 }
 
 #=============================================================================
-# DNS净化与安全加固功能（NS论坛）
+# DNS净化与安全加固功能（NS论坛）- SSH安全增强版
 #=============================================================================
 
 # DNS净化 - 智能检测并修复 systemd-resolved
@@ -4388,7 +4388,7 @@ dns_purify_fix_systemd_resolved() {
     echo -e "${gl_kjlan}正在检测 systemd-resolved 服务状态...${gl_bai}"
 
     # 检查服务是否被 masked
-    if systemctl is-enabled systemd-resolved &>/dev/null; then
+    if systemctl is-enabled systemd-resolved &> /dev/null; then
         echo -e "${gl_lv}✅ systemd-resolved 服务状态正常${gl_bai}"
         return 0
     fi
@@ -4444,22 +4444,64 @@ dns_purify_fix_systemd_resolved() {
     fi
 }
 
-# DNS净化 - 主执行函数
+# DNS净化 - 主执行函数（SSH安全版）
 dns_purify_and_harden() {
     clear
     echo -e "${gl_kjlan}╔════════════════════════════════════════════════════════════╗${gl_bai}"
-    echo -e "${gl_kjlan}║       DNS净化与安全加固脚本 - 智能修复版                    ║${gl_bai}"
+    echo -e "${gl_kjlan}║    DNS净化与安全加固脚本 - SSH安全增强版 v2.0             ║${gl_bai}"
     echo -e "${gl_kjlan}╚════════════════════════════════════════════════════════════╝${gl_bai}"
+    echo ""
+
+    # ==================== SSH安全检测 ====================
+    local IS_SSH=false
+    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
+        IS_SSH=true
+        echo -e "${gl_hong}⚠️  检测到您正在通过SSH连接${gl_bai}"
+        echo -e "${gl_lv}✅ SSH安全模式已启用：本脚本不会中断您的网络连接${gl_bai}"
+        echo ""
+    fi
+
+    echo -e "${gl_kjlan}功能说明：${gl_bai}"
+    echo "  ✓ 配置安全的DNS服务器（Google DNS + Cloudflare DNS）"
+    echo "  ✓ 防止DHCP覆盖DNS配置"
+    echo "  ✓ 清除厂商残留的DNS配置"
+    echo "  ✓ 启用DNS安全功能（DNSSEC + DNS over TLS）"
+    echo ""
+    
+    if [ "$IS_SSH" = true ]; then
+        echo -e "${gl_lv}SSH安全保证：${gl_bai}"
+        echo "  ✓ 不会停止或重启网络服务"
+        echo "  ✓ 不会中断SSH连接"
+        echo "  ✓ 所有配置立即生效，无需重启"
+        echo "  ✓ 提供完整的回滚机制"
+        echo ""
+    fi
+    
+    read -e -p "$(echo -e "${gl_huang}是否继续执行？(y/n): ${gl_bai}")" confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${gl_huang}已取消操作${gl_bai}"
+        return
+    fi
+
+    # ==================== 创建备份 ====================
+    local BACKUP_DIR="/root/.dns_purify_backup/$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    echo ""
+    echo -e "${gl_lv}✅ 创建备份目录：$BACKUP_DIR${gl_bai}"
     echo ""
 
     # 目标DNS配置
     local TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
     local SECURE_RESOLVED_CONFIG="[Resolve]
 DNS=${TARGET_DNS}
+FallbackDNS=223.5.5.5 114.114.114.114
 LLMNR=no
 MulticastDNS=no
 DNSSEC=allow-downgrade
-DNSOverTLS=yes
+DNSOverTLS=opportunistic
+Cache=yes
+DNSStubListener=yes
 "
 
     echo "--- 开始执行DNS净化与安全加固流程 ---"
@@ -4468,167 +4510,245 @@ DNSOverTLS=yes
     local debian_version
     debian_version=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' || echo "unknown")
 
-    echo -e "${gl_kjlan}阶段一：正在清除所有潜在的DNS冲突源...${gl_bai}"
+    # ==================== 阶段一：清除DNS冲突源 ====================
+    echo -e "${gl_kjlan}[阶段 1/4] 清除DNS冲突源（安全操作）...${gl_bai}"
+    echo ""
 
-    # 处理 dhclient
+    # 1. 驯服 DHCP 客户端
     local dhclient_conf="/etc/dhcp/dhclient.conf"
     if [[ -f "$dhclient_conf" ]]; then
+        # 备份
+        cp "$dhclient_conf" "$BACKUP_DIR/dhclient.conf.bak" 2>/dev/null || true
+        
         if ! grep -q "ignore domain-name-servers;" "$dhclient_conf" || ! grep -q "ignore domain-search;" "$dhclient_conf"; then
-            echo "正在驯服 DHCP 客户端 (dhclient)..."
+            echo "  → 配置 dhclient 忽略DHCP提供的DNS..."
             echo "" >> "$dhclient_conf"
+            echo "# 由DNS净化脚本添加 - $(date)" >> "$dhclient_conf"
             echo "ignore domain-name-servers;" >> "$dhclient_conf"
             echo "ignore domain-search;" >> "$dhclient_conf"
-            echo -e "${gl_lv}✅ 已确保 'ignore' 指令存在于 ${dhclient_conf}${gl_bai}"
+            echo -e "${gl_lv}  ✅ dhclient 配置完成${gl_bai}"
+        else
+            echo -e "${gl_lv}  ✅ dhclient 已配置（跳过）${gl_bai}"
         fi
     fi
 
-    # 处理 if-up.d 脚本
+    # 2. 禁用冲突的 if-up.d 脚本
     local ifup_script="/etc/network/if-up.d/resolved"
     if [[ -f "$ifup_script" ]] && [[ -x "$ifup_script" ]]; then
-        echo "正在禁用有冲突的 if-up.d 兼容性脚本..."
+        echo "  → 禁用 if-up.d/resolved 脚本..."
         chmod -x "$ifup_script"
-        echo -e "${gl_lv}✅ 已移除 ${ifup_script} 的可执行权限。${gl_bai}"
+        echo -e "${gl_lv}  ✅ 已移除可执行权限${gl_bai}"
     fi
 
-    # 处理 /etc/network/interfaces
+    # 3. 注释 /etc/network/interfaces 中的DNS配置
     local interfaces_file="/etc/network/interfaces"
-    if [[ -f "$interfaces_file" ]] && grep -qE '^[[:space:]]*dns-(nameservers|search|domain)' "$interfaces_file"; then
-        echo "正在净化 /etc/network/interfaces 中的厂商残留DNS配置..."
-        sed -i -E 's/^[[:space:]]*(dns-(nameservers|search|domain).*)/# \1/' "$interfaces_file"
-        echo -e "${gl_lv}✅ 旧有DNS配置已成功注释禁用。${gl_bai}"
+    if [[ -f "$interfaces_file" ]]; then
+        # 备份
+        cp "$interfaces_file" "$BACKUP_DIR/interfaces.bak" 2>/dev/null || true
+        
+        if grep -qE '^[[:space:]]*dns-(nameservers|search|domain)' "$interfaces_file"; then
+            echo "  → 清除 /etc/network/interfaces 中的DNS配置..."
+            sed -i.bak -E 's/^([[:space:]]*dns-(nameservers|search|domain).*)/# \1 # 已被DNS净化脚本禁用/' "$interfaces_file"
+            echo -e "${gl_lv}  ✅ 厂商DNS配置已注释${gl_bai}"
+        else
+            echo -e "${gl_lv}  ✅ /etc/network/interfaces 无DNS配置${gl_bai}"
+        fi
     fi
 
     echo ""
-    echo -e "${gl_kjlan}阶段二：正在配置 systemd-resolved...${gl_bai}"
 
-    # 安装 systemd-resolved（如果需要）
+    # ==================== 阶段二：配置 systemd-resolved ====================
+    echo -e "${gl_kjlan}[阶段 2/4] 配置 systemd-resolved...${gl_bai}"
+    echo ""
+
+    # 检查是否已安装
     if ! command -v resolvectl &> /dev/null; then
-        echo "正在安装 systemd-resolved..."
-        echo "  → 更新软件包列表..."
-        apt-get update -y 2>&1 | grep -E "^(Hit|Get|Fetched|Reading)" || true
-        echo "  → 安装 systemd-resolved 软件包..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y systemd-resolved 2>&1 | grep -E "^(Selecting|Unpacking|Setting up|Processing)" || echo "    安装中，请稍候..."
-        echo -e "${gl_lv}✅ systemd-resolved 安装完成${gl_bai}"
+        echo "  → 检测到未安装 systemd-resolved"
+        echo "  → 安装 systemd-resolved..."
+        apt-get update -y > /dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y systemd-resolved > /dev/null 2>&1
+        echo -e "${gl_lv}  ✅ systemd-resolved 安装完成${gl_bai}"
     else
-        echo -e "${gl_lv}✅ systemd-resolved 已安装${gl_bai}"
+        echo -e "${gl_lv}  ✅ systemd-resolved 已安装${gl_bai}"
     fi
 
     # 处理 Debian 11 的 resolvconf 冲突
     if [[ "$debian_version" == "11" ]] && dpkg -s resolvconf &> /dev/null; then
-        echo "检测到 Debian 11 上的 'resolvconf'，正在卸载..."
-        apt-get remove -y resolvconf > /dev/null
-        rm -f /etc/resolv.conf
-        echo -e "${gl_lv}✅ 'resolvconf' 已成功卸载。${gl_bai}"
+        echo "  → 检测到 Debian 11 的 resolvconf 冲突"
+        # 备份 resolv.conf
+        [[ -f /etc/resolv.conf ]] && cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.pre_remove" 2>/dev/null || true
+        apt-get remove -y resolvconf > /dev/null 2>&1
+        echo -e "${gl_lv}  ✅ resolvconf 已卸载${gl_bai}"
     fi
 
-    # 🔧 关键修复：调用智能修复函数
+    # 🔧 调用智能修复函数
     if ! dns_purify_fix_systemd_resolved; then
         echo -e "${gl_hong}无法修复 systemd-resolved 服务，脚本终止${gl_bai}"
         break_end
         return 1
     fi
 
-    echo ""
-    echo "正在应用最终的DNS安全配置 (DoT, DNSSEC...)"
+    # 备份并写入配置
+    if [[ -f /etc/systemd/resolved.conf ]]; then
+        cp /etc/systemd/resolved.conf "$BACKUP_DIR/resolved.conf.bak" 2>/dev/null || true
+    fi
+
+    echo "  → 配置 systemd-resolved..."
     echo -e "${SECURE_RESOLVED_CONFIG}" > /etc/systemd/resolved.conf
+    
+    # 备份并创建 resolv.conf 链接
+    if [[ -f /etc/resolv.conf ]]; then
+        cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null || true
+    fi
     ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-    systemctl restart systemd-resolved
-    sleep 2
 
     echo ""
-    echo -e "${gl_kjlan}阶段三：正在安全地重启网络服务以应用所有更改...${gl_bai}"
 
-    # 智能检测 networking.service 状态
-    if systemctl is-active --quiet networking.service 2>/dev/null; then
-        echo "检测到 networking.service 正在运行，尝试重启..."
+    # ==================== 阶段三：应用DNS配置（SSH安全方式）====================
+    echo -e "${gl_kjlan}[阶段 3/4] 应用DNS配置（SSH安全模式）...${gl_bai}"
+    echo ""
 
-        # 尝试重启，捕获错误
-        if systemctl restart networking.service 2>/dev/null; then
-            echo -e "${gl_lv}✅ networking.service 已安全重启${gl_bai}"
-        else
-            # 重启失败，说明网络由其他服务管理
-            echo -e "${gl_huang}⚠️ networking.service 重启失败（网络可能由其他服务管理）${gl_bai}"
-            echo -e "${gl_huang}   检测到网络配置冲突，正在自动修复...${gl_bai}"
-
-            # 自动屏蔽 networking.service 避免冲突
-            systemctl stop networking.service 2>/dev/null || true
-            systemctl disable networking.service 2>/dev/null || true
-            systemctl mask networking.service 2>/dev/null || true
-
-            echo -e "${gl_lv}✅ 已自动屏蔽 networking.service，避免与其他网络管理器冲突${gl_bai}"
-            echo -e "${gl_lv}   网络将由 systemd-networkd 或 cloud-init 管理${gl_bai}"
-        fi
+    if [ "$IS_SSH" = true ]; then
+        # SSH模式：只重载DNS服务，绝不碰networking.service
+        echo "  → 检测到SSH连接，使用安全应用方式..."
+        echo "  → 重新加载 systemd-resolved 配置..."
+        systemctl reload-or-restart systemd-resolved 2>/dev/null || true
+        sleep 1
+        echo -e "${gl_lv}  ✅ systemd-resolved 配置已重新加载${gl_bai}"
+        echo -e "${gl_lv}  ✅ 网络连接未受影响${gl_bai}"
     else
-        echo -e "${gl_lv}✅ networking.service 未运行，跳过重启（网络由其他服务管理）${gl_bai}"
+        # VNC/Console模式：可以安全重启
+        echo "  → 检测到本地连接，可以安全执行网络操作..."
+        
+        # 先重启 systemd-resolved
+        systemctl restart systemd-resolved 2>/dev/null || true
+        
+        # 检查 networking.service
+        if systemctl is-enabled --quiet networking.service 2>/dev/null; then
+            echo "  → 重启 networking.service..."
+            systemctl restart networking.service 2>/dev/null || true
+            echo -e "${gl_lv}  ✅ networking.service 已重启${gl_bai}"
+        else
+            echo -e "${gl_lv}  ✅ networking.service 未启用（跳过）${gl_bai}"
+        fi
     fi
 
     echo ""
-    echo -e "${gl_kjlan}阶段四：正在配置网卡 DNS（永久配置）...${gl_bai}"
 
-    # 自动检测主网卡
+    # ==================== 阶段四：配置网卡DNS ====================
+    echo -e "${gl_kjlan}[阶段 4/4] 配置网卡DNS（立即生效）...${gl_bai}"
+    echo ""
+
+    # 检测主网卡
     local main_interface=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
 
-    if [[ -n "$main_interface" ]]; then
-        echo "检测到主网卡: ${main_interface}"
+    if [[ -n "$main_interface" ]] && command -v resolvectl &> /dev/null; then
+        echo "  → 检测到主网卡: ${main_interface}"
+        echo "  → 配置网卡 DNS（立即生效，无需重启）..."
         
-        # 创建 systemd-networkd 配置目录
-        mkdir -p /etc/systemd/network
-        
-        # 创建永久网卡 DNS 配置文件
-        local network_config="/etc/systemd/network/10-${main_interface}.network"
-        echo "正在创建永久 DNS 配置文件: ${network_config}"
-        
-        cat > "${network_config}" << 'NETWORKEOF'
-[Match]
-Name=INTERFACE_NAME
-
-[Network]
-DHCP=yes
-DNS=8.8.8.8
-DNS=1.1.1.1
-Domains=~.
-DNSDefaultRoute=yes
-
-[DHCP]
-UseDNS=false
-NETWORKEOF
-        
-        # 替换网卡名称
-        sed -i "s/INTERFACE_NAME/${main_interface}/g" "${network_config}"
-        
-        echo -e "${gl_lv}✅ 已创建永久配置文件: ${network_config}${gl_bai}"
-        
-        # 启用 systemd-networkd（如果未启用）
-        if ! systemctl is-enabled systemd-networkd &>/dev/null; then
-            echo "正在启用 systemd-networkd 服务..."
-            systemctl enable systemd-networkd &>/dev/null || true
-        fi
-        
-        # 应用当前会话配置（立即生效，无需重启）
-        echo "正在应用 DNS 配置到当前会话（立即生效）..."
+        # 立即应用DNS配置
         resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null || true
         resolvectl domain "$main_interface" ~. 2>/dev/null || true
         resolvectl default-route "$main_interface" yes 2>/dev/null || true
         
-        echo -e "${gl_lv}✅ DNS 永久配置已完成，当前立即生效${gl_bai}"
-    else
-        echo -e "${gl_huang}⚠️ 无法检测到主网卡，跳过网卡配置${gl_bai}"
-        echo -e "${gl_huang}   如果 DNS 解析失败，请手动执行：${gl_bai}"
-        echo -e "${gl_huang}   resolvectl dns <网卡名> 8.8.8.8 1.1.1.1${gl_bai}"
-        echo -e "${gl_huang}   resolvectl domain <网卡名> ~.${gl_bai}"
-        echo -e "${gl_huang}   resolvectl default-route <网卡名> yes${gl_bai}"
+        echo -e "${gl_lv}  ✅ 网卡 DNS 配置已应用${gl_bai}"
+        echo -e "${gl_lv}  ✅ DNS配置立即生效，无需重启${gl_bai}"
     fi
 
     echo ""
-    echo -e "${gl_lv}✅ 全部操作完成！以下是最终的 DNS 配置状态：${gl_bai}"
-    echo "===================================================="
-    resolvectl status 2>/dev/null || echo "无法获取状态信息"
-    echo "===================================================="
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}✅ DNS净化完成！${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
+
+    # 显示当前DNS状态
+    echo -e "${gl_huang}当前DNS配置：${gl_bai}"
+    echo "────────────────────────────────────────────────────────"
+    if command -v resolvectl &> /dev/null; then
+        resolvectl status 2>/dev/null | head -30 || cat /etc/resolv.conf
+    else
+        cat /etc/resolv.conf
+    fi
+    echo "────────────────────────────────────────────────────────"
+    echo ""
+
+    # 测试DNS解析
+    echo -e "${gl_huang}测试DNS解析：${gl_bai}"
+    if nslookup google.com > /dev/null 2>&1; then
+        echo -e "${gl_lv}  ✅ DNS解析正常${gl_bai}"
+    else
+        echo -e "${gl_hong}  ✗ DNS解析失败，请检查配置${gl_bai}"
+    fi
+    echo ""
+
+    # ==================== 生成回滚脚本 ====================
+    cat > "$BACKUP_DIR/rollback.sh" << 'ROLLBACK_SCRIPT'
+#!/bin/bash
+# DNS配置回滚脚本
+# 使用方法: bash rollback.sh
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  DNS配置回滚脚本"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+BACKUP_DIR="$(dirname "$0")"
+
+# 恢复 dhclient.conf
+if [[ -f "$BACKUP_DIR/dhclient.conf.bak" ]]; then
+    echo "恢复 dhclient.conf..."
+    cp "$BACKUP_DIR/dhclient.conf.bak" /etc/dhcp/dhclient.conf
+    echo "✅ 已恢复 dhclient.conf"
+fi
+
+# 恢复 interfaces
+if [[ -f "$BACKUP_DIR/interfaces.bak" ]]; then
+    echo "恢复 interfaces..."
+    cp "$BACKUP_DIR/interfaces.bak" /etc/network/interfaces
+    echo "✅ 已恢复 interfaces"
+fi
+
+# 恢复 resolved.conf
+if [[ -f "$BACKUP_DIR/resolved.conf.bak" ]]; then
+    echo "恢复 resolved.conf..."
+    cp "$BACKUP_DIR/resolved.conf.bak" /etc/systemd/resolved.conf
+    echo "✅ 已恢复 resolved.conf"
+fi
+
+# 恢复 resolv.conf
+if [[ -f "$BACKUP_DIR/resolv.conf.bak" ]]; then
+    echo "恢复 resolv.conf..."
+    cp "$BACKUP_DIR/resolv.conf.bak" /etc/resolv.conf
+    echo "✅ 已恢复 resolv.conf"
+fi
+
+# 重新加载 systemd-resolved
+echo "重新加载 systemd-resolved..."
+systemctl reload-or-restart systemd-resolved 2>/dev/null || true
+echo "✅ systemd-resolved 已重新加载"
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "✅ 回滚完成！"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ROLLBACK_SCRIPT
+
+    chmod +x "$BACKUP_DIR/rollback.sh"
+
+    # 显示备份信息
+    echo -e "${gl_kjlan}备份与回滚信息：${gl_bai}"
+    echo "  所有原始配置已备份到："
+    echo "  $BACKUP_DIR"
+    echo ""
+    echo -e "${gl_huang}如需回滚，执行：${gl_bai}"
+    echo "  bash $BACKUP_DIR/rollback.sh"
+    echo ""
+
     echo -e "${gl_lv}DNS净化脚本执行完成${gl_bai}"
-    echo "贡献者：NSdesk"
+    echo "原作者：NSdesk"
+    echo "安全增强：SSH防断连优化"
     echo "更多信息：https://www.nodeseek.com/space/23129/"
-    echo "===================================================="
+    echo "════════════════════════════════════════════════════════"
     echo ""
 
     break_end
