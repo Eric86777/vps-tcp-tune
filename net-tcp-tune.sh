@@ -4672,12 +4672,41 @@ DNSStubListener=yes
     echo "────────────────────────────────────────────────────────"
     echo ""
 
-    # 测试DNS解析
+    # 测试DNS解析（等待配置生效）
     echo -e "${gl_huang}测试DNS解析：${gl_bai}"
-    if nslookup google.com > /dev/null 2>&1; then
-        echo -e "${gl_lv}  ✅ DNS解析正常${gl_bai}"
-    else
-        echo -e "${gl_hong}  ✗ DNS解析失败，请检查配置${gl_bai}"
+    echo "  → 等待DNS配置生效（3秒）..."
+    sleep 3
+    
+    local dns_test_passed=false
+    
+    # 方法1: 使用 getent（最可靠）
+    if command -v getent > /dev/null 2>&1; then
+        if getent hosts google.com > /dev/null 2>&1; then
+            echo -e "${gl_lv}  ✅ DNS解析正常 (getent测试)${gl_bai}"
+            dns_test_passed=true
+        fi
+    fi
+    
+    # 方法2: 使用 ping
+    if [ "$dns_test_passed" = false ] && ping -c 1 -W 2 google.com > /dev/null 2>&1; then
+        echo -e "${gl_lv}  ✅ DNS解析正常 (ping测试)${gl_bai}"
+        dns_test_passed=true
+    fi
+    
+    # 方法3: 使用 nslookup（如果可用）
+    if [ "$dns_test_passed" = false ] && command -v nslookup > /dev/null 2>&1; then
+        if nslookup google.com > /dev/null 2>&1; then
+            echo -e "${gl_lv}  ✅ DNS解析正常 (nslookup测试)${gl_bai}"
+            dns_test_passed=true
+        fi
+    fi
+    
+    # 如果所有测试都失败
+    if [ "$dns_test_passed" = false ]; then
+        echo -e "${gl_huang}  ⚠️  DNS测试未通过，但配置已完成${gl_bai}"
+        echo -e "${gl_huang}  提示: 请手动执行以下命令测试DNS：${gl_bai}"
+        echo "       ping google.com"
+        echo "       curl google.com"
     fi
     echo ""
 
