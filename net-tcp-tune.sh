@@ -2614,7 +2614,7 @@ detect_bandwidth() {
     echo "请选择带宽配置方式：" >&2
     echo "1. 自动检测（推荐，自动选择最近服务器）" >&2
     echo "2. 手动指定测速服务器（指定服务器ID）" >&2
-    echo "3. 使用默认值（1000 Mbps / 1 Gbps，跳过检测）" >&2
+    echo "3. 手动选择预设档位（9个常用带宽档位）" >&2
     echo "" >&2
     
     read -e -p "请输入选择 [1]: " bw_choice
@@ -2947,13 +2947,127 @@ detect_bandwidth() {
             fi
             ;;
         3)
-            # 使用默认值
+            # 手动选择预设档位
             echo "" >&2
-            echo -e "${gl_lv}使用默认配置: 1000 Mbps（16 MB 缓冲区）${gl_bai}" >&2
-            echo -e "${gl_zi}说明: 适合标准 1Gbps 服务器，覆盖大多数场景${gl_bai}" >&2
+            echo -e "${gl_kjlan}=== 手动选择带宽档位 ===${gl_bai}" >&2
             echo "" >&2
-            echo "1000"
-            return 0
+            echo "请选择带宽档位：" >&2
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+            echo "" >&2
+            echo -e "${gl_huang}【小带宽 VPS】${gl_bai}" >&2
+            echo "1. 100 Mbps   → 缓冲区 6 MB   (NAT/极小带宽)" >&2
+            echo "2. 200 Mbps   → 缓冲区 8 MB   (小型VPS)" >&2
+            echo "3. 300 Mbps   → 缓冲区 10 MB  (入门服务器)" >&2
+            echo "" >&2
+            echo -e "${gl_huang}【中等带宽】${gl_bai}" >&2
+            echo "4. 500 Mbps   → 缓冲区 12 MB  (标准小带宽)" >&2
+            echo "5. 700 Mbps   → 缓冲区 14 MB  (准千兆)" >&2
+            echo "6. 1 Gbps ⭐  → 缓冲区 16 MB  (标准VPS/最常见)" >&2
+            echo "" >&2
+            echo -e "${gl_huang}【高带宽服务器】${gl_bai}" >&2
+            echo "7. 1.5 Gbps   → 缓冲区 20 MB  (中高端VPS)" >&2
+            echo "8. 2 Gbps     → 缓冲区 24 MB  (高性能VPS)" >&2
+            echo "9. 2.5 Gbps   → 缓冲区 28 MB  (准万兆)" >&2
+            echo "" >&2
+            echo -e "${gl_zi}【其他选项】${gl_bai}" >&2
+            echo "10. 自定义输入（手动指定任意带宽值）" >&2
+            echo "0. 返回上级菜单" >&2
+            echo "" >&2
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+            echo "" >&2
+            
+            # 读取用户选择
+            local preset_choice=""
+            read -e -p "请输入选择 [6]: " preset_choice
+            preset_choice=${preset_choice:-6}  # 默认选择6 (1 Gbps)
+            
+            case "$preset_choice" in
+                1)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 100 Mbps (缓冲区 6 MB)${gl_bai}" >&2
+                    echo "100"
+                    return 0
+                    ;;
+                2)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 200 Mbps (缓冲区 8 MB)${gl_bai}" >&2
+                    echo "200"
+                    return 0
+                    ;;
+                3)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 300 Mbps (缓冲区 10 MB)${gl_bai}" >&2
+                    echo "300"
+                    return 0
+                    ;;
+                4)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 500 Mbps (缓冲区 12 MB)${gl_bai}" >&2
+                    echo "500"
+                    return 0
+                    ;;
+                5)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 700 Mbps (缓冲区 14 MB)${gl_bai}" >&2
+                    echo "700"
+                    return 0
+                    ;;
+                6)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 1000 Mbps (缓冲区 16 MB)${gl_bai}" >&2
+                    echo "1000"
+                    return 0
+                    ;;
+                7)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 1500 Mbps (缓冲区 20 MB)${gl_bai}" >&2
+                    echo "1500"
+                    return 0
+                    ;;
+                8)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 2000 Mbps (缓冲区 24 MB)${gl_bai}" >&2
+                    echo "2000"
+                    return 0
+                    ;;
+                9)
+                    echo "" >&2
+                    echo -e "${gl_lv}✅ 已选择: 2500 Mbps (缓冲区 28 MB)${gl_bai}" >&2
+                    echo "2500"
+                    return 0
+                    ;;
+                10)
+                    # 自定义输入
+                    echo "" >&2
+                    echo -e "${gl_zi}=== 自定义输入 ===${gl_bai}" >&2
+                    echo "" >&2
+                    local manual_bandwidth=""
+                    while true; do
+                        read -e -p "请输入带宽值（单位：Mbps，如 750、1200）: " manual_bandwidth
+                        if [[ "$manual_bandwidth" =~ ^[0-9]+$ ]] && [ "$manual_bandwidth" -gt 0 ]; then
+                            echo "" >&2
+                            echo -e "${gl_lv}✅ 使用自定义值: ${manual_bandwidth} Mbps${gl_bai}" >&2
+                            echo "$manual_bandwidth"
+                            return 0
+                        else
+                            echo -e "${gl_hong}❌ 请输入有效的正整数${gl_bai}" >&2
+                        fi
+                    done
+                    ;;
+                0)
+                    # 返回上级菜单
+                    echo "" >&2
+                    echo -e "${gl_huang}已取消选择，返回上级菜单${gl_bai}" >&2
+                    echo "1000"  # 返回默认值，避免空值
+                    return 1
+                    ;;
+                *)
+                    echo "" >&2
+                    echo -e "${gl_hong}无效选择，使用默认值 1000 Mbps${gl_bai}" >&2
+                    echo "1000"
+                    return 1
+                    ;;
+            esac
             ;;
         *)
             echo -e "${gl_huang}无效选择，使用默认值 1000 Mbps${gl_bai}" >&2
@@ -2969,8 +3083,36 @@ calculate_buffer_size() {
     local buffer_mb
     local bandwidth_level
     
-    # 根据带宽范围计算推荐缓冲区
-    if [ "$bandwidth" -lt 500 ]; then
+    # 优先匹配预设档位（精确匹配）
+    if [ "$bandwidth" -eq 100 ]; then
+        buffer_mb=6
+        bandwidth_level="预设档位（100 Mbps）"
+    elif [ "$bandwidth" -eq 200 ]; then
+        buffer_mb=8
+        bandwidth_level="预设档位（200 Mbps）"
+    elif [ "$bandwidth" -eq 300 ]; then
+        buffer_mb=10
+        bandwidth_level="预设档位（300 Mbps）"
+    elif [ "$bandwidth" -eq 500 ]; then
+        buffer_mb=12
+        bandwidth_level="预设档位（500 Mbps）"
+    elif [ "$bandwidth" -eq 700 ]; then
+        buffer_mb=14
+        bandwidth_level="预设档位（700 Mbps）"
+    elif [ "$bandwidth" -eq 1000 ]; then
+        buffer_mb=16
+        bandwidth_level="预设档位（1 Gbps）"
+    elif [ "$bandwidth" -eq 1500 ]; then
+        buffer_mb=20
+        bandwidth_level="预设档位（1.5 Gbps）"
+    elif [ "$bandwidth" -eq 2000 ]; then
+        buffer_mb=24
+        bandwidth_level="预设档位（2 Gbps）"
+    elif [ "$bandwidth" -eq 2500 ]; then
+        buffer_mb=28
+        bandwidth_level="预设档位（2.5 Gbps）"
+    # 否则使用原有的范围判断（用于自动检测和自定义值）
+    elif [ "$bandwidth" -lt 500 ]; then
         buffer_mb=8
         bandwidth_level="小带宽（< 500 Mbps）"
     elif [ "$bandwidth" -lt 1000 ]; then
