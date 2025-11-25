@@ -2443,6 +2443,362 @@ check_ipv4v6_connections() {
     done
 }
 
+#=============================================================================
+# MTU/MSS 检测与优化功能
+# 用于消除国际链路重传问题
+#=============================================================================
+
+# 多地区 MTU 路径探测
+detect_path_mtu_multi_region() {
+    clear
+    echo -e "${gl_kjlan}==========================================${gl_bai}"
+    echo "      MTU 路径探测（多地区检测）"
+    echo -e "${gl_kjlan}==========================================${gl_bai}"
+    echo ""
+    
+    echo -e "${gl_zi}正在探测到全球多个地区的路径 MTU...${gl_bai}"
+    echo ""
+    
+    # 定义测试目标
+    declare -A targets=(
+        ["香港"]="8.8.8.8"
+        ["日本"]="156.146.33.1"
+        ["新加坡"]="202.12.27.33"
+        ["美国"]="1.1.1.1"
+        ["欧洲"]="8.8.4.4"
+    )
+    
+    # 存储每个目标的 MSS
+    declare -A mss_values
+    local test_count=0
+    local success_count=0
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    for region in "${!targets[@]}"; do
+        target="${targets[$region]}"
+        test_count=$((test_count + 1))
+        
+        echo -e "${gl_huang}[${test_count}/5] ${gl_bai}测试目标: ${gl_kjlan}${region}${gl_bai} (${target})"
+        
+        local found=0
+        for size in 1500 1480 1460 1440 1420 1400 1380 1360 1340 1320 1300; do
+            if ping -M do -s $size -c 2 -W 2 $target &>/dev/null; then
+                local mtu=$((size + 28))
+                local mss=$((size + 28 - 40))
+                echo -e "  ${gl_lv}✅ MTU=${mtu}, MSS=${mss}${gl_bai}"
+                mss_values[$region]=$mss
+                found=1
+                success_count=$((success_count + 1))
+                break
+            fi
+        done
+        
+        if [ $found -eq 0 ]; then
+            echo -e "  ${gl_huang}⚠️  无法探测（网络不通或超时）${gl_bai}"
+            mss_values[$region]=1300  # 使用最保守值
+        fi
+        echo ""
+    done
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # 找出最小的 MSS
+    local min_mss=9999
+    local max_mss=0
+    local min_region=""
+    local max_region=""
+    
+    for region in "${!mss_values[@]}"; do
+        local mss=${mss_values[$region]}
+        if [ $mss -lt $min_mss ]; then
+            min_mss=$mss
+            min_region=$region
+        fi
+        if [ $mss -gt $max_mss ]; then
+            max_mss=$mss
+            max_region=$region
+        fi
+    done
+    
+    # 显示汇总结果
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}✅ 探测完成！${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "各地区 MSS 检测结果："
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    for region in 香港 日本 新加坡 美国 欧洲; do
+        if [ -n "${mss_values[$region]}" ]; then
+            local mss=${mss_values[$region]}
+            echo -e "  ${gl_zi}${region}:${gl_bai} ${mss} bytes"
+        fi
+    done
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # 判断是否一致
+    if [ $min_mss -eq $max_mss ]; then
+        echo -e "${gl_lv}✅ 所有地区 MSS 完全一致！${gl_bai}"
+        echo -e "${gl_kjlan}推荐 MSS:${gl_bai} ${gl_lv}${min_mss}${gl_bai} bytes"
+        echo -e "${gl_zi}说明: 所有地区MTU相同，使用此值性能最优${gl_bai}"
+    else
+        local diff=$((max_mss - min_mss))
+        echo -e "${gl_huang}⚠️  不同地区 MSS 有差异（${diff} bytes）${gl_bai}"
+        echo ""
+        echo -e "  最小值: ${gl_huang}${min_mss}${gl_bai} (${min_region})"
+        echo -e "  最大值: ${gl_huang}${max_mss}${gl_bai} (${max_region})"
+        echo ""
+        echo -e "${gl_kjlan}推荐策略：${gl_bai}"
+        echo -e "  1. ${gl_lv}保守方案:${gl_bai} 使用最小值 ${min_mss} (兼容所有地区)"
+        echo -e "  2. ${gl_huang}激进方案:${gl_bai} 使用最大值 ${max_mss} (性能最优，部分地区可能丢包)"
+        echo -e "  3. ${gl_zi}折中方案:${gl_bai} 使用中间值 $(( (min_mss + max_mss) / 2 ))"
+    fi
+    echo ""
+    
+    # 返回推荐的MSS值（最小值，最保守）
+    echo "$min_mss"
+}
+
+# 应用 MSS Clamp 规则
+apply_mss_clamp_with_value() {
+    local mss=$1
+    
+    echo -e "${gl_zi}正在应用 MSS Clamp 规则...${gl_bai}"
+    echo ""
+    
+    # 检查iptables
+    if ! command -v iptables &>/dev/null; then
+        echo -e "${gl_hong}错误: 未检测到 iptables${gl_bai}"
+        return 1
+    fi
+    
+    # 备份当前规则
+    local backup_file="/root/.iptables_backup_$(date +%Y%m%d_%H%M%S).rules"
+    iptables-save > "$backup_file" 2>/dev/null
+    echo -e "${gl_zi}已备份当前规则到: ${backup_file}${gl_bai}"
+    echo ""
+    
+    # 清除旧的 MSS 规则
+    echo "清除旧规则..."
+    iptables -t mangle -F OUTPUT 2>/dev/null
+    iptables -t mangle -F POSTROUTING 2>/dev/null
+    
+    # 应用新规则（OUTPUT链 + POSTROUTING链）
+    echo "设置 MSS = ${mss} bytes..."
+    iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $mss
+    iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $mss
+    
+    echo ""
+    echo -e "${gl_lv}✅ MSS Clamp 规则已应用${gl_bai}"
+    echo ""
+    
+    # 验证规则
+    echo "验证规则..."
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    iptables -t mangle -L OUTPUT -n -v | grep TCPMSS | head -1
+    iptables -t mangle -L POSTROUTING -n -v | grep TCPMSS | head -1
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # 保存规则
+    echo "保存规则（重启后生效）..."
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save >/dev/null 2>&1
+        echo -e "${gl_lv}✅ 规则已持久化保存${gl_bai}"
+    elif command -v iptables-save &>/dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+        echo -e "${gl_lv}✅ 规则已保存${gl_bai}"
+    else
+        echo -e "${gl_huang}⚠️  无法自动保存规则，重启后可能失效${gl_bai}"
+        echo -e "${gl_zi}建议手动安装: apt install iptables-persistent${gl_bai}"
+    fi
+    
+    return 0
+}
+
+# 验证优化效果
+verify_mss_optimization() {
+    echo ""
+    echo -e "${gl_kjlan}==========================================${gl_bai}"
+    echo "      验证优化效果"
+    echo -e "${gl_kjlan}==========================================${gl_bai}"
+    echo ""
+    
+    echo -e "${gl_zi}等待 30 秒让配置生效...${gl_bai}"
+    sleep 30
+    
+    echo ""
+    echo -e "${gl_huang}当前重传统计:${gl_bai}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ss -s | grep -i "retrans\|segs"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    echo -e "${gl_zi}建议:${gl_bai}"
+    echo "  1. 运行网络测试观察重传率变化"
+    echo "  2. 如果重传率显著降低（80%+），说明优化成功"
+    echo "  3. 如果仍有重传，可能是其他问题（线路质量等）"
+    echo ""
+}
+
+# 主菜单函数
+mtu_mss_optimization() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}==========================================${gl_bai}"
+        echo "    MTU检测与MSS优化（消除重传）"
+        echo -e "${gl_kjlan}==========================================${gl_bai}"
+        echo ""
+        
+        # 显示当前状态
+        echo -e "${gl_zi}当前状态:${gl_bai}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # 检查MSS Clamp是否已设置
+        local current_mss=$(iptables -t mangle -L OUTPUT -n -v 2>/dev/null | grep TCPMSS | grep -oP 'set \K\d+' | head -1)
+        if [ -n "$current_mss" ]; then
+            echo -e "  MSS Clamp: ${gl_lv}✅ 已设置 (${current_mss} bytes)${gl_bai}"
+        else
+            echo -e "  MSS Clamp: ${gl_huang}❌ 未设置${gl_bai}"
+        fi
+        
+        # 显示重传统计
+        local retrans=$(ss -s 2>/dev/null | grep -oP 'retrans:\K\d+' || echo "0")
+        echo -e "  当前重传: ${retrans} 个"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        echo -e "${gl_kjlan}功能菜单:${gl_bai}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "1. 自动检测并优化 ⭐ 推荐"
+        echo "   （多地区MTU探测 + 自动设置最佳MSS）"
+        echo ""
+        echo "2. 仅探测MTU（不应用）"
+        echo "   （查看各地区MTU，但不修改配置）"
+        echo ""
+        echo "3. 手动设置MSS值"
+        echo "   （自行指定MSS值）"
+        echo ""
+        echo "4. 验证优化效果"
+        echo "   （查看重传率变化）"
+        echo ""
+        echo "5. 移除MSS Clamp"
+        echo "   （恢复默认配置）"
+        echo ""
+        echo "0. 返回主菜单"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        read -e -p "请选择操作 [1]: " choice
+        choice=${choice:-1}
+        
+        case $choice in
+            1)
+                # 自动检测并优化
+                clear
+                echo -e "${gl_kjlan}==========================================${gl_bai}"
+                echo "      自动检测并优化"
+                echo -e "${gl_kjlan}==========================================${gl_bai}"
+                echo ""
+                
+                # 执行MTU检测
+                local recommended_mss=$(detect_path_mtu_multi_region)
+                
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                read -e -p "是否应用推荐的 MSS = ${recommended_mss}？(Y/N) [Y]: " confirm
+                confirm=${confirm:-Y}
+                
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    echo ""
+                    apply_mss_clamp_with_value "$recommended_mss"
+                    verify_mss_optimization
+                    break_end
+                else
+                    echo ""
+                    echo -e "${gl_huang}已取消应用${gl_bai}"
+                    sleep 2
+                fi
+                ;;
+            2)
+                # 仅探测MTU
+                detect_path_mtu_multi_region > /dev/null
+                echo ""
+                break_end
+                ;;
+            3)
+                # 手动设置MSS
+                clear
+                echo -e "${gl_kjlan}==========================================${gl_bai}"
+                echo "      手动设置 MSS"
+                echo -e "${gl_kjlan}==========================================${gl_bai}"
+                echo ""
+                
+                echo -e "${gl_zi}常见 MSS 值参考:${gl_bai}"
+                echo "  1460 - 标准以太网（可能在国际链路丢包）"
+                echo "  1448 - PPPoE网络常见值"
+                echo "  1420 - 保守通用值"
+                echo "  1400 - 更保守"
+                echo "  1380 - 极保守"
+                echo ""
+                
+                local manual_mss=""
+                while true; do
+                    read -e -p "请输入 MSS 值 (1000-1460): " manual_mss
+                    if [[ "$manual_mss" =~ ^[0-9]+$ ]] && [ "$manual_mss" -ge 1000 ] && [ "$manual_mss" -le 1460 ]; then
+                        break
+                    else
+                        echo -e "${gl_hong}❌ 无效值，请输入 1000-1460 之间的数字${gl_bai}"
+                    fi
+                done
+                
+                echo ""
+                apply_mss_clamp_with_value "$manual_mss"
+                verify_mss_optimization
+                break_end
+                ;;
+            4)
+                # 验证效果
+                verify_mss_optimization
+                break_end
+                ;;
+            5)
+                # 移除MSS Clamp
+                clear
+                echo -e "${gl_kjlan}==========================================${gl_bai}"
+                echo "      移除 MSS Clamp"
+                echo -e "${gl_kjlan}==========================================${gl_bai}"
+                echo ""
+                
+                read -e -p "确认要移除 MSS Clamp 吗？(Y/N) [N]: " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    echo ""
+                    echo "正在移除..."
+                    iptables -t mangle -F OUTPUT 2>/dev/null
+                    iptables -t mangle -F POSTROUTING 2>/dev/null
+                    
+                    if command -v netfilter-persistent &>/dev/null; then
+                        netfilter-persistent save >/dev/null 2>&1
+                    fi
+                    
+                    echo -e "${gl_lv}✅ MSS Clamp 已移除${gl_bai}"
+                else
+                    echo -e "${gl_huang}已取消${gl_bai}"
+                fi
+                sleep 2
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo -e "${gl_hong}无效选择${gl_bai}"
+                sleep 1
+                ;;
+        esac
+    done
+}
 show_xray_config() {
     clear
     echo -e "${gl_kjlan}=== 查看 Xray 配置 ===${gl_bai}"
@@ -5792,6 +6148,10 @@ show_main_menu() {
     echo "36. 科技lion脚本"
     echo "37. 酷雪云脚本"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━ 网络优化 ━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[重传优化]${gl_bai}"
+    echo "38. MTU检测与MSS优化（消除重传）⭐ 推荐"
+    echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
     echo -e "${gl_hong}99. 完全卸载脚本（卸载所有内容）${gl_bai}"
@@ -5922,6 +6282,9 @@ show_main_menu() {
             ;;
         37)
             run_kxy_script
+            ;;
+        38)
+            mtu_mss_optimization
             ;;
         99)
             uninstall_all
