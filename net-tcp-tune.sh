@@ -2597,8 +2597,13 @@ apply_mss_clamp_with_value() {
     
     # 检查iptables
     if ! command -v iptables &>/dev/null; then
-        echo -e "${gl_hong}错误: 未检测到 iptables${gl_bai}"
-        return 1
+        echo -e "${gl_huang}未检测到 iptables，正在尝试自动安装...${gl_bai}"
+        install_package "iptables"
+        
+        if ! command -v iptables &>/dev/null; then
+            echo -e "${gl_hong}错误: iptables 安装失败，无法设置 MSS Clamp${gl_bai}"
+            return 1
+        fi
     fi
     
     # 备份当前规则
@@ -2738,7 +2743,9 @@ mtu_mss_optimization() {
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then
                         echo ""
                         apply_mss_clamp_with_value "$min_mss"
-                        verify_mss_optimization
+                        if [ $? -eq 0 ]; then
+                            verify_mss_optimization
+                        fi
                         break_end
                     else
                          echo -e "${gl_huang}已取消应用${gl_bai}"
@@ -2766,7 +2773,9 @@ mtu_mss_optimization() {
                     if [ -n "$selected_mss" ]; then
                         echo ""
                         apply_mss_clamp_with_value "$selected_mss"
-                        verify_mss_optimization
+                        if [ $? -eq 0 ]; then
+                            verify_mss_optimization
+                        fi
                         break_end
                     fi
                 fi
