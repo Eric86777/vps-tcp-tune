@@ -2470,9 +2470,9 @@ detect_path_mtu_multi_region() {
         ["韩国"]="147.46.10.20 211.233.0.1 168.126.63.1 210.117.65.1"         # SNU, KT, KT-DNS, SK Broadband
         ["美国-西海岸"]="128.97.27.37 128.32.155.2 198.148.161.11 64.125.0.1"  # UCLA, Berkeley, QuadraNet, Zayo
         ["美国-东海岸"]="18.9.22.69 128.112.128.15 108.61.10.10 23.29.64.1"    # MIT, Princeton, Vultr, Choopa
-        ["欧洲-德国"]="137.226.12.12 141.201.0.1 46.4.0.1 176.9.0.1"          # RWTH, Magdeburg, Hetzner, Hetzner-2
+        ["欧洲-德国"]="141.14.16.1 194.25.0.125 134.130.4.1 85.10.240.1"      # DFN, Telekom, RWTH, Hetzner
         ["欧洲-英国"]="131.111.8.46 163.1.0.1 212.58.244.20 193.136.1.1"       # Cambridge, Oxford, BBC, LINX
-        ["澳洲"]="150.203.1.10 129.78.64.1 202.142.142.142 1.1.1.1"           # ANU, Sydney U, AussieBB, Cloudflare(Last Resort)
+        ["澳洲"]="1.1.1.1 139.130.4.5 203.50.0.1 150.203.1.10"                # Cloudflare, Telstra, Telstra-2, ANU
     )
     
     # 定义显示顺序
