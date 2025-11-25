@@ -6091,66 +6091,64 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
     echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-    echo "4. NS论坛-DNS净化（抗污染/驯服DHCP）"
-    echo "5. Realm转发timeout修复 ⭐ 推荐"
-    echo "6. NS论坛CAKE调优"
-    echo "7. 科技lion高性能模式"
+    echo "4. MTU检测与MSS优化（消除重传）⭐ 推荐"
+    echo "5. NS论坛-DNS净化（抗污染/驯服DHCP）"
+    echo "6. Realm转发timeout修复 ⭐ 推荐"
+    echo "7. NS论坛CAKE调优"
+    echo "8. 科技lion高性能模式"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[网络设置]${gl_bai}"
-    echo "8. 设置IPv4/IPv6优先级"
-    echo "9. IPv6管理（临时/永久禁用/取消）"
-    echo "10. 设置临时SOCKS5代理"
+    echo "9. 设置IPv4/IPv6优先级"
+    echo "10. IPv6管理（临时/永久禁用/取消）"
+    echo "11. 设置临时SOCKS5代理"
     echo ""
     echo -e "${gl_kjlan}[系统管理]${gl_bai}"
-    echo "11. 虚拟内存管理"
-    echo "12. 查看系统详细状态"
+    echo "12. 虚拟内存管理"
+    echo "13. 查看系统详细状态"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
-    echo "13. Realm转发连接分析"
-    echo "14. Realm强制使用IPv4 ⭐ 推荐"
-    echo "15. IPv4/IPv6连接检测"
+    echo "14. Realm转发连接分析"
+    echo "15. Realm强制使用IPv4 ⭐ 推荐"
+    echo "16. IPv4/IPv6连接检测"
     echo ""
     echo -e "${gl_kjlan}[Xray配置]${gl_bai}"
-    echo "16. 查看Xray配置"
-    echo "17. 设置Xray IPv6出站"
-    echo "18. 恢复Xray默认配置"
+    echo "17. 查看Xray配置"
+    echo "18. 设置Xray IPv6出站"
+    echo "19. 恢复Xray默认配置"
     echo ""
     echo -e "${gl_kjlan}[代理部署]${gl_bai}"
-    echo "19. 星辰大海Snell协议 ⭐ 推荐"
-    echo "20. 星辰大海Xray一键双协议 ⭐ 推荐"
-    echo "21. 禁止端口通过中国大陆直连"
-    echo "22. 一键部署SOCKS5代理"
-    echo "23. Sub-Store多实例管理"
-    echo "24. 一键反代 🎯 ⭐ 推荐"
+    echo "20. 星辰大海Snell协议 ⭐ 推荐"
+    echo "21. 星辰大海Xray一键双协议 ⭐ 推荐"
+    echo "22. 禁止端口通过中国大陆直连"
+    echo "23. 一键部署SOCKS5代理"
+    echo "24. Sub-Store多实例管理"
+    echo "25. 一键反代 🎯 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
-    echo "25. IP质量检测（IPv4+IPv6）"
-    echo "26. IP质量检测（仅IPv4）⭐ 推荐"
+    echo "26. IP质量检测（IPv4+IPv6）"
+    echo "27. IP质量检测（仅IPv4）⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[网络测试]${gl_bai}"
-    echo "27. 服务器带宽测试"
-    echo "28. iperf3单线程测试"
-    echo "29. 国际互联速度测试 ⭐ 推荐"
-    echo "30. 网络延迟质量检测 ⭐ 推荐"
-    echo "31. 三网回程路由测试 ⭐ 推荐"
+    echo "28. 服务器带宽测试"
+    echo "29. iperf3单线程测试"
+    echo "30. 国际互联速度测试 ⭐ 推荐"
+    echo "31. 网络延迟质量检测 ⭐ 推荐"
+    echo "32. 三网回程路由测试 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
-    echo "32. IP媒体/AI解锁检测 ⭐ 推荐"
-    echo "33. NS一键检测脚本 ⭐ 推荐"
+    echo "33. IP媒体/AI解锁检测 ⭐ 推荐"
+    echo "34. NS一键检测脚本 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "34. PF_realm转发脚本 ⭐ 推荐"
-    echo "35. F佬一键sing box脚本"
-    echo "36. 科技lion脚本"
-    echo "37. 酷雪云脚本"
+    echo "35. PF_realm转发脚本 ⭐ 推荐"
+    echo "36. F佬一键sing box脚本"
+    echo "37. 科技lion脚本"
+    echo "38. 酷雪云脚本"
     echo ""
-    echo -e "${gl_kjlan}━━━━━━━━━━━ 网络优化 ━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}[重传优化]${gl_bai}"
-    echo "38. MTU检测与MSS优化（消除重传）⭐ 推荐"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -6181,110 +6179,110 @@ show_main_menu() {
             break_end
             ;;
         4)
-            dns_purify_and_harden
+            mtu_mss_optimization
             ;;
         5)
+            dns_purify_and_harden
+            ;;
+        6)
             realm_fix_timeout
             break_end
             ;;
-        6)
+        7)
             startbbrcake
             ;;
-        7)
+        8)
             Kernel_optimize
             ;;
-        8)
+        9)
             manage_ip_priority
             ;;
-        9)
+        10)
             manage_ipv6
             ;;
-        10)
+        11)
             set_temp_socks5_proxy
             ;;
-        11)
+        12)
             manage_swap
             ;;
-        12)
+        13)
             show_detailed_status
             ;;
-        13)
+        14)
             analyze_realm_connections
             ;;
-        14)
+        15)
             realm_ipv4_management
             ;;
-        15)
+        16)
             check_ipv4v6_connections
             ;;
-        16)
+        17)
             show_xray_config
             ;;
-        17)
+        18)
             set_xray_ipv6_outbound
             ;;
-        18)
+        19)
             restore_xray_default
             ;;
-        19)
+        20)
             snell_menu
             ;;
-        20)
+        21)
             run_xinchendahai_xray
             ;;
-        21)
+        22)
             manage_cn_ip_block
             ;;
-        22)
+        23)
             deploy_socks5
             ;;
-        23)
+        24)
             manage_substore
             ;;
-        24)
+        25)
             manage_reverse_proxy
             ;;
-        25)
+        26)
             run_ip_quality_check
             ;;
-        26)
+        27)
             run_ip_quality_check_ipv4
             ;;
-        27)
+        28)
             run_speedtest
             ;;
-        28)
+        29)
             iperf3_single_thread_test
             ;;
-        29)
+        30)
             run_international_speed_test
             ;;
-        30)
+        31)
             run_network_latency_check
             ;;
-        31)
+        32)
             run_backtrace
             ;;
-        32)
+        33)
             run_unlock_check
             ;;
-        33)
+        34)
             run_ns_detect
             ;;
-        34)
+        35)
             run_pf_realm
             ;;
-        35)
+        36)
             run_fscarmen_singbox
             ;;
-        36)
+        37)
             run_kejilion_script
             ;;
-        37)
-            run_kxy_script
-            ;;
         38)
-            mtu_mss_optimization
+            run_kxy_script
             ;;
         99)
             uninstall_all
