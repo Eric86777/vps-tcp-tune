@@ -2450,28 +2450,29 @@ check_ipv4v6_connections() {
 
 # 多地区 MTU 路径探测
 detect_path_mtu_multi_region() {
-    clear
-    echo -e "${gl_kjlan}==========================================${gl_bai}"
-    echo "      MTU 路径探测（多地区检测）"
-    echo -e "${gl_kjlan}==========================================${gl_bai}"
-    echo ""
+    clear >&2
+    echo -e "${gl_kjlan}==========================================${gl_bai}" >&2
+    echo "      MTU 路径探测（多地区检测）" >&2
+    echo -e "${gl_kjlan}==========================================${gl_bai}" >&2
+    echo "" >&2
     
-    echo -e "${gl_zi}正在探测到全球多个地区的路径 MTU...${gl_bai}"
-    echo -e "${gl_huang}注意: 已排除 Anycast IP (如 1.1.1.1/8.8.8.8)，确保检测真实物理路径${gl_bai}"
-    echo ""
+    echo -e "${gl_zi}正在探测到全球多个地区的路径 MTU...${gl_bai}" >&2
+    echo -e "${gl_huang}注意: 已排除 Anycast IP (如 1.1.1.1/8.8.8.8)，确保检测真实物理路径${gl_bai}" >&2
+    echo "" >&2
     
-    # 定义测试目标 (使用 verified Unicast IPs)
+    # 定义测试目标 (主IP + 备选IP，确保高可用)
+    # 策略：优先使用大学/骨干网 Unicast IP，避免 Anycast
     declare -A targets=(
-        ["香港"]="223.255.255.1"             # PCCW
-        ["日本-东京"]="35.200.0.1"           # GCP Tokyo
-        ["日本-大阪"]="203.178.148.19"       # WIDE Project
-        ["新加坡"]="139.162.23.4"            # Linode SG
-        ["韩国"]="168.126.63.1"              # KT DNS
-        ["美国-西海岸"]="198.148.161.11"      # QuadraNet LA
-        ["美国-东海岸"]="108.61.10.10"        # Vultr NJ
-        ["欧洲-德国"]="46.4.0.1"             # Hetzner
-        ["欧洲-英国"]="212.58.244.20"        # BBC
-        ["澳洲"]="202.142.142.142"           # Aussie Broadband
+        ["香港"]="147.8.17.13 202.45.170.1"          # HKU, HKIX
+        ["日本-东京"]="133.11.0.1 202.232.2.1"       # U-Tokyo, JAIST
+        ["日本-大阪"]="133.1.138.1 203.178.148.19"   # Osaka U, WIDE
+        ["新加坡"]="137.132.80.25 202.156.0.1"       # NUS, Singtel
+        ["韩国"]="147.46.10.20 211.233.0.1"          # SNU, Korea Telecom
+        ["美国-西海岸"]="128.97.27.37 128.32.155.2"   # UCLA, UC Berkeley
+        ["美国-东海岸"]="18.9.22.69 128.112.128.15"   # MIT, Princeton
+        ["欧洲-德国"]="137.226.12.12 141.201.0.1"    # RWTH, Magdeburg
+        ["欧洲-英国"]="131.111.8.46 163.1.0.1"       # Cambridge, Oxford
+        ["澳洲"]="150.203.1.10 129.78.64.1"          # ANU, Sydney U
     )
     
     # 定义显示顺序
@@ -2482,20 +2483,37 @@ detect_path_mtu_multi_region() {
     local test_count=0
     local success_count=0
     
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     
     for region in "${regions_order[@]}"; do
-        target="${targets[$region]}"
         test_count=$((test_count + 1))
+        local target_list="${targets[$region]}"
+        local active_target=""
         
-        echo -e "${gl_huang}[${test_count}/${#regions_order[@]}] ${gl_bai}测试目标: ${gl_kjlan}${region}${gl_bai} (${target})"
+        # 1. 连通性检查 (选择可用的 IP)
+        for ip in $target_list; do
+            if ping -c 1 -W 1 "$ip" &>/dev/null; then
+                active_target="$ip"
+                break
+            fi
+        done
         
+        echo -e "${gl_huang}[${test_count}/${#regions_order[@]}] ${gl_bai}测试目标: ${gl_kjlan}${region}${gl_bai}" >&2
+        
+        if [ -z "$active_target" ]; then
+             echo -e "  ${gl_huang}⚠️  无法探测 (所有测试IP均不可达)${gl_bai}" >&2
+             mss_values[$region]=1280  # 默认安全值
+             echo "" >&2
+             continue
+        fi
+
+        # 2. 开始 MTU 探测
         local found=0
         for size in 1500 1492 1480 1460 1452 1440 1420 1400 1380 1360 1340 1320 1300; do
-            if ping -M do -s $size -c 1 -W 1 $target &>/dev/null; then
+            if ping -M do -s $size -c 1 -W 1 $active_target &>/dev/null; then
                 local mtu=$((size + 28))
                 local mss=$((size + 28 - 40))
-                echo -e "  ${gl_lv}✅ MTU=${mtu}, MSS=${mss}${gl_bai}"
+                echo -e "  ${gl_lv}✅ MTU=${mtu}, MSS=${mss}${gl_bai} (Target: $active_target)" >&2
                 mss_values[$region]=$mss
                 found=1
                 success_count=$((success_count + 1))
@@ -2504,14 +2522,14 @@ detect_path_mtu_multi_region() {
         done
         
         if [ $found -eq 0 ]; then
-            echo -e "  ${gl_huang}⚠️  无法探测（网络不通或超时）${gl_bai}"
-            mss_values[$region]=1280  # 使用安全保守值
+            echo -e "  ${gl_huang}⚠️  探测失败 (ICMP分片被拦截)${gl_bai}" >&2
+            mss_values[$region]=1280
         fi
-        echo ""
+        echo "" >&2
     done
     
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    echo "" >&2
     
     # 找出最小的 MSS
     local min_mss=9999
@@ -2532,42 +2550,42 @@ detect_path_mtu_multi_region() {
     done
     
     # 显示汇总结果
-    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_lv}✅ 探测完成！${gl_bai}"
-    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo ""
-    echo "各地区 MSS 检测结果："
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}" >&2
+    echo -e "${gl_lv}✅ 探测完成！${gl_bai}" >&2
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}" >&2
+    echo "" >&2
+    echo "各地区 MSS 检测结果：" >&2
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     for region in "${regions_order[@]}"; do
         if [ -n "${mss_values[$region]}" ]; then
             local mss=${mss_values[$region]}
-            echo -e "  ${gl_zi}${region}:${gl_bai} ${mss} bytes"
+            echo -e "  ${gl_zi}${region}:${gl_bai} ${mss} bytes" >&2
         fi
     done
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    echo "" >&2
     
     # 判断是否一致
     if [ $min_mss -eq $max_mss ]; then
-        echo -e "${gl_lv}✅ 所有地区 MSS 完全一致！${gl_bai}"
-        echo -e "${gl_kjlan}推荐 MSS:${gl_bai} ${gl_lv}${min_mss}${gl_bai} bytes"
-        echo -e "${gl_zi}说明: 所有地区MTU相同，使用此值性能最优${gl_bai}"
+        echo -e "${gl_lv}✅ 所有地区 MSS 完全一致！${gl_bai}" >&2
+        echo -e "${gl_kjlan}推荐 MSS:${gl_bai} ${gl_lv}${min_mss}${gl_bai} bytes" >&2
+        echo -e "${gl_zi}说明: 所有地区MTU相同，使用此值性能最优${gl_bai}" >&2
     else
         local diff=$((max_mss - min_mss))
-        echo -e "${gl_huang}⚠️  不同地区 MSS 有差异（${diff} bytes）${gl_bai}"
-        echo ""
-        echo -e "  最小值: ${gl_huang}${min_mss}${gl_bai} (${min_region})"
-        echo -e "  最大值: ${gl_huang}${max_mss}${gl_bai} (${max_region})"
-        echo ""
-        echo -e "${gl_kjlan}推荐策略：${gl_bai}"
-        echo -e "  1. ${gl_lv}保守方案:${gl_bai} 使用最小值 ${min_mss} (兼容所有地区)"
-        echo -e "  2. ${gl_huang}激进方案:${gl_bai} 使用最大值 ${max_mss} (性能最优，部分地区可能丢包)"
-        echo -e "  3. ${gl_zi}折中方案:${gl_bai} 使用中间值 $(( (min_mss + max_mss) / 2 ))"
+        echo -e "${gl_huang}⚠️  不同地区 MSS 有差异（${diff} bytes）${gl_bai}" >&2
+        echo "" >&2
+        echo -e "  最小值: ${gl_huang}${min_mss}${gl_bai} (${min_region})" >&2
+        echo -e "  最大值: ${gl_huang}${max_mss}${gl_bai} (${max_region})" >&2
+        echo "" >&2
+        echo -e "${gl_kjlan}推荐策略：${gl_bai}" >&2
+        echo -e "  1. ${gl_lv}保守方案:${gl_bai} 使用最小值 ${min_mss} (兼容所有地区)" >&2
+        echo -e "  2. ${gl_huang}激进方案:${gl_bai} 使用最大值 ${max_mss} (性能最优，部分地区可能丢包)" >&2
+        echo -e "  3. ${gl_zi}折中方案:${gl_bai} 使用中间值 $(( (min_mss + max_mss) / 2 ))" >&2
     fi
-    echo ""
+    echo "" >&2
     
-    # 返回推荐的MSS值（最小值，最保守）
-    echo "$min_mss"
+    # 返回推荐的MSS值（最小值，最大值）
+    echo "$min_mss $max_mss"
 }
 
 # 应用 MSS Clamp 规则
@@ -2684,16 +2702,7 @@ mtu_mss_optimization() {
         echo "1. 自动检测并优化 ⭐ 推荐"
         echo "   （多地区MTU探测 + 自动设置最佳MSS）"
         echo ""
-        echo "2. 仅探测MTU（不应用）"
-        echo "   （查看各地区MTU，但不修改配置）"
-        echo ""
-        echo "3. 手动设置MSS值"
-        echo "   （自行指定MSS值）"
-        echo ""
-        echo "4. 验证优化效果"
-        echo "   （查看重传率变化）"
-        echo ""
-        echo "5. 移除MSS Clamp"
+        echo "2. 移除MSS Clamp"
         echo "   （恢复默认配置）"
         echo ""
         echo "0. 返回主菜单"
@@ -2706,74 +2715,63 @@ mtu_mss_optimization() {
         case $choice in
             1)
                 # 自动检测并优化
-                clear
-                echo -e "${gl_kjlan}==========================================${gl_bai}"
-                echo "      自动检测并优化"
-                echo -e "${gl_kjlan}==========================================${gl_bai}"
-                echo ""
-                
                 # 执行MTU检测
-                local recommended_mss=$(detect_path_mtu_multi_region)
+                local mss_result=$(detect_path_mtu_multi_region)
+                local min_mss=$(echo "$mss_result" | awk '{print $1}')
+                local max_mss=$(echo "$mss_result" | awk '{print $2}')
                 
+                if [ -z "$min_mss" ] || [ -z "$max_mss" ]; then
+                     echo -e "${gl_hong}检测失败，无法获取MSS值${gl_bai}"
+                     sleep 2
+                     break_end
+                     continue
+                fi
+
+                local mid_mss=$(( (min_mss + max_mss) / 2 ))
+
                 echo ""
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                read -e -p "是否应用推荐的 MSS = ${recommended_mss}？(Y/N) [Y]: " confirm
-                confirm=${confirm:-Y}
                 
-                if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                    echo ""
-                    apply_mss_clamp_with_value "$recommended_mss"
-                    verify_mss_optimization
-                    break_end
+                if [ "$min_mss" -eq "$max_mss" ]; then
+                    read -e -p "是否应用推荐的 MSS = ${min_mss}？(Y/N) [Y]: " confirm
+                    confirm=${confirm:-Y}
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        echo ""
+                        apply_mss_clamp_with_value "$min_mss"
+                        verify_mss_optimization
+                        break_end
+                    else
+                         echo -e "${gl_huang}已取消应用${gl_bai}"
+                         sleep 2
+                    fi
                 else
+                    echo "请选择优化策略:"
+                    echo "  1) 保守方案 (${min_mss})"
+                    echo "  2) 激进方案 (${max_mss})"
+                    echo "  3) 折中方案 (${mid_mss})"
+                    echo "  0) 取消"
                     echo ""
-                    echo -e "${gl_huang}已取消应用${gl_bai}"
-                    sleep 2
+                    read -e -p "请输入选择 [1]: " strategy
+                    strategy=${strategy:-1}
+                    
+                    local selected_mss=""
+                    case $strategy in
+                        1) selected_mss=$min_mss ;;
+                        2) selected_mss=$max_mss ;;
+                        3) selected_mss=$mid_mss ;;
+                        0) echo -e "${gl_huang}已取消${gl_bai}"; sleep 2; ;;
+                        *) echo -e "${gl_hong}无效选择${gl_bai}"; sleep 2; ;;
+                    esac
+                    
+                    if [ -n "$selected_mss" ]; then
+                        echo ""
+                        apply_mss_clamp_with_value "$selected_mss"
+                        verify_mss_optimization
+                        break_end
+                    fi
                 fi
                 ;;
             2)
-                # 仅探测MTU
-                detect_path_mtu_multi_region > /dev/null
-                echo ""
-                break_end
-                ;;
-            3)
-                # 手动设置MSS
-                clear
-                echo -e "${gl_kjlan}==========================================${gl_bai}"
-                echo "      手动设置 MSS"
-                echo -e "${gl_kjlan}==========================================${gl_bai}"
-                echo ""
-                
-                echo -e "${gl_zi}常见 MSS 值参考:${gl_bai}"
-                echo "  1460 - 标准以太网（可能在国际链路丢包）"
-                echo "  1448 - PPPoE网络常见值"
-                echo "  1420 - 保守通用值"
-                echo "  1400 - 更保守"
-                echo "  1380 - 极保守"
-                echo ""
-                
-                local manual_mss=""
-                while true; do
-                    read -e -p "请输入 MSS 值 (1000-1460): " manual_mss
-                    if [[ "$manual_mss" =~ ^[0-9]+$ ]] && [ "$manual_mss" -ge 1000 ] && [ "$manual_mss" -le 1460 ]; then
-                        break
-                    else
-                        echo -e "${gl_hong}❌ 无效值，请输入 1000-1460 之间的数字${gl_bai}"
-                    fi
-                done
-                
-                echo ""
-                apply_mss_clamp_with_value "$manual_mss"
-                verify_mss_optimization
-                break_end
-                ;;
-            4)
-                # 验证效果
-                verify_mss_optimization
-                break_end
-                ;;
-            5)
                 # 移除MSS Clamp
                 clear
                 echo -e "${gl_kjlan}==========================================${gl_bai}"
