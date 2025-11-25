@@ -2457,16 +2457,25 @@ detect_path_mtu_multi_region() {
     echo ""
     
     echo -e "${gl_zi}正在探测到全球多个地区的路径 MTU...${gl_bai}"
+    echo -e "${gl_huang}注意: 已排除 Anycast IP (如 1.1.1.1/8.8.8.8)，确保检测真实物理路径${gl_bai}"
     echo ""
     
-    # 定义测试目标
+    # 定义测试目标 (使用 verified Unicast IPs)
     declare -A targets=(
-        ["香港"]="8.8.8.8"
-        ["日本"]="156.146.33.1"
-        ["新加坡"]="202.12.27.33"
-        ["美国"]="1.1.1.1"
-        ["欧洲"]="8.8.4.4"
+        ["香港"]="223.255.255.1"             # PCCW
+        ["日本-东京"]="35.200.0.1"           # GCP Tokyo
+        ["日本-大阪"]="203.178.148.19"       # WIDE Project
+        ["新加坡"]="139.162.23.4"            # Linode SG
+        ["韩国"]="168.126.63.1"              # KT DNS
+        ["美国-西海岸"]="198.148.161.11"      # QuadraNet LA
+        ["美国-东海岸"]="108.61.10.10"        # Vultr NJ
+        ["欧洲-德国"]="46.4.0.1"             # Hetzner
+        ["欧洲-英国"]="212.58.244.20"        # BBC
+        ["澳洲"]="202.142.142.142"           # Aussie Broadband
     )
+    
+    # 定义显示顺序
+    local regions_order=("香港" "日本-东京" "日本-大阪" "新加坡" "韩国" "美国-西海岸" "美国-东海岸" "欧洲-德国" "欧洲-英国" "澳洲")
     
     # 存储每个目标的 MSS
     declare -A mss_values
@@ -2475,15 +2484,15 @@ detect_path_mtu_multi_region() {
     
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    for region in "${!targets[@]}"; do
+    for region in "${regions_order[@]}"; do
         target="${targets[$region]}"
         test_count=$((test_count + 1))
         
-        echo -e "${gl_huang}[${test_count}/5] ${gl_bai}测试目标: ${gl_kjlan}${region}${gl_bai} (${target})"
+        echo -e "${gl_huang}[${test_count}/${#regions_order[@]}] ${gl_bai}测试目标: ${gl_kjlan}${region}${gl_bai} (${target})"
         
         local found=0
-        for size in 1500 1480 1460 1440 1420 1400 1380 1360 1340 1320 1300; do
-            if ping -M do -s $size -c 2 -W 2 $target &>/dev/null; then
+        for size in 1500 1492 1480 1460 1452 1440 1420 1400 1380 1360 1340 1320 1300; do
+            if ping -M do -s $size -c 1 -W 1 $target &>/dev/null; then
                 local mtu=$((size + 28))
                 local mss=$((size + 28 - 40))
                 echo -e "  ${gl_lv}✅ MTU=${mtu}, MSS=${mss}${gl_bai}"
@@ -2496,7 +2505,7 @@ detect_path_mtu_multi_region() {
         
         if [ $found -eq 0 ]; then
             echo -e "  ${gl_huang}⚠️  无法探测（网络不通或超时）${gl_bai}"
-            mss_values[$region]=1300  # 使用最保守值
+            mss_values[$region]=1280  # 使用安全保守值
         fi
         echo ""
     done
@@ -2529,7 +2538,7 @@ detect_path_mtu_multi_region() {
     echo ""
     echo "各地区 MSS 检测结果："
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    for region in 香港 日本 新加坡 美国 欧洲; do
+    for region in "${regions_order[@]}"; do
         if [ -n "${mss_values[$region]}" ]; then
             local mss=${mss_values[$region]}
             echo -e "  ${gl_zi}${region}:${gl_bai} ${mss} bytes"
