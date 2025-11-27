@@ -5439,11 +5439,89 @@ DBUS_FIX
     # ==================== 阶段四：配置网卡DNS ====================
     echo -e "${gl_kjlan}[阶段 4/4] 配置网卡DNS（立即生效）...${gl_bai}"
     echo ""
+    
+    # 🔥 强力保障：阶段4执行前二次验证resolvectl（确保100%成功）
+    echo "  → 验证 resolvectl 命令状态..."
+    local resolvectl_ready=true
+    
+    # 快速测试resolvectl是否响应（2秒超时）
+    if ! timeout 2 resolvectl status >/dev/null 2>&1; then
+        echo -e "${gl_huang}  ⚠️  resolvectl 仍无响应${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_huang}检测到 resolvectl 命令无法正常工作${gl_bai}"
+        echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "这可能导致阶段4的网卡级DNS配置失败。"
+        echo ""
+        echo "你可以选择："
+        echo "  1) 尝试强制修复（会重启systemd-resolved，有临时DNS保护）"
+        echo "  2) 跳过网卡配置（安全，全局DNS已生效，推荐）"
+        echo ""
+        read -e -p "$(echo -e "${gl_huang}请选择 (1/2，默认2): ${gl_bai}")" force_fix_choice
+        force_fix_choice=${force_fix_choice:-2}
+        
+        if [[ "$force_fix_choice" == "1" ]]; then
+            echo ""
+            echo -e "${gl_kjlan}正在执行强制修复...${gl_bai}"
+            resolvectl_ready=false
+            
+            # 强制修复：重启systemd-resolved重新注册D-Bus
+            echo "  → 创建临时DNS保护..."
+            
+            # 创建临时DNS保护
+            cat > /etc/resolv.conf.stage4_temp << 'STAGE4_TEMP'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+STAGE4_TEMP
+            cp /etc/resolv.conf /etc/resolv.conf.stage4_backup 2>/dev/null || true
+            cp /etc/resolv.conf.stage4_temp /etc/resolv.conf
+            
+            echo "  → 强制重启 systemd-resolved..."
+            # 完全重启服务
+            systemctl stop systemd-resolved 2>/dev/null || true
+            sleep 2
+            systemctl start systemd-resolved 2>/dev/null || true
+            sleep 3
+            
+            # 恢复链接
+            echo "  → 恢复 resolv.conf 链接..."
+            if [[ -f /run/systemd/resolve/stub-resolv.conf ]]; then
+                rm -f /etc/resolv.conf
+                ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+            fi
+            
+            # 清理临时文件
+            rm -f /etc/resolv.conf.stage4_temp /etc/resolv.conf.stage4_backup
+            
+            # 再次验证
+            echo "  → 验证修复结果..."
+            if timeout 2 resolvectl status >/dev/null 2>&1; then
+                echo -e "${gl_lv}  ✅ resolvectl 已修复，可以继续${gl_bai}"
+                resolvectl_ready=true
+            else
+                echo -e "${gl_huang}  ⚠️  resolvectl 仍无法正常工作${gl_bai}"
+                echo -e "${gl_lv}  ✅ 将跳过网卡级DNS配置（全局DNS已生效）${gl_bai}"
+                resolvectl_ready=false
+            fi
+            echo ""
+        else
+            echo ""
+            echo -e "${gl_lv}已选择跳过强制修复（安全选择）${gl_bai}"
+            echo -e "${gl_lv}将跳过网卡级DNS配置，全局DNS配置已生效${gl_bai}"
+            resolvectl_ready=false
+            echo ""
+        fi
+    else
+        echo -e "${gl_lv}  ✅ resolvectl 响应正常${gl_bai}"
+    fi
+    
+    echo ""
 
     # 检测主网卡
     local main_interface=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
 
-    if [[ -n "$main_interface" ]] && command -v resolvectl &> /dev/null; then
+    if [[ -n "$main_interface" ]] && command -v resolvectl &> /dev/null && [ "$resolvectl_ready" = true ]; then
         echo "  → 检测到主网卡: ${main_interface}"
         
         # 🛡️ 关键修复：检查timeout命令是否可用
