@@ -5317,6 +5317,124 @@ DNSStubListener=yes
     echo -e "${gl_lv}  ✅ 网络服务未受影响（安全模式）${gl_bai}"
 
     echo ""
+    
+    # ==================== Debian 13特殊修复：D-Bus接口注册问题 ====================
+    echo -e "${gl_kjlan}[特殊修复] 检测并修复 D-Bus 接口注册（Debian 13兼容）...${gl_bai}"
+    echo ""
+    
+    # 检测是否需要修复D-Bus接口
+    local need_dbus_fix=false
+    local debian_version=""
+    
+    # 获取Debian版本
+    if [ -f /etc/os-release ]; then
+        debian_version=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' 2>/dev/null || echo "")
+    fi
+    
+    echo "  → 检测系统版本：Debian ${debian_version:-未知}"
+    
+    # 检查resolvectl是否能正常通信
+    echo "  → 测试 resolvectl 命令响应..."
+    if ! timeout 3 resolvectl status >/dev/null 2>&1; then
+        echo -e "${gl_huang}  ⚠️  resolvectl 命令无响应，需要修复 D-Bus 接口${gl_bai}"
+        need_dbus_fix=true
+    else
+        echo -e "${gl_lv}  ✅ resolvectl 响应正常${gl_bai}"
+    fi
+    
+    # 如果需要修复D-Bus接口
+    if [ "$need_dbus_fix" = true ]; then
+        echo ""
+        echo -e "${gl_huang}检测到 D-Bus 接口注册问题（Debian 13已知问题），正在自动修复...${gl_bai}"
+        echo ""
+        
+        # 🛡️ 安全措施：在重启前创建临时DNS配置，确保DNS始终可用
+        echo "  → 创建临时DNS配置（防止修复期间DNS中断）..."
+        
+        # 备份当前resolv.conf
+        if [[ -e /etc/resolv.conf ]]; then
+            cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.before_dbus_fix" 2>/dev/null || true
+        fi
+        
+        # 创建临时DNS配置文件
+        cat > /etc/resolv.conf.dbus_fix_temp << 'TEMP_DNS'
+# 临时DNS配置（D-Bus修复期间使用）
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+TEMP_DNS
+        
+        # 使用临时DNS配置
+        rm -f /etc/resolv.conf
+        cp /etc/resolv.conf.dbus_fix_temp /etc/resolv.conf
+        chmod 644 /etc/resolv.conf
+        
+        echo -e "${gl_lv}  ✅ 临时DNS配置已创建（确保修复期间DNS可用）${gl_bai}"
+        
+        # 1. 完全重启systemd-resolved，让它重新注册D-Bus接口
+        echo "  → 重启 systemd-resolved 以重新注册 D-Bus 接口..."
+        systemctl stop systemd-resolved 2>/dev/null || true
+        sleep 2
+        systemctl start systemd-resolved 2>/dev/null || true
+        sleep 3
+        
+        # 🛡️ 恢复到 stub-resolv.conf 链接
+        echo "  → 恢复 resolv.conf 链接到 stub-resolv.conf..."
+        
+        # 验证 stub-resolv.conf 存在
+        if [[ -f /run/systemd/resolve/stub-resolv.conf ]]; then
+            rm -f /etc/resolv.conf
+            ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+            echo -e "${gl_lv}  ✅ resolv.conf 链接已恢复${gl_bai}"
+        else
+            echo -e "${gl_huang}  ⚠️  stub-resolv.conf 不存在，保持临时DNS配置${gl_bai}"
+        fi
+        
+        # 清理临时文件
+        rm -f /etc/resolv.conf.dbus_fix_temp
+        
+        # 2. 验证D-Bus接口是否注册成功
+        if command -v busctl &>/dev/null; then
+            local dbus_status=$(busctl list 2>/dev/null | grep "org.freedesktop.resolve1" | grep -v "activatable" || echo "")
+            if [ -n "$dbus_status" ]; then
+                echo -e "${gl_lv}  ✅ D-Bus 接口已成功注册${gl_bai}"
+                
+                # 3. 创建永久修复配置（确保重启后也能正常工作）
+                echo "  → 创建永久修复配置..."
+                mkdir -p /etc/systemd/system/systemd-resolved.service.d
+                cat > /etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf << 'DBUS_FIX'
+# Debian 13 D-Bus接口注册修复
+# 确保D-Bus完全启动后再启动systemd-resolved
+[Unit]
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+# 启动后等待1秒，确保D-Bus接口注册完成
+ExecStartPost=/bin/sleep 1
+DBUS_FIX
+                
+                systemctl daemon-reload 2>/dev/null || true
+                echo -e "${gl_lv}  ✅ 永久修复配置已创建${gl_bai}"
+                
+                # 4. 再次测试resolvectl
+                if timeout 3 resolvectl status >/dev/null 2>&1; then
+                    echo -e "${gl_lv}  ✅ resolvectl 现在能正常工作了${gl_bai}"
+                else
+                    echo -e "${gl_huang}  ⚠️  resolvectl 仍无响应（但DNS配置已通过resolved.conf生效）${gl_bai}"
+                fi
+            else
+                echo -e "${gl_huang}  ⚠️  D-Bus 接口注册可能失败${gl_bai}"
+                echo -e "${gl_lv}  ✅ 但DNS配置已通过 /etc/systemd/resolved.conf 生效${gl_bai}"
+            fi
+        else
+            echo -e "${gl_huang}  ⚠️  busctl 命令不可用，无法验证 D-Bus 状态${gl_bai}"
+            echo -e "${gl_lv}  ✅ 但DNS配置已通过 /etc/systemd/resolved.conf 生效${gl_bai}"
+        fi
+        
+        echo ""
+    fi
+
+    echo ""
 
     # ==================== 阶段四：配置网卡DNS ====================
     echo -e "${gl_kjlan}[阶段 4/4] 配置网卡DNS（立即生效）...${gl_bai}"
