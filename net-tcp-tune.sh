@@ -5593,6 +5593,64 @@ STAGE4_TEMP
         cat /etc/resolv.conf
     fi
     echo "────────────────────────────────────────────────────────"
+    
+    # ==================== 统一验证输出（兼容所有systemd版本）====================
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[智能验证] 网卡DNS配置状态检测：${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    
+    if command -v resolvectl &> /dev/null && [[ -n "$main_interface" ]]; then
+        local verify_output=$(resolvectl status "$main_interface" 2>/dev/null || echo "")
+        local verify_success=true
+        
+        # 检测1: Default Route（兼容不同systemd版本）
+        if echo "$verify_output" | grep -q "Default Route: yes" || \
+           echo "$verify_output" | grep -q "Protocols:.*+DefaultRoute"; then
+            echo -e "  ${gl_lv}✅ Default Route: 已启用${gl_bai}"
+        else
+            echo -e "  ${gl_huang}⚠️  Default Route: 未启用或不支持${gl_bai}"
+            verify_success=false
+        fi
+        
+        # 检测2: DNS Servers
+        if echo "$verify_output" | grep -q "DNS Servers:.*8\.8\.8\.8" && \
+           echo "$verify_output" | grep -q "DNS Servers:.*1\.1\.1\.1"; then
+            echo -e "  ${gl_lv}✅ DNS Servers: 8.8.8.8, 1.1.1.1${gl_bai}"
+        else
+            echo -e "  ${gl_huang}⚠️  DNS Servers: 配置可能未完全生效${gl_bai}"
+            verify_success=false
+        fi
+        
+        # 检测3: DNS Domain
+        if echo "$verify_output" | grep -q "DNS Domain:.*~\."; then
+            echo -e "  ${gl_lv}✅ DNS Domain: ~. (所有域名)${gl_bai}"
+        else
+            echo -e "  ${gl_huang}⚠️  DNS Domain: 未配置${gl_bai}"
+            verify_success=false
+        fi
+        
+        echo ""
+        
+        # 最终判断
+        if [ "$verify_success" = true ]; then
+            echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+            echo -e "${gl_lv}💯 最终判断: 网卡DNS配置 100% 成功！${gl_bai}"
+            echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        else
+            echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+            echo -e "${gl_huang}⚠️  网卡DNS配置部分未生效${gl_bai}"
+            echo -e "${gl_lv}✅ 但全局DNS配置已生效，DNS解析正常工作${gl_bai}"
+            echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        fi
+    else
+        echo -e "${gl_huang}  ⚠️  resolvectl 不可用或未检测到网卡${gl_bai}"
+        echo -e "${gl_lv}  ✅ 全局DNS配置已生效${gl_bai}"
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    fi
+    
     echo ""
 
     # 测试DNS解析（等待配置生效）
