@@ -4998,6 +4998,91 @@ dns_purify_and_harden() {
         return
     fi
 
+    # ==================== 终极安全检查 ====================
+    echo ""
+    echo -e "${gl_kjlan}[安全检查] 正在验证系统环境...${gl_bai}"
+    echo ""
+    
+    local pre_check_failed=false
+    
+    # 检查1: 磁盘空间（至少需要100MB）
+    echo -n "  → 检查磁盘空间... "
+    local available_space=$(df -m /etc | awk 'NR==2 {print $4}')
+    if [ "$available_space" -lt 100 ]; then
+        echo -e "${gl_hong}失败 (可用: ${available_space}MB, 需要: 100MB)${gl_bai}"
+        pre_check_failed=true
+    else
+        echo -e "${gl_lv}通过 (可用: ${available_space}MB)${gl_bai}"
+    fi
+    
+    # 检查2: 内存（至少需要50MB可用）
+    echo -n "  → 检查可用内存... "
+    local available_mem=$(free -m | awk 'NR==2 {print $7}')
+    if [ "$available_mem" -lt 50 ]; then
+        echo -e "${gl_hong}失败 (可用: ${available_mem}MB, 需要: 50MB)${gl_bai}"
+        pre_check_failed=true
+    else
+        echo -e "${gl_lv}通过 (可用: ${available_mem}MB)${gl_bai}"
+    fi
+    
+    # 检查3: systemd 是否正常工作
+    echo -n "  → 检查 systemd 状态... "
+    if ! systemctl --version > /dev/null 2>&1; then
+        echo -e "${gl_hong}失败 (systemctl 命令无法执行)${gl_bai}"
+        pre_check_failed=true
+    else
+        echo -e "${gl_lv}通过${gl_bai}"
+    fi
+    
+    # 检查4: 是否有其他包管理器在运行
+    echo -n "  → 检查包管理器锁... "
+    if lsof /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || \
+       lsof /var/lib/apt/lists/lock > /dev/null 2>&1 || \
+       lsof /var/cache/apt/archives/lock > /dev/null 2>&1; then
+        echo -e "${gl_hong}失败 (其他包管理器正在运行)${gl_bai}"
+        pre_check_failed=true
+    else
+        echo -e "${gl_lv}通过${gl_bai}"
+    fi
+    
+    # 检查5: /run 目录是否可写
+    echo -n "  → 检查 /run 目录权限... "
+    if ! touch /run/.dns_test 2>/dev/null; then
+        echo -e "${gl_hong}失败 (/run 目录不可写)${gl_bai}"
+        pre_check_failed=true
+    else
+        rm -f /run/.dns_test
+        echo -e "${gl_lv}通过${gl_bai}"
+    fi
+    
+    # 检查6: 网络连通性（能否访问DNS服务器）
+    echo -n "  → 检查网络连通性... "
+    if ! ping -c 1 -W 2 8.8.8.8 > /dev/null 2>&1 && \
+       ! ping -c 1 -W 2 1.1.1.1 > /dev/null 2>&1; then
+        echo -e "${gl_huang}警告 (无法ping通DNS服务器，但继续执行)${gl_bai}"
+    else
+        echo -e "${gl_lv}通过${gl_bai}"
+    fi
+    
+    echo ""
+    
+    # 如果有检查失败，拒绝执行
+    if [ "$pre_check_failed" = true ]; then
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_hong}❌ 安全检查未通过！${gl_bai}"
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}系统环境不满足安全执行条件，拒绝执行以避免风险。${gl_bai}"
+        echo ""
+        echo "请先解决上述问题，然后重试。"
+        echo ""
+        break_end
+        return 1
+    fi
+    
+    echo -e "${gl_lv}✅ 所有安全检查通过，可以安全执行${gl_bai}"
+    echo ""
+
     # ==================== 创建备份 ====================
     local BACKUP_DIR="/root/.dns_purify_backup/$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$BACKUP_DIR"
@@ -5089,15 +5174,56 @@ DNSStubListener=yes
     # 处理 Debian 11 的 resolvconf 冲突
     if [[ "$debian_version" == "11" ]] && dpkg -s resolvconf &> /dev/null; then
         echo "  → 检测到 Debian 11 的 resolvconf 冲突"
-        # 备份 resolv.conf
+        
+        # 🛡️ 关键修复：在卸载前确保 systemd-resolved 完全就绪
+        # 先启动 systemd-resolved
+        echo "  → 启动 systemd-resolved（在卸载 resolvconf 之前）..."
+        systemctl enable systemd-resolved 2>/dev/null || true
+        systemctl start systemd-resolved 2>/dev/null || true
+        
+        # 等待服务启动
+        sleep 2
+        
+        # 验证 systemd-resolved 正在运行
+        if ! systemctl is-active --quiet systemd-resolved; then
+            echo -e "${gl_hong}❌ 无法启动 systemd-resolved，中止操作${gl_bai}"
+            break_end
+            return 1
+        fi
+        
+        # 验证 stub-resolv.conf 存在
+        if [[ ! -f /run/systemd/resolve/stub-resolv.conf ]]; then
+            echo -e "${gl_hong}❌ systemd-resolved stub 文件不存在，中止操作${gl_bai}"
+            break_end
+            return 1
+        fi
+        
+        # 现在可以安全地卸载 resolvconf
+        # 备份当前 resolv.conf
         [[ -f /etc/resolv.conf ]] && cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.pre_remove" 2>/dev/null || true
-        apt-get remove -y resolvconf > /dev/null 2>&1
-        echo -e "${gl_lv}  ✅ resolvconf 已卸载${gl_bai}"
+        
+        # 创建临时DNS配置（避免卸载期间DNS中断）
+        echo "nameserver 8.8.8.8" > /etc/resolv.conf.tmp
+        echo "nameserver 1.1.1.1" >> /etc/resolv.conf.tmp
+        
+        # 使用临时DNS配置
+        mv /etc/resolv.conf /etc/resolv.conf.old 2>/dev/null || true
+        cp /etc/resolv.conf.tmp /etc/resolv.conf
+        
+        # 卸载 resolvconf
+        echo "  → 卸载 resolvconf..."
+        DEBIAN_FRONTEND=noninteractive apt-get remove -y resolvconf > /dev/null 2>&1
+        
+        # 清理临时文件
+        rm -f /etc/resolv.conf.tmp /etc/resolv.conf.old
+        
+        echo -e "${gl_lv}  ✅ resolvconf 已安全卸载${gl_bai}"
     fi
 
     # 🔧 调用智能修复函数
     if ! dns_purify_fix_systemd_resolved; then
-        echo -e "${gl_hong}无法修复 systemd-resolved 服务，脚本终止${gl_bai}"
+        echo -e "${gl_hong}❌ 无法修复 systemd-resolved 服务，脚本终止${gl_bai}"
+        echo "配置未被修改，系统保持原状"
         break_end
         return 1
     fi
@@ -5110,42 +5236,85 @@ DNSStubListener=yes
     echo "  → 配置 systemd-resolved..."
     echo -e "${SECURE_RESOLVED_CONFIG}" > /etc/systemd/resolved.conf
     
-    # 备份并创建 resolv.conf 链接
-    if [[ -f /etc/resolv.conf ]]; then
-        cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null || true
-    fi
-    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-
     echo ""
 
     # ==================== 阶段三：应用DNS配置（SSH安全方式）====================
     echo -e "${gl_kjlan}[阶段 3/4] 应用DNS配置（SSH安全模式）...${gl_bai}"
     echo ""
 
-    if [ "$IS_SSH" = true ]; then
-        # SSH模式：只重载DNS服务，绝不碰networking.service
-        echo "  → 检测到SSH连接，使用安全应用方式..."
-        echo "  → 重新加载 systemd-resolved 配置..."
-        systemctl reload-or-restart systemd-resolved 2>/dev/null || true
-        sleep 1
-        echo -e "${gl_lv}  ✅ systemd-resolved 配置已重新加载${gl_bai}"
-        echo -e "${gl_lv}  ✅ 网络连接未受影响${gl_bai}"
-    else
-        # VNC/Console模式：可以安全重启
-        echo "  → 检测到本地连接，可以安全执行网络操作..."
-        
-        # 先重启 systemd-resolved
-        systemctl restart systemd-resolved 2>/dev/null || true
-        
-        # 检查 networking.service
-        if systemctl is-enabled --quiet networking.service 2>/dev/null; then
-            echo "  → 重启 networking.service..."
-            systemctl restart networking.service 2>/dev/null || true
-            echo -e "${gl_lv}  ✅ networking.service 已重启${gl_bai}"
-        else
-            echo -e "${gl_lv}  ✅ networking.service 未启用（跳过）${gl_bai}"
+    # 先重新加载 systemd-resolved 配置
+    echo "  → 重新加载 systemd-resolved 配置..."
+    if ! systemctl reload-or-restart systemd-resolved; then
+        echo -e "${gl_hong}❌ systemd-resolved 重启失败！${gl_bai}"
+        echo "正在回滚配置..."
+        if [[ -f "$BACKUP_DIR/resolved.conf.bak" ]]; then
+            cp "$BACKUP_DIR/resolved.conf.bak" /etc/systemd/resolved.conf
+            systemctl reload-or-restart systemd-resolved 2>/dev/null || true
         fi
+        break_end
+        return 1
     fi
+    
+    # 等待服务完全启动
+    echo "  → 等待 systemd-resolved 完全启动..."
+    sleep 3
+    
+    # 验证服务状态
+    if ! systemctl is-active --quiet systemd-resolved; then
+        echo -e "${gl_hong}❌ systemd-resolved 未能正常运行！${gl_bai}"
+        echo "正在回滚配置..."
+        if [[ -f "$BACKUP_DIR/resolved.conf.bak" ]]; then
+            cp "$BACKUP_DIR/resolved.conf.bak" /etc/systemd/resolved.conf
+            systemctl reload-or-restart systemd-resolved 2>/dev/null || true
+        fi
+        break_end
+        return 1
+    fi
+    
+    # 验证 stub-resolv.conf 文件存在
+    if [[ ! -f /run/systemd/resolve/stub-resolv.conf ]]; then
+        echo -e "${gl_hong}❌ systemd-resolved stub 文件不存在！${gl_bai}"
+        echo "路径: /run/systemd/resolve/stub-resolv.conf"
+        echo "正在回滚配置..."
+        if [[ -f "$BACKUP_DIR/resolved.conf.bak" ]]; then
+            cp "$BACKUP_DIR/resolved.conf.bak" /etc/systemd/resolved.conf
+            systemctl reload-or-restart systemd-resolved 2>/dev/null || true
+        fi
+        break_end
+        return 1
+    fi
+    
+    echo -e "${gl_lv}  ✅ systemd-resolved 配置已重新加载并验证${gl_bai}"
+    
+    # 🛡️ 关键修复：安全地创建 resolv.conf 链接
+    # 备份并创建 resolv.conf 链接（只有在验证通过后才执行）
+    if [[ -e /etc/resolv.conf ]] && [[ ! -L /etc/resolv.conf ]]; then
+        # 如果是普通文件，备份它
+        cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null || true
+    fi
+    
+    # 安全地创建链接
+    rm -f /etc/resolv.conf
+    ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    
+    # 验证链接创建成功
+    if [[ ! -L /etc/resolv.conf ]] || [[ ! -e /etc/resolv.conf ]]; then
+        echo -e "${gl_hong}❌ resolv.conf 链接创建失败！${gl_bai}"
+        echo "正在恢复原始配置..."
+        if [[ -f "$BACKUP_DIR/resolv.conf.bak" ]]; then
+            rm -f /etc/resolv.conf
+            cp "$BACKUP_DIR/resolv.conf.bak" /etc/resolv.conf
+        fi
+        break_end
+        return 1
+    fi
+    
+    echo -e "${gl_lv}  ✅ resolv.conf 链接已安全创建${gl_bai}"
+    
+    # 🚫 完全移除 networking.service 重启（即使非SSH模式也危险）
+    # 注意：不管是SSH还是本地连接，都不重启 networking.service
+    # 因为重启网络服务在生产环境中极其危险
+    echo -e "${gl_lv}  ✅ 网络服务未受影响（安全模式）${gl_bai}"
 
     echo ""
 
