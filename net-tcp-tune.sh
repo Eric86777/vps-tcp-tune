@@ -5327,15 +5327,59 @@ DNSStubListener=yes
 
     if [[ -n "$main_interface" ]] && command -v resolvectl &> /dev/null; then
         echo "  → 检测到主网卡: ${main_interface}"
-        echo "  → 配置网卡 DNS（立即生效，无需重启）..."
         
-        # 立即应用DNS配置
-        resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null || true
-        resolvectl domain "$main_interface" ~. 2>/dev/null || true
-        resolvectl default-route "$main_interface" yes 2>/dev/null || true
-        
-        echo -e "${gl_lv}  ✅ 网卡 DNS 配置已应用${gl_bai}"
+        # 🛡️ 关键修复：检查timeout命令是否可用
+        if ! command -v timeout &> /dev/null; then
+            echo -e "${gl_huang}  ⚠️  timeout命令不可用，跳过网卡级DNS配置${gl_bai}"
+            echo -e "${gl_lv}  ✅ DNS配置已通过 /etc/systemd/resolved.conf 生效${gl_bai}"
+        else
+            echo "  → 配置网卡 DNS（立即生效，无需重启）..."
+            echo ""
+            
+            # 🛡️ 修复：添加超时机制防止resolvectl命令hang住
+            local resolvectl_timeout=5  # 5秒超时
+            local dns_config_success=true
+            
+            echo "    正在应用DNS服务器配置..."
+            if timeout "$resolvectl_timeout" resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null; then
+                echo -e "    ${gl_lv}✅ DNS服务器配置成功${gl_bai}"
+            else
+                echo -e "    ${gl_huang}⚠️  DNS服务器配置超时或失败（配置已通过resolved.conf生效）${gl_bai}"
+                dns_config_success=false
+            fi
+            
+            echo "    正在应用DNS域配置..."
+            if timeout "$resolvectl_timeout" resolvectl domain "$main_interface" ~. 2>/dev/null; then
+                echo -e "    ${gl_lv}✅ DNS域配置成功${gl_bai}"
+            else
+                echo -e "    ${gl_huang}⚠️  DNS域配置超时或失败（配置已通过resolved.conf生效）${gl_bai}"
+                dns_config_success=false
+            fi
+            
+            echo "    正在应用默认路由配置..."
+            if timeout "$resolvectl_timeout" resolvectl default-route "$main_interface" yes 2>/dev/null; then
+                echo -e "    ${gl_lv}✅ 默认路由配置成功${gl_bai}"
+            else
+                echo -e "    ${gl_huang}⚠️  默认路由配置超时或失败（配置已通过resolved.conf生效）${gl_bai}"
+                dns_config_success=false
+            fi
+            
+            echo ""
+            if [ "$dns_config_success" = true ]; then
+                echo -e "${gl_lv}  ✅ 网卡DNS配置已全部应用${gl_bai}"
+            else
+                echo -e "${gl_huang}  ⚠️  部分网卡DNS配置未能通过resolvectl应用${gl_bai}"
+                echo -e "${gl_lv}  ✅ 但DNS配置已通过 /etc/systemd/resolved.conf 生效${gl_bai}"
+            fi
+        fi
         echo -e "${gl_lv}  ✅ DNS配置立即生效，无需重启${gl_bai}"
+    else
+        if [[ -z "$main_interface" ]]; then
+            echo -e "${gl_huang}  ⚠️  未检测到默认网卡${gl_bai}"
+        else
+            echo -e "${gl_huang}  ⚠️  resolvectl 命令不可用${gl_bai}"
+        fi
+        echo -e "${gl_lv}  ✅ DNS配置已通过 /etc/systemd/resolved.conf 生效${gl_bai}"
     fi
 
     echo ""
