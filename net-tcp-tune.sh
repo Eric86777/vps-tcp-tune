@@ -7394,7 +7394,7 @@ install_snell() {
 
     # 下载 Snell 服务器文件
     ARCH=$(arch)
-    VERSION="v5.0.0"
+    VERSION="v5.0.1"
     SNELL_URL=""
     INSTALL_DIR="/usr/local/bin"
     SYSTEMD_SERVICE_FILE="/lib/systemd/system/snell.service"
@@ -7612,12 +7612,16 @@ update_snell() {
 
     echo -e "${SNELL_GREEN}Snell 正在更新${SNELL_RESET}"
 
-    # 停止 Snell
-    if ! systemctl stop snell; then
-        echo -e "${SNELL_RED}停止 Snell 失败。${SNELL_RESET}"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 停止 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
-    fi
+    # 停止所有 Snell 实例
+    echo -e "${SNELL_GREEN}正在停止所有 Snell 服务...${SNELL_RESET}"
+    for service_file in /etc/systemd/system/snell-*.service; do
+        if [ -f "$service_file" ]; then
+            service_name=$(basename "$service_file")
+            systemctl stop "$service_name" 2>/dev/null
+        fi
+    done
+    # 兼容旧版单实例
+    systemctl stop snell 2>/dev/null
 
     # 等待包管理器
     wait_for_package_manager_snell
@@ -7637,7 +7641,7 @@ update_snell() {
 
         # 下载 Snell 服务器文件
         ARCH=$(arch)
-        VERSION="v5.0.0"
+        VERSION="v5.0.1"
         SNELL_URL=""
 
         if [[ ${ARCH} == "aarch64" ]]; then
@@ -7668,10 +7672,27 @@ update_snell() {
     fi
 
     # 重启 Snell
-    if ! systemctl restart snell; then
-        echo -e "${SNELL_RED}重启 Snell 失败。${SNELL_RESET}"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 重启 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
+    # 重启所有 Snell 实例
+    echo -e "${SNELL_GREEN}正在重启所有 Snell 服务...${SNELL_RESET}"
+    local restart_count=0
+    for service_file in /etc/systemd/system/snell-*.service; do
+        if [ -f "$service_file" ]; then
+            service_name=$(basename "$service_file")
+            if systemctl restart "$service_name"; then
+                ((restart_count++))
+            else
+                echo -e "${SNELL_RED}重启 ${service_name} 失败${SNELL_RESET}"
+            fi
+        fi
+    done
+    
+    # 兼容旧版单实例
+    if [ -f "/etc/systemd/system/snell.service" ] || [ -f "/lib/systemd/system/snell.service" ]; then
+        systemctl restart snell 2>/dev/null
+    fi
+
+    if [ $restart_count -eq 0 ] && ! systemctl is-active --quiet snell; then
+        echo -e "${SNELL_YELLOW}未检测到活动的 Snell 服务实例${SNELL_RESET}"
     fi
 
     echo -e "${SNELL_GREEN}Snell 更新成功，非TF版本请改为version = 4${SNELL_RESET}"
