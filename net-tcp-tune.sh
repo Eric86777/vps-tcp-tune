@@ -7627,49 +7627,45 @@ update_snell() {
     wait_for_package_manager_snell
 
     # 检查是否已安装 Snell 核心程序
-    if [ -f "${INSTALL_DIR}/snell-server" ]; then
-        echo -e "${SNELL_GREEN}检测到 Snell 核心程序已安装，跳过下载步骤...${SNELL_RESET}"
-    else
-        echo -e "${SNELL_GREEN}正在安装 Snell 核心程序...${SNELL_RESET}"
-        
-        # 安装必要的软件包
-        if ! install_required_packages_snell; then
-            echo -e "${SNELL_RED}安装必要软件包失败，请检查您的网络连接。${SNELL_RESET}"
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - 安装必要软件包失败" >> "$SNELL_LOG_FILE"
-            exit 1
-        fi
-
-        # 下载 Snell 服务器文件
-        ARCH=$(arch)
-        VERSION="v5.0.1"
-        SNELL_URL=""
-
-        if [[ ${ARCH} == "aarch64" ]]; then
-            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
-        else
-            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
-        fi
-
-        # 下载 Snell 服务器文件
-        if ! wget ${SNELL_URL} -O snell-server.zip; then
-            echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
-            exit 1
-        fi
-
-        # 解压缩文件到指定目录
-        if ! unzip -o snell-server.zip -d ${INSTALL_DIR}; then
-            echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
-            exit 1
-        fi
-
-        # 删除下载的 zip 文件
-        rm snell-server.zip
-
-        # 赋予执行权限
-        chmod +x ${INSTALL_DIR}/snell-server
+    echo -e "${SNELL_GREEN}正在安装 Snell 核心程序...${SNELL_RESET}"
+    
+    # 安装必要的软件包
+    if ! install_required_packages_snell; then
+        echo -e "${SNELL_RED}安装必要软件包失败，请检查您的网络连接。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 安装必要软件包失败" >> "$SNELL_LOG_FILE"
+        exit 1
     fi
+
+    # 下载 Snell 服务器文件
+    ARCH=$(arch)
+    VERSION="v5.0.1"
+    SNELL_URL=""
+
+    if [[ ${ARCH} == "aarch64" ]]; then
+        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
+    else
+        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
+    fi
+
+    # 下载 Snell 服务器文件
+    if ! wget ${SNELL_URL} -O snell-server.zip; then
+        echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 解压缩文件到指定目录
+    if ! unzip -o snell-server.zip -d ${INSTALL_DIR}; then
+        echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
+        exit 1
+    fi
+
+    # 删除下载的 zip 文件
+    rm snell-server.zip
+
+    # 赋予执行权限
+    chmod +x ${INSTALL_DIR}/snell-server
 
     # 重启 Snell
     # 重启所有 Snell 实例
