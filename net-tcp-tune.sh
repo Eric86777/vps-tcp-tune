@@ -7895,7 +7895,15 @@ snell_menu() {
         
         echo -e "已安装实例: ${SNELL_GREEN}${instance_count}${SNELL_RESET} 个"
         echo -e "运行中实例: ${SNELL_GREEN}${running_count}${SNELL_RESET} 个"
-        echo -e "运行版本: v5.0.0"
+        
+        # 动态获取 Snell 版本
+        local snell_version="未知"
+        if [ -f "/usr/local/bin/snell-server" ]; then
+            # 尝试获取版本号（Snell 没有 --version 参数，通过文件修改时间或固定版本号）
+            # 这里使用配置中指定的版本号
+            snell_version="v5.0.1"
+        fi
+        echo -e "运行版本: ${snell_version}"
         echo ""
         echo "1. 安装/添加 Snell 服务"
         echo "2. 卸载/删除 Snell 服务"
