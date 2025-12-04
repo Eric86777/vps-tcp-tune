@@ -10844,13 +10844,20 @@ install_singbox_binary() {
             # 创建安装目录
             mkdir -p /etc/sing-box
             
-            # 移动二进制文件
-            if [ -f "${temp_dir}/sing-box-${version}-linux-${arch}/sing-box" ]; then
-                mv "${temp_dir}/sing-box-${version}-linux-${arch}/sing-box" /etc/sing-box/sing-box
+            # 查找并移动二进制文件（兼容不同版本的目录结构）
+            local binary_path=$(find "$temp_dir" -name "sing-box" -type f -executable 2>/dev/null | head -1)
+            
+            if [ -n "$binary_path" ] && [ -f "$binary_path" ]; then
+                mv "$binary_path" /etc/sing-box/sing-box
                 chmod +x /etc/sing-box/sing-box
                 echo -e "${gl_lv}  ✓ 安装完成${gl_bai}"
             else
                 echo -e "${gl_hong}  ✗ 未找到 sing-box 二进制文件${gl_bai}"
+                echo ""
+                echo "调试信息："
+                echo "临时目录内容："
+                ls -R "$temp_dir" 2>/dev/null || echo "无法列出目录"
+                echo ""
                 rm -rf "$temp_dir"
                 break_end
                 return 1
