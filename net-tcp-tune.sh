@@ -10734,6 +10734,171 @@ startbbrcake() {
 # SOCKS5 一键部署功能
 #=============================================================================
 
+install_singbox_binary() {
+    clear
+    echo -e "${gl_kjlan}=== 自动安装 Sing-box 核心程序 ===${gl_bai}"
+    echo ""
+    echo "检测到系统未安装 sing-box"
+    echo ""
+    echo -e "${gl_huang}安装说明：${gl_bai}"
+    echo "  • 仅下载 sing-box 官方二进制程序"
+    echo "  • 不安装任何协议配置（纯净安装）"
+    echo "  • 安装后可用于 SOCKS5 代理部署"
+    echo "  • 如需完整功能，可稍后通过菜单 36 安装"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    read -e -p "$(echo -e "${gl_huang}是否继续安装？(Y/N): ${gl_bai}")" confirm
+    
+    case "$confirm" in
+        [Yy])
+            echo ""
+            echo -e "${gl_lv}开始下载 Sing-box...${gl_bai}"
+            echo ""
+            
+            # 步骤1：检测系统架构
+            local arch=""
+            case "$(uname -m)" in
+                aarch64|arm64)
+                    arch="arm64"
+                    ;;
+                x86_64|amd64)
+                    arch="amd64"
+                    ;;
+                armv7l)
+                    arch="armv7"
+                    ;;
+                *)
+                    echo -e "${gl_hong}❌ 不支持的系统架构: $(uname -m)${gl_bai}"
+                    echo ""
+                    echo "支持的架构：amd64, arm64, armv7"
+                    echo ""
+                    break_end
+                    return 1
+                    ;;
+            esac
+            
+            echo -e "${gl_zi}[1/5] 检测架构: ${arch}${gl_bai}"
+            echo ""
+            
+            # 步骤2：获取最新版本
+            echo -e "${gl_zi}[2/5] 获取最新版本...${gl_bai}"
+            
+            local version=""
+            local gh_api_url="https://api.github.com/repos/SagerNet/sing-box/releases"
+            
+            # 尝试从 GitHub API 获取最新版本
+            version=$(wget --timeout=10 --tries=2 -qO- "$gh_api_url" 2>/dev/null | \
+                      grep -oP '"tag_name":\s*"v\K[^"]+' | \
+                      sort -Vr | head -1)
+            
+            # 如果 API 失败，使用默认版本
+            if [ -z "$version" ]; then
+                version="1.10.0"
+                echo -e "${gl_huang}  ⚠️  API 获取失败，使用默认版本: v${version}${gl_bai}"
+            else
+                echo -e "${gl_lv}  ✓ 最新版本: v${version}${gl_bai}"
+            fi
+            echo ""
+            
+            # 步骤3：下载并解压
+            echo -e "${gl_zi}[3/5] 下载 sing-box v${version} (${arch})...${gl_bai}"
+            
+            local download_url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-${arch}.tar.gz"
+            local temp_dir="/tmp/singbox-install-$$"
+            
+            mkdir -p "$temp_dir"
+            
+            if ! wget --timeout=30 --tries=3 -qO "${temp_dir}/sing-box.tar.gz" "$download_url" 2>/dev/null; then
+                echo -e "${gl_hong}  ✗ 下载失败${gl_bai}"
+                echo ""
+                echo "可能的原因："
+                echo "  1. 网络连接问题"
+                echo "  2. GitHub 访问受限"
+                echo "  3. 版本 v${version} 不存在"
+                echo ""
+                echo "建议："
+                echo "  • 检查网络连接"
+                echo "  • 配置代理后重试"
+                echo "  • 手动执行菜单 36 使用 F 佬脚本安装"
+                echo ""
+                rm -rf "$temp_dir"
+                break_end
+                return 1
+            fi
+            
+            echo -e "${gl_lv}  ✓ 下载完成${gl_bai}"
+            echo ""
+            
+            # 步骤4：解压并安装
+            echo -e "${gl_zi}[4/5] 解压并安装...${gl_bai}"
+            
+            if ! tar -xzf "${temp_dir}/sing-box.tar.gz" -C "$temp_dir" 2>/dev/null; then
+                echo -e "${gl_hong}  ✗ 解压失败${gl_bai}"
+                rm -rf "$temp_dir"
+                break_end
+                return 1
+            fi
+            
+            # 创建安装目录
+            mkdir -p /etc/sing-box
+            
+            # 移动二进制文件
+            if [ -f "${temp_dir}/sing-box-${version}-linux-${arch}/sing-box" ]; then
+                mv "${temp_dir}/sing-box-${version}-linux-${arch}/sing-box" /etc/sing-box/sing-box
+                chmod +x /etc/sing-box/sing-box
+                echo -e "${gl_lv}  ✓ 安装完成${gl_bai}"
+            else
+                echo -e "${gl_hong}  ✗ 未找到 sing-box 二进制文件${gl_bai}"
+                rm -rf "$temp_dir"
+                break_end
+                return 1
+            fi
+            
+            # 清理临时文件
+            rm -rf "$temp_dir"
+            echo ""
+            
+            # 步骤5：验证安装
+            echo -e "${gl_zi}[5/5] 验证安装...${gl_bai}"
+            
+            if /etc/sing-box/sing-box version >/dev/null 2>&1; then
+                local installed_version=$(/etc/sing-box/sing-box version 2>/dev/null | head -1)
+                echo -e "${gl_lv}  ✓ ${installed_version}${gl_bai}"
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo -e "${gl_lv}✅ Sing-box 核心程序安装成功！${gl_bai}"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo -e "${gl_zi}提示：${gl_bai}"
+                echo "  • 二进制位置: /etc/sing-box/sing-box"
+                echo "  • 这是纯净安装，未配置任何协议"
+                echo "  • 可继续部署 SOCKS5 代理"
+                echo "  • 如需完整功能，可执行菜单 36 安装协议配置"
+                echo ""
+                return 0
+            else
+                echo -e "${gl_hong}  ✗ 验证失败${gl_bai}"
+                echo ""
+                break_end
+                return 1
+            fi
+            ;;
+        *)
+            echo ""
+            echo "已取消安装"
+            echo ""
+            echo "您可以："
+            echo "  • 稍后通过菜单 36 使用 F 佬脚本安装（含完整协议配置）"
+            echo "  • 自行安装 sing-box 到 /etc/sing-box/sing-box"
+            echo ""
+            break_end
+            return 1
+            ;;
+    esac
+}
+
 deploy_socks5() {
     clear
     echo -e "${gl_kjlan}=== Sing-box SOCKS5 一键部署 ===${gl_bai}"
@@ -10747,16 +10912,43 @@ deploy_socks5() {
     echo ""
     
     local SINGBOX_CMD=""
+    local detection_debug=""
     
     # 优先查找常见的二进制程序位置
     for path in /etc/sing-box/sing-box /usr/local/bin/sing-box /opt/sing-box/sing-box; do
-        if [ -x "$path" ] && [ ! -L "$path" ]; then
-            # 验证是 ELF 二进制文件，不是脚本
-            if file "$path" 2>/dev/null | grep -q "ELF"; then
-                SINGBOX_CMD="$path"
-                echo -e "${gl_lv}✅ 找到 sing-box 程序: $SINGBOX_CMD${gl_bai}"
-                break
+        detection_debug+="正在检测: $path ... "
+        
+        # 检查文件是否存在
+        if [ ! -e "$path" ]; then
+            detection_debug+="不存在\n"
+            continue
+        fi
+        
+        # 检查是否可执行
+        if [ ! -x "$path" ]; then
+            detection_debug+="存在但不可执行（尝试添加执行权限）\n"
+            chmod +x "$path" 2>/dev/null
+            if [ ! -x "$path" ]; then
+                detection_debug+="  └─ 无法添加执行权限，跳过\n"
+                continue
             fi
+        fi
+        
+        # 如果是符号链接，解析实际路径
+        if [ -L "$path" ]; then
+            local real_path=$(readlink -f "$path")
+            detection_debug+="是符号链接 → $real_path\n"
+            path="$real_path"
+        fi
+        
+        # 验证是 ELF 二进制文件，不是脚本
+        local file_type=$(file "$path" 2>/dev/null)
+        if echo "$file_type" | grep -q "ELF"; then
+            SINGBOX_CMD="$path"
+            echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
+            break
+        else
+            detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
         fi
     done
     
@@ -10765,12 +10957,23 @@ deploy_socks5() {
         for cmd in sing-box sb; do
             if command -v "$cmd" &>/dev/null; then
                 local cmd_path=$(which "$cmd")
-                if file "$cmd_path" 2>/dev/null | grep -q "ELF"; then
+                detection_debug+="正在检测 PATH 命令: $cmd → $cmd_path ... "
+                
+                # 如果是符号链接，解析实际路径
+                if [ -L "$cmd_path" ]; then
+                    local real_path=$(readlink -f "$cmd_path")
+                    detection_debug+="是符号链接 → $real_path\n"
+                    cmd_path="$real_path"
+                fi
+                
+                local file_type=$(file "$cmd_path" 2>/dev/null)
+                if echo "$file_type" | grep -q "ELF"; then
                     SINGBOX_CMD="$cmd_path"
-                    echo -e "${gl_lv}✅ 找到 sing-box 程序: $SINGBOX_CMD${gl_bai}"
+                    echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
                     break
                 else
                     echo -e "${gl_huang}⚠️  $cmd_path 是脚本，跳过${gl_bai}"
+                    detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
                 fi
             fi
         done
@@ -10779,11 +10982,42 @@ deploy_socks5() {
     if [ -z "$SINGBOX_CMD" ]; then
         echo -e "${gl_hong}❌ 未找到 sing-box 二进制程序${gl_bai}"
         echo ""
-        echo "请先安装 sing-box，推荐使用："
-        echo "  - F佬一键sing box脚本（菜单选项 22/23）"
-        echo ""
-        break_end
-        return 1
+        
+        # 显示检测过程（可选）
+        read -e -p "$(echo -e "${gl_zi}是否查看详细检测过程？(y/N): ${gl_bai}")" show_debug
+        if [[ "$show_debug" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "检测过程："
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo -e "$detection_debug"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+        fi
+        
+        # 调用纯净安装函数（仅二进制）
+        if install_singbox_binary; then
+            # 安装成功，重新检测
+            echo ""
+            echo -e "${gl_zi}重新检测 sing-box...${gl_bai}"
+            echo ""
+            
+            SINGBOX_CMD="/etc/sing-box/sing-box"
+            if [ -x "$SINGBOX_CMD" ] && file "$SINGBOX_CMD" 2>/dev/null | grep -q "ELF"; then
+                echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
+                echo ""
+            else
+                echo -e "${gl_hong}❌ 安装后仍未找到 sing-box${gl_bai}"
+                echo ""
+                echo "请手动检查："
+                echo "  ls -lh /etc/sing-box/sing-box"
+                echo ""
+                break_end
+                return 1
+            fi
+        else
+            # 用户取消或安装失败
+            return 1
+        fi
     fi
     
     # 显示版本信息
