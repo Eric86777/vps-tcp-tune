@@ -10788,9 +10788,11 @@ install_singbox_binary() {
             local version=""
             local gh_api_url="https://api.github.com/repos/SagerNet/sing-box/releases"
             
-            # 尝试从 GitHub API 获取最新版本
+            # 尝试从 GitHub API 获取最新稳定版本（过滤掉 alpha/beta/rc）
             version=$(wget --timeout=10 --tries=2 -qO- "$gh_api_url" 2>/dev/null | \
-                      grep -oP '"tag_name":\s*"v\K[^"]+' | \
+                      grep '"tag_name"' | \
+                      sed -E 's/.*"tag_name":[[:space:]]*"v([^"]+)".*/\1/' | \
+                      grep -v -E '(alpha|beta|rc)' | \
                       sort -Vr | head -1)
             
             # 如果 API 失败，使用默认版本
