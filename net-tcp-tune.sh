@@ -10951,14 +10951,21 @@ deploy_socks5() {
             path="$real_path"
         fi
         
-        # 验证是 ELF 二进制文件，不是脚本
-        local file_type=$(file "$path" 2>/dev/null)
-        if echo "$file_type" | grep -q "ELF"; then
+        # 验证是 ELF 二进制文件（如果 file 命令可用）
+        if command -v file >/dev/null 2>&1; then
+            local file_type=$(file "$path" 2>/dev/null)
+            if echo "$file_type" | grep -q "ELF"; then
+                SINGBOX_CMD="$path"
+                echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
+                break
+            else
+                detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
+            fi
+        else
+            # file 命令不可用，直接使用（已经检查过可执行权限）
             SINGBOX_CMD="$path"
             echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
             break
-        else
-            detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
         fi
     done
     
@@ -10976,14 +10983,22 @@ deploy_socks5() {
                     cmd_path="$real_path"
                 fi
                 
-                local file_type=$(file "$cmd_path" 2>/dev/null)
-                if echo "$file_type" | grep -q "ELF"; then
+                # 验证文件类型（如果 file 命令可用）
+                if command -v file >/dev/null 2>&1; then
+                    local file_type=$(file "$cmd_path" 2>/dev/null)
+                    if echo "$file_type" | grep -q "ELF"; then
+                        SINGBOX_CMD="$cmd_path"
+                        echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
+                        break
+                    else
+                        echo -e "${gl_huang}⚠️  $cmd_path 是脚本，跳过${gl_bai}"
+                        detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
+                    fi
+                else
+                    # file 命令不可用，直接使用
                     SINGBOX_CMD="$cmd_path"
                     echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
                     break
-                else
-                    echo -e "${gl_huang}⚠️  $cmd_path 是脚本，跳过${gl_bai}"
-                    detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
                 fi
             fi
         done
@@ -11012,7 +11027,7 @@ deploy_socks5() {
             echo ""
             
             SINGBOX_CMD="/etc/sing-box/sing-box"
-            if [ -x "$SINGBOX_CMD" ] && file "$SINGBOX_CMD" 2>/dev/null | grep -q "ELF"; then
+            if [ -x "$SINGBOX_CMD" ]; then
                 echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
                 echo ""
             else
