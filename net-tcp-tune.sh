@@ -11274,8 +11274,12 @@ SERVICEEOF
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     
     if [ "$deploy_success" = true ]; then
-        # 获取服务器IP
-        local server_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || curl -s --max-time 3 ipinfo.io/ip 2>/dev/null || echo "请手动获取")
+        # 获取服务器IP（优先IPv4，fallback到IPv6）
+        local server_ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                          curl -4 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
+                          curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                          curl -6 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
+                          echo "请手动获取")
         
         echo ""
         echo -e "${gl_lv}🎉 部署成功！${gl_bai}"
