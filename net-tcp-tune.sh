@@ -10847,7 +10847,8 @@ install_singbox_binary() {
             mkdir -p /etc/sing-box
             
             # 查找并移动二进制文件（兼容不同版本的目录结构）
-            local binary_path=$(find "$temp_dir" -name "sing-box" -type f -executable 2>/dev/null | head -1)
+            # 注意：不使用 -executable 参数，因为解压后的文件可能还没有执行权限
+            local binary_path=$(find "$temp_dir" -name "sing-box" -type f 2>/dev/null | head -1)
             
             if [ -n "$binary_path" ] && [ -f "$binary_path" ]; then
                 mv "$binary_path" /etc/sing-box/sing-box
