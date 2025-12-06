@@ -8164,9 +8164,25 @@ write_config() {
         fi
     fi
 
+    # 🆕 保留现有的自定义 outbounds（SOCKS5等）
+    local existing_custom_outbounds="[]"
+    local existing_custom_routing_rules="[]"
+    
+    if [[ -f "$xray_config_path" ]]; then
+        # 提取所有非默认的 outbounds（保留 SOCKS5 等自定义代理）
+        existing_custom_outbounds=$(jq -c '[.outbounds[]? | select(.protocol != "freedom" and .protocol != "blackhole")]' "$xray_config_path" 2>/dev/null || echo "[]")
+        
+        # 提取所有自定义的 routing rules（排除默认的广告过滤规则）
+        # 判断是否为自定义规则：包含 inboundTag 或 outboundTag 以 "socks5-" 开头
+        existing_custom_routing_rules=$(jq -c '[.routing.rules[]? | select(.inboundTag != null or (.outboundTag? | startswith("socks5-")))]' "$xray_config_path" 2>/dev/null || echo "[]")
+    fi
+
     if [[ "$enable_routing" == "true" ]]; then
         # 带路由规则的配置
-        config_content=$(jq -n --argjson inbounds "$inbounds_json" \
+        config_content=$(jq -n \
+            --argjson inbounds "$inbounds_json" \
+            --argjson custom_outbounds "$existing_custom_outbounds" \
+            --argjson custom_rules "$existing_custom_routing_rules" \
         '{
           "log": {"loglevel": "warning"},
           "inbounds": $inbounds,
@@ -8182,10 +8198,10 @@ write_config() {
               "protocol": "blackhole",
               "tag": "block"
             }
-          ],
+          ] + $custom_outbounds,
           "routing": {
             "domainStrategy": "IPOnDemand",
-            "rules": [
+            "rules": $custom_rules + [
               {
                 "type": "field",
                 "domain": [
@@ -8201,7 +8217,10 @@ write_config() {
         }')
     else
         # 不带路由规则的配置（原始）
-        config_content=$(jq -n --argjson inbounds "$inbounds_json" \
+        config_content=$(jq -n \
+            --argjson inbounds "$inbounds_json" \
+            --argjson custom_outbounds "$existing_custom_outbounds" \
+            --argjson custom_rules "$existing_custom_routing_rules" \
         '{
           "log": {"loglevel": "warning"},
           "inbounds": $inbounds,
@@ -8212,8 +8231,18 @@ write_config() {
                 "domainStrategy": "UseIPv4v6"
               }
             }
-          ]
-        }')
+          ] + $custom_outbounds
+        } | 
+        # 如果有自定义 routing rules，添加 routing 配置
+        if ($custom_rules | length) > 0 then
+          .routing = {
+            "domainStrategy": "IPOnDemand",
+            "rules": $custom_rules
+          }
+        else
+          .
+        end
+        ')
     fi
     
     # 新增：验证生成的JSON是否有效
@@ -9402,14 +9431,12 @@ add_socks5_proxy() {
     # 添加或更新路由规则
     config=$(echo "$config" | jq --arg inbound_tag "$selected_tag" --arg outbound_tag "$socks5_tag" '
         if .routing.rules then
-            # 删除旧规则（如果存在）
-            .routing.rules |= map(select(.inboundTag[0] != $inbound_tag)) |
-            # 添加新规则（放在最前面，优先级高）
+            # 删除当前节点的旧规则，并在前面添加新规则（一个原子操作）
             .routing.rules = [{
                 type: "field",
                 inboundTag: [$inbound_tag],
                 outboundTag: $outbound_tag
-            }] + .routing.rules
+            }] + (.routing.rules | map(select(.inboundTag[0] != $inbound_tag)))
         else
             # 如果没有routing，创建一个
             .routing = {
@@ -9579,9 +9606,12 @@ delete_socks5_proxy() {
     local config
     config=$(cat "$xray_config_path")
     
-    # 删除routing rule
-    config=$(echo "$config" | jq --arg inbound_tag "$inbound_tag" '
-        .routing.rules |= map(select(.inboundTag[0] != $inbound_tag or (.outboundTag | startswith("socks5-") | not)))
+    # 删除routing rule（只删除匹配该inbound且指向socks5的规则）
+    config=$(echo "$config" | jq --arg inbound_tag "$inbound_tag" --arg outbound_tag "$outbound_tag" '
+        .routing.rules |= map(select(
+            (.inboundTag[0] != $inbound_tag) or 
+            (.outboundTag != $outbound_tag)
+        ))
     ')
     
     # 删除socks5 outbound
