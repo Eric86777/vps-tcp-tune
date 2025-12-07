@@ -8169,12 +8169,29 @@ write_config() {
     local existing_custom_routing_rules="[]"
     
     if [[ -f "$xray_config_path" ]]; then
-        # 提取所有非默认的 outbounds（保留 SOCKS5 等自定义代理）
-        existing_custom_outbounds=$(jq -c '[.outbounds[]? | select(.protocol != "freedom" and .protocol != "blackhole")]' "$xray_config_path" 2>/dev/null || echo "[]")
-        
-        # 提取所有自定义的 routing rules（排除默认的广告过滤规则）
-        # 判断是否为自定义规则：包含 inboundTag 或 outboundTag 以 "socks5-" 开头
-        existing_custom_routing_rules=$(jq -c '[.routing.rules[]? | select(.inboundTag != null or (.outboundTag? | startswith("socks5-")))]' "$xray_config_path" 2>/dev/null || echo "[]")
+        # 验证配置文件是否为有效的 JSON
+        if jq empty "$xray_config_path" 2>/dev/null; then
+            # 提取所有非默认的 outbounds（保留 SOCKS5 等自定义代理）
+            local temp_outbounds
+            temp_outbounds=$(jq -c '[.outbounds[]? | select(.protocol != "freedom" and .protocol != "blackhole")]' "$xray_config_path" 2>/dev/null)
+            
+            # 验证提取结果是否为有效的 JSON 数组
+            if [[ -n "$temp_outbounds" ]] && echo "$temp_outbounds" | jq empty 2>/dev/null; then
+                existing_custom_outbounds="$temp_outbounds"
+            fi
+            
+            # 提取所有自定义的 routing rules（排除默认的广告过滤规则）
+            # 判断是否为自定义规则：包含 inboundTag 或 outboundTag 以 "socks5-" 开头
+            local temp_rules
+            temp_rules=$(jq -c '[.routing.rules[]? | select(.inboundTag != null or (.outboundTag? | startswith("socks5-")))]' "$xray_config_path" 2>/dev/null)
+            
+            # 验证提取结果是否为有效的 JSON 数组
+            if [[ -n "$temp_rules" ]] && echo "$temp_rules" | jq empty 2>/dev/null; then
+                existing_custom_routing_rules="$temp_rules"
+            fi
+        else
+            warning "现有配置文件格式异常，将忽略现有的自定义配置"
+        fi
     fi
 
     if [[ "$enable_routing" == "true" ]]; then
