@@ -8205,77 +8205,78 @@ write_config() {
     fi
     
     # 🔧 确保所有 JSON 变量都是紧凑的单行格式
-    # 这是解决某些 shell/jq 版本组合下 --argjson 换行符问题的关键
     inbounds_json=$(echo "$inbounds_json" | jq -c '.')
     existing_custom_outbounds=$(echo "$existing_custom_outbounds" | jq -c '.')
     existing_custom_routing_rules=$(echo "$existing_custom_routing_rules" | jq -c '.')
+    
+    # 🔧 在 shell 中预先构建完整的 outbounds 数组
+    # 这样可以避免在 jq 表达式内部使用 + 操作符，解决兼容性问题
+    local base_outbounds
+    if [[ "$enable_routing" == "true" ]]; then
+        base_outbounds='[{"protocol":"freedom","tag":"direct","settings":{"domainStrategy":"UseIPv4v6"}},{"protocol":"blackhole","tag":"block"}]'
+    else
+        base_outbounds='[{"protocol":"freedom","settings":{"domainStrategy":"UseIPv4v6"}}]'
+    fi
+    
+    # 使用 jq 合并 outbounds 数组（在 shell 中完成，不是在 jq 表达式内部）
+    local full_outbounds
+    full_outbounds=$(echo "$base_outbounds" | jq -c --argjson custom "$existing_custom_outbounds" '. + $custom')
+    
+    # 构建完整的 routing rules
+    local full_rules
+    if [[ "$enable_routing" == "true" ]]; then
+        local default_block_rule='[{"type":"field","domain":["geosite:category-ads-all","geosite:category-porn","regexp:.*missav.*","geosite:missav"],"outboundTag":"block"}]'
+        full_rules=$(echo "$existing_custom_routing_rules" | jq -c --argjson default "$default_block_rule" '. + $default')
+    else
+        full_rules="$existing_custom_routing_rules"
+    fi
 
     if [[ "$enable_routing" == "true" ]]; then
         # 带路由规则的配置
         config_content=$(jq -n \
             --argjson inbounds "$inbounds_json" \
-            --argjson custom_outbounds "$existing_custom_outbounds" \
-            --argjson custom_rules "$existing_custom_routing_rules" \
+            --argjson outbounds "$full_outbounds" \
+            --argjson rules "$full_rules" \
         '{
           "log": {"loglevel": "warning"},
           "inbounds": $inbounds,
-          "outbounds": [
-            {
-              "protocol": "freedom",
-              "tag": "direct",
-              "settings": {
-                "domainStrategy": "UseIPv4v6"
-              }
-            },
-            {
-              "protocol": "blackhole",
-              "tag": "block"
-            }
-          ] + $custom_outbounds,
+          "outbounds": $outbounds,
           "routing": {
             "domainStrategy": "IPOnDemand",
-            "rules": $custom_rules + [
-              {
-                "type": "field",
-                "domain": [
-                  "geosite:category-ads-all",
-                  "geosite:category-porn",
-                  "regexp:.*missav.*",
-                  "geosite:missav"
-                ],
-                "outboundTag": "block"
-              }
-            ]
+            "rules": $rules
           }
         }')
     else
-        # 不带路由规则的配置（原始）
-        config_content=$(jq -n \
-            --argjson inbounds "$inbounds_json" \
-            --argjson custom_outbounds "$existing_custom_outbounds" \
-            --argjson custom_rules "$existing_custom_routing_rules" \
-        '{
-          "log": {"loglevel": "warning"},
-          "inbounds": $inbounds,
-          "outbounds": [
-            {
-              "protocol": "freedom",
-              "settings": {
-                "domainStrategy": "UseIPv4v6"
+        # 不带路由规则的配置
+        local rules_length
+        rules_length=$(echo "$full_rules" | jq 'length')
+        
+        if [[ "$rules_length" -gt 0 ]]; then
+            # 有自定义 rules，需要添加 routing
+            config_content=$(jq -n \
+                --argjson inbounds "$inbounds_json" \
+                --argjson outbounds "$full_outbounds" \
+                --argjson rules "$full_rules" \
+            '{
+              "log": {"loglevel": "warning"},
+              "inbounds": $inbounds,
+              "outbounds": $outbounds,
+              "routing": {
+                "domainStrategy": "IPOnDemand",
+                "rules": $rules
               }
-            }
-          ] + $custom_outbounds
-        } | 
-        # 如果有自定义 routing rules，添加 routing 配置
-        if ($custom_rules | length) > 0 then
-          .routing = {
-            "domainStrategy": "IPOnDemand",
-            "rules": $custom_rules
-          }
+            }')
         else
-          .
-        end
-        ')
+            # 没有 rules，不需要 routing
+            config_content=$(jq -n \
+                --argjson inbounds "$inbounds_json" \
+                --argjson outbounds "$full_outbounds" \
+            '{
+              "log": {"loglevel": "warning"},
+              "inbounds": $inbounds,
+              "outbounds": $outbounds
+            }')
+        fi
     fi
     
     # 新增：验证生成的JSON是否有效
