@@ -8167,30 +8167,40 @@ write_config() {
     # 🆕 保留现有的自定义 outbounds（SOCKS5等）
     local existing_custom_outbounds="[]"
     local existing_custom_routing_rules="[]"
+    local should_preserve_config=false
     
     if [[ -f "$xray_config_path" ]]; then
-        # 验证配置文件是否为有效的 JSON
-        if jq empty "$xray_config_path" 2>/dev/null; then
-            # 提取所有非默认的 outbounds（保留 SOCKS5 等自定义代理）
-            local temp_outbounds
-            temp_outbounds=$(jq -c '[.outbounds[]? | select(.protocol != "freedom" and .protocol != "blackhole")]' "$xray_config_path" 2>/dev/null)
-            
-            # 验证提取结果是否为有效的 JSON 数组
-            if [[ -n "$temp_outbounds" ]] && echo "$temp_outbounds" | jq empty 2>/dev/null; then
-                existing_custom_outbounds="$temp_outbounds"
+        # 🛡️ 首先检测是否为 Xray 官方默认配置
+        # 只有配置文件包含我们添加的节点（VLESS或Shadowsocks）时，才尝试保留现有配置
+        if jq -e '.inbounds[]? | select(.protocol == "vless" or .protocol == "shadowsocks")' "$xray_config_path" &>/dev/null; then
+            should_preserve_config=true
+        fi
+        
+        # 只有当配置文件包含我们的节点时，才尝试保留现有配置
+        if [[ "$should_preserve_config" == "true" ]]; then
+            # 验证配置文件是否为有效的 JSON
+            if jq empty "$xray_config_path" 2>/dev/null; then
+                # 提取所有非默认的 outbounds（保留 SOCKS5 等自定义代理）
+                local temp_outbounds
+                temp_outbounds=$(jq -c '[.outbounds[]? | select(.protocol != "freedom" and .protocol != "blackhole")]' "$xray_config_path" 2>/dev/null)
+                
+                # 验证提取结果是否为有效的 JSON 数组
+                if [[ -n "$temp_outbounds" ]] && echo "$temp_outbounds" | jq empty 2>/dev/null; then
+                    existing_custom_outbounds="$temp_outbounds"
+                fi
+                
+                # 提取所有自定义的 routing rules（排除默认的广告过滤规则）
+                # 判断是否为自定义规则：包含 inboundTag 或 outboundTag 以 "socks5-" 开头
+                local temp_rules
+                temp_rules=$(jq -c '[.routing.rules[]? | select(.inboundTag != null or (.outboundTag? | startswith("socks5-")))]' "$xray_config_path" 2>/dev/null)
+                
+                # 验证提取结果是否为有效的 JSON 数组
+                if [[ -n "$temp_rules" ]] && echo "$temp_rules" | jq empty 2>/dev/null; then
+                    existing_custom_routing_rules="$temp_rules"
+                fi
+            else
+                warning "现有配置文件格式异常，将忽略现有的自定义配置"
             fi
-            
-            # 提取所有自定义的 routing rules（排除默认的广告过滤规则）
-            # 判断是否为自定义规则：包含 inboundTag 或 outboundTag 以 "socks5-" 开头
-            local temp_rules
-            temp_rules=$(jq -c '[.routing.rules[]? | select(.inboundTag != null or (.outboundTag? | startswith("socks5-")))]' "$xray_config_path" 2>/dev/null)
-            
-            # 验证提取结果是否为有效的 JSON 数组
-            if [[ -n "$temp_rules" ]] && echo "$temp_rules" | jq empty 2>/dev/null; then
-                existing_custom_routing_rules="$temp_rules"
-            fi
-        else
-            warning "现有配置文件格式异常，将忽略现有的自定义配置"
         fi
     fi
 
