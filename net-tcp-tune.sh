@@ -8203,6 +8203,32 @@ write_config() {
             fi
         fi
     fi
+    
+    # 🐛 调试输出
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    echo "[调试] write_config 变量状态:" >&2
+    echo "[调试] 配置文件存在: $([ -f "$xray_config_path" ] && echo "是" || echo "否")" >&2
+    echo "[调试] should_preserve_config: $should_preserve_config" >&2
+    echo "[调试] existing_custom_outbounds 长度: ${#existing_custom_outbounds}" >&2
+    echo "[调试] existing_custom_outbounds 内容: '$existing_custom_outbounds'" >&2
+    echo "[调试] existing_custom_routing_rules 长度: ${#existing_custom_routing_rules}" >&2
+    echo "[调试] existing_custom_routing_rules 内容: '$existing_custom_routing_rules'" >&2
+    echo "[调试] inbounds_json 长度: ${#inbounds_json}" >&2
+    echo "[调试] inbounds_json 前100字符: '${inbounds_json:0:100}'" >&2
+    
+    # 验证变量是否为有效 JSON
+    if echo "$existing_custom_outbounds" | jq empty 2>/dev/null; then
+        echo "[调试] existing_custom_outbounds 是有效的 JSON ✓" >&2
+    else
+        echo "[调试] existing_custom_outbounds 不是有效的 JSON ✗" >&2
+    fi
+    
+    if echo "$existing_custom_routing_rules" | jq empty 2>/dev/null; then
+        echo "[调试] existing_custom_routing_rules 是有效的 JSON ✓" >&2
+    else
+        echo "[调试] existing_custom_routing_rules 不是有效的 JSON ✗" >&2
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
 
     if [[ "$enable_routing" == "true" ]]; then
         # 带路由规则的配置
