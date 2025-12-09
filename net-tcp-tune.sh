@@ -6720,7 +6720,7 @@ show_main_menu() {
             manage_cn_ip_block
             ;;
         23)
-            deploy_socks5
+            manage_socks5
             ;;
         24)
             manage_substore
@@ -10797,6 +10797,540 @@ startbbrcake() {
 #=============================================================================
 # SOCKS5 一键部署功能
 #=============================================================================
+
+# SOCKS5 配置目录
+SOCKS5_CONFIG_DIR="/etc/sbox_socks5"
+SOCKS5_CONFIG_FILE="${SOCKS5_CONFIG_DIR}/config.json"
+SOCKS5_SERVICE_NAME="sbox-socks5"
+
+# 查看 SOCKS5 配置信息
+view_socks5() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      查看 SOCKS5 代理信息${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    
+    # 检查配置文件是否存在
+    if [ ! -f "$SOCKS5_CONFIG_FILE" ]; then
+        echo -e "${gl_huang}⚠️  未检测到 SOCKS5 代理配置${gl_bai}"
+        echo ""
+        echo "您可以选择菜单 [1] 新增 SOCKS5 代理"
+        echo ""
+        break_end
+        return 1
+    fi
+    
+    # 解析配置文件
+    local port=$(jq -r '.inbounds[0].listen_port // empty' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    local username=$(jq -r '.inbounds[0].users[0].username // empty' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    local password=$(jq -r '.inbounds[0].users[0].password // empty' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    
+    if [ -z "$port" ] || [ -z "$username" ]; then
+        echo -e "${gl_hong}❌ 配置文件格式错误或为空${gl_bai}"
+        echo ""
+        echo "配置文件路径: $SOCKS5_CONFIG_FILE"
+        echo ""
+        break_end
+        return 1
+    fi
+    
+    # 获取服务器IP
+    local server_ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                      curl -4 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
+                      curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                      echo "请手动获取")
+    
+    # 检查服务状态
+    local service_status=""
+    if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
+        service_status="${gl_lv}✅ 运行中${gl_bai}"
+    else
+        service_status="${gl_hong}❌ 未运行${gl_bai}"
+    fi
+    
+    # 检查端口监听
+    local port_status=""
+    if ss -tulpn | grep -q ":${port} "; then
+        port_status="${gl_lv}✅ 监听中${gl_bai}"
+    else
+        port_status="${gl_hong}❌ 未监听${gl_bai}"
+    fi
+    
+    echo -e "${gl_lv}SOCKS5 连接信息：${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "  服务器地址: ${gl_huang}${server_ip}${gl_bai}"
+    echo -e "  端口:       ${gl_huang}${port}${gl_bai}"
+    echo -e "  用户名:     ${gl_huang}${username}${gl_bai}"
+    echo -e "  密码:       ${gl_huang}${password}${gl_bai}"
+    echo -e "  协议:       ${gl_huang}SOCKS5${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "  服务状态:   $service_status"
+    echo -e "  端口状态:   $port_status"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}测试连接命令：${gl_bai}"
+    echo "curl --socks5-hostname ${username}:${password}@${server_ip}:${port} http://httpbin.org/ip"
+    echo ""
+    echo -e "${gl_zi}管理命令：${gl_bai}"
+    echo "  查看日志: journalctl -u ${SOCKS5_SERVICE_NAME} -f"
+    echo "  重启服务: systemctl restart ${SOCKS5_SERVICE_NAME}"
+    echo "  停止服务: systemctl stop ${SOCKS5_SERVICE_NAME}"
+    echo ""
+    
+    break_end
+}
+
+# 修改 SOCKS5 配置
+modify_socks5() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      修改 SOCKS5 代理配置${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    
+    # 检查配置文件是否存在
+    if [ ! -f "$SOCKS5_CONFIG_FILE" ]; then
+        echo -e "${gl_huang}⚠️  未检测到 SOCKS5 代理配置${gl_bai}"
+        echo ""
+        echo "您可以选择菜单 [1] 新增 SOCKS5 代理"
+        echo ""
+        break_end
+        return 1
+    fi
+    
+    # 读取当前配置
+    local current_port=$(jq -r '.inbounds[0].listen_port // empty' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    local current_user=$(jq -r '.inbounds[0].users[0].username // empty' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    local current_pass=$(jq -r '.inbounds[0].users[0].password // empty' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    
+    echo -e "${gl_zi}当前配置：${gl_bai}"
+    echo "  端口: ${current_port}"
+    echo "  用户名: ${current_user}"
+    echo "  密码: ${current_pass}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "请选择要修改的项目："
+    echo ""
+    echo "  1. 修改端口"
+    echo "  2. 修改用户名"
+    echo "  3. 修改密码"
+    echo "  4. 修改所有配置"
+    echo ""
+    echo "  0. 返回上级菜单"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    
+    read -e -p "请输入选项 [0-4]: " modify_choice
+    
+    local new_port="$current_port"
+    local new_user="$current_user"
+    local new_pass="$current_pass"
+    
+    case "$modify_choice" in
+        1)
+            echo ""
+            while true; do
+                read -e -p "$(echo -e "${gl_huang}请输入新端口 [当前: ${current_port}]: ${gl_bai}")" new_port
+                new_port=${new_port:-$current_port}
+                
+                if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ]; then
+                    if [ "$new_port" != "$current_port" ] && ss -tulpn | grep -q ":${new_port} "; then
+                        echo -e "${gl_hong}❌ 端口 ${new_port} 已被占用${gl_bai}"
+                    else
+                        break
+                    fi
+                else
+                    echo -e "${gl_hong}❌ 无效端口，请输入 1024-65535 之间的数字${gl_bai}"
+                fi
+            done
+            ;;
+        2)
+            echo ""
+            while true; do
+                read -e -p "$(echo -e "${gl_huang}请输入新用户名 [当前: ${current_user}]: ${gl_bai}")" new_user
+                new_user=${new_user:-$current_user}
+                
+                if [[ "$new_user" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                    break
+                else
+                    echo -e "${gl_hong}❌ 用户名只能包含字母、数字、下划线和连字符${gl_bai}"
+                fi
+            done
+            ;;
+        3)
+            echo ""
+            while true; do
+                read -e -p "$(echo -e "${gl_huang}请输入新密码: ${gl_bai}")" new_pass
+                
+                if [ -z "$new_pass" ]; then
+                    new_pass="$current_pass"
+                    break
+                elif [ ${#new_pass} -lt 6 ]; then
+                    echo -e "${gl_hong}❌ 密码长度至少6位${gl_bai}"
+                elif [[ "$new_pass" == *\"* || "$new_pass" == *\\* ]]; then
+                    echo -e "${gl_hong}❌ 密码不能包含 \" 或 \\ 字符${gl_bai}"
+                else
+                    break
+                fi
+            done
+            ;;
+        4)
+            echo ""
+            # 修改端口
+            while true; do
+                read -e -p "$(echo -e "${gl_huang}请输入新端口 [当前: ${current_port}, 回车保持不变]: ${gl_bai}")" new_port
+                new_port=${new_port:-$current_port}
+                
+                if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ]; then
+                    if [ "$new_port" != "$current_port" ] && ss -tulpn | grep -q ":${new_port} "; then
+                        echo -e "${gl_hong}❌ 端口 ${new_port} 已被占用${gl_bai}"
+                    else
+                        break
+                    fi
+                else
+                    echo -e "${gl_hong}❌ 无效端口，请输入 1024-65535 之间的数字${gl_bai}"
+                fi
+            done
+            echo ""
+            
+            # 修改用户名
+            while true; do
+                read -e -p "$(echo -e "${gl_huang}请输入新用户名 [当前: ${current_user}, 回车保持不变]: ${gl_bai}")" new_user
+                new_user=${new_user:-$current_user}
+                
+                if [[ "$new_user" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                    break
+                else
+                    echo -e "${gl_hong}❌ 用户名只能包含字母、数字、下划线和连字符${gl_bai}"
+                fi
+            done
+            echo ""
+            
+            # 修改密码
+            while true; do
+                read -e -p "$(echo -e "${gl_huang}请输入新密码 [回车保持不变]: ${gl_bai}")" new_pass
+                
+                if [ -z "$new_pass" ]; then
+                    new_pass="$current_pass"
+                    break
+                elif [ ${#new_pass} -lt 6 ]; then
+                    echo -e "${gl_hong}❌ 密码长度至少6位${gl_bai}"
+                elif [[ "$new_pass" == *\"* || "$new_pass" == *\\* ]]; then
+                    echo -e "${gl_hong}❌ 密码不能包含 \" 或 \\ 字符${gl_bai}"
+                else
+                    break
+                fi
+            done
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo -e "${gl_hong}❌ 无效选项${gl_bai}"
+            sleep 1
+            return 1
+            ;;
+    esac
+    
+    # 确认修改
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}修改后的配置：${gl_bai}"
+    echo "  端口: ${new_port}"
+    echo "  用户名: ${new_user}"
+    echo "  密码: ${new_pass}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    
+    read -e -p "$(echo -e "${gl_huang}确认修改？(Y/N): ${gl_bai}")" confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消修改"
+        break_end
+        return 0
+    fi
+    
+    # 检测 sing-box 二进制程序
+    local SINGBOX_CMD=""
+    for path in /etc/sing-box/sing-box /usr/local/bin/sing-box /opt/sing-box/sing-box; do
+        if [ -x "$path" ]; then
+            SINGBOX_CMD="$path"
+            break
+        fi
+    done
+    
+    if [ -z "$SINGBOX_CMD" ]; then
+        for cmd in sing-box sb; do
+            if command -v "$cmd" &>/dev/null; then
+                SINGBOX_CMD=$(which "$cmd")
+                break
+            fi
+        done
+    fi
+    
+    if [ -z "$SINGBOX_CMD" ]; then
+        echo -e "${gl_hong}❌ 未找到 sing-box 程序${gl_bai}"
+        break_end
+        return 1
+    fi
+    
+    # 更新配置文件
+    echo ""
+    echo -e "${gl_zi}正在更新配置...${gl_bai}"
+    
+    cat > "$SOCKS5_CONFIG_FILE" << CONFIGEOF
+{
+  "log": {
+    "level": "info",
+    "output": "${SOCKS5_CONFIG_DIR}/socks5.log"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks5-in",
+      "listen": "0.0.0.0",
+      "listen_port": ${new_port},
+      "users": [
+        {
+          "username": "${new_user}",
+          "password": "${new_pass}"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}
+CONFIGEOF
+    
+    chmod 600 "$SOCKS5_CONFIG_FILE"
+    
+    # 验证配置
+    if ! $SINGBOX_CMD check -c "$SOCKS5_CONFIG_FILE" >/dev/null 2>&1; then
+        echo -e "${gl_hong}❌ 配置文件语法错误${gl_bai}"
+        $SINGBOX_CMD check -c "$SOCKS5_CONFIG_FILE"
+        break_end
+        return 1
+    fi
+    
+    # 更新 systemd 服务文件（如果端口改变需要更新）
+    cat > /etc/systemd/system/${SOCKS5_SERVICE_NAME}.service << SERVICEEOF
+[Unit]
+Description=Sing-box SOCKS5 Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${SINGBOX_CMD} run -c ${SOCKS5_CONFIG_FILE}
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=always
+RestartSec=5
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${SOCKS5_SERVICE_NAME}
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${SOCKS5_CONFIG_DIR}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+    
+    # 重新加载并重启服务
+    systemctl daemon-reload
+    systemctl restart "$SOCKS5_SERVICE_NAME"
+    
+    sleep 2
+    
+    # 验证服务状态
+    if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
+        echo -e "${gl_lv}✅ 配置修改成功，服务已重启${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务重启失败，请检查日志${gl_bai}"
+        echo "journalctl -u ${SOCKS5_SERVICE_NAME} -n 20 --no-pager"
+    fi
+    
+    echo ""
+    break_end
+}
+
+# 删除 SOCKS5 配置
+delete_socks5() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}      删除 SOCKS5 代理${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    
+    # 检查是否存在配置
+    local has_config=false
+    local has_service=false
+    
+    if [ -f "$SOCKS5_CONFIG_FILE" ] || [ -d "$SOCKS5_CONFIG_DIR" ]; then
+        has_config=true
+    fi
+    
+    if [ -f "/etc/systemd/system/${SOCKS5_SERVICE_NAME}.service" ]; then
+        has_service=true
+    fi
+    
+    if [ "$has_config" = false ] && [ "$has_service" = false ]; then
+        echo -e "${gl_huang}⚠️  未检测到 SOCKS5 代理配置${gl_bai}"
+        echo ""
+        break_end
+        return 0
+    fi
+    
+    # 显示即将删除的内容
+    echo -e "${gl_huang}即将删除以下内容：${gl_bai}"
+    echo ""
+    
+    if [ "$has_service" = true ]; then
+        echo "  • 系统服务: ${SOCKS5_SERVICE_NAME}"
+        if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
+            echo "    状态: 运行中（将被停止）"
+        else
+            echo "    状态: 未运行"
+        fi
+    fi
+    
+    if [ "$has_config" = true ]; then
+        echo "  • 配置目录: ${SOCKS5_CONFIG_DIR}"
+        if [ -f "$SOCKS5_CONFIG_FILE" ]; then
+            local port=$(jq -r '.inbounds[0].listen_port // "未知"' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+            echo "    端口: ${port}"
+        fi
+    fi
+    
+    echo ""
+    echo -e "${gl_hong}⚠️  此操作不可恢复！${gl_bai}"
+    echo ""
+    
+    read -e -p "$(echo -e "${gl_huang}确认删除？请输入 'yes' 确认: ${gl_bai}")" confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        echo ""
+        echo "已取消删除"
+        break_end
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${gl_zi}正在删除...${gl_bai}"
+    
+    # 停止并禁用服务
+    if [ "$has_service" = true ]; then
+        systemctl stop "$SOCKS5_SERVICE_NAME" 2>/dev/null
+        systemctl disable "$SOCKS5_SERVICE_NAME" 2>/dev/null
+        rm -f "/etc/systemd/system/${SOCKS5_SERVICE_NAME}.service"
+        systemctl daemon-reload
+        echo -e "${gl_lv}✅ 服务已删除${gl_bai}"
+    fi
+    
+    # 删除配置目录
+    if [ "$has_config" = true ]; then
+        rm -rf "$SOCKS5_CONFIG_DIR"
+        echo -e "${gl_lv}✅ 配置目录已删除${gl_bai}"
+    fi
+    
+    echo ""
+    echo -e "${gl_lv}🎉 SOCKS5 代理已完全删除${gl_bai}"
+    echo ""
+    
+    break_end
+}
+
+# SOCKS5 管理主菜单
+manage_socks5() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}      Sing-box SOCKS5 管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        
+        # 检查当前状态
+        if [ -f "$SOCKS5_CONFIG_FILE" ]; then
+            local port=$(jq -r '.inbounds[0].listen_port // "未知"' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+            local user=$(jq -r '.inbounds[0].users[0].username // "未知"' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+            
+            if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
+                echo -e "  当前状态: ${gl_lv}✅ 运行中${gl_bai}"
+            else
+                echo -e "  当前状态: ${gl_hong}❌ 未运行${gl_bai}"
+            fi
+            echo -e "  端口: ${gl_huang}${port}${gl_bai}  用户名: ${gl_huang}${user}${gl_bai}"
+        else
+            echo -e "  当前状态: ${gl_zi}未部署${gl_bai}"
+        fi
+        
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "  1. 新增 SOCKS5 代理"
+        echo "  2. 修改 SOCKS5 配置"
+        echo "  3. 删除 SOCKS5 代理"
+        echo "  4. 查看 SOCKS5 信息"
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo "  0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        
+        read -e -p "请输入选项 [0-4]: " socks5_choice
+        
+        case "$socks5_choice" in
+            1)
+                # 检查是否已存在配置
+                if [ -f "$SOCKS5_CONFIG_FILE" ]; then
+                    echo ""
+                    echo -e "${gl_huang}⚠️  检测到已存在 SOCKS5 配置${gl_bai}"
+                    echo ""
+                    read -e -p "$(echo -e "${gl_huang}是否覆盖现有配置？(Y/N): ${gl_bai}")" overwrite
+                    if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+                        echo "已取消"
+                        sleep 1
+                        continue
+                    fi
+                fi
+                deploy_socks5
+                ;;
+            2)
+                modify_socks5
+                ;;
+            3)
+                delete_socks5
+                ;;
+            4)
+                view_socks5
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo -e "${gl_hong}❌ 无效选项${gl_bai}"
+                sleep 1
+                ;;
+        esac
+    done
+}
 
 install_singbox_binary() {
     clear
