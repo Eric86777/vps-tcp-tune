@@ -1,9 +1,9 @@
 #!/bin/bash
-# v1.2.6 更新: 修复配额×2累加规则、优化导入导出逻辑、自动转换relay为double模式 (by Eric86777)
+# v1.2.7 更新: 修复配额累加逻辑(只用drop规则×2)、修复提前触发限制的bug (by Eric86777)
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.6"
+readonly SCRIPT_VERSION="1.2.7"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1574,50 +1574,36 @@ apply_nftables_quota() {
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
         if [ "$billing_mode" = "relay" ] || [ "$billing_mode" = "double" ]; then
-            # 双向统计：入站和出站都累加2次，实现 (In + Out) × 2
-            # drop 规则（超额后阻断）
+            # 双向统计：(In + Out) × 2
+            # drop 规则本身会累加流量，重复2次实现 ×2
+            # 入站 ×2
+            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 出站 ×2
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 入站累加规则（插入2次实现 ×2）
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" 2>/dev/null || true
-            # 出站累加规则（插入2次实现 ×2）
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         else
-            # 单向统计：出站累加2次，实现 Out × 2
-            # drop 规则
+            # 单向统计：Out × 2
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 出站累加规则（插入2次实现 ×2）
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         fi
     else
         local quota_name="port_${port}_quota"
@@ -1643,50 +1629,36 @@ apply_nftables_quota() {
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
         if [ "$billing_mode" = "relay" ] || [ "$billing_mode" = "double" ]; then
-            # 双向统计：入站和出站都累加2次，实现 (In + Out) × 2
-            # drop 规则（超额后阻断）
+            # 双向统计：(In + Out) × 2
+            # drop 规则本身会累加流量，重复2次实现 ×2
+            # 入站 ×2
+            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 出站 ×2
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 入站累加规则（插入2次实现 ×2）
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" 2>/dev/null || true
-            # 出站累加规则（插入2次实现 ×2）
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         else
-            # 单向统计：出站累加2次，实现 Out × 2
-            # drop 规则
+            # 单向统计：Out × 2
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 出站累加规则（插入2次实现 ×2）
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         fi
     fi
 }
