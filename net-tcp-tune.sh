@@ -2472,7 +2472,7 @@ detect_path_mtu_multi_region() {
         ["美国-东海岸"]="18.9.22.69 128.112.128.15 108.61.10.10 23.29.64.1"    # MIT, Princeton, Vultr, Choopa
         ["欧洲-德国"]="141.14.16.1 194.25.0.125 134.130.4.1 85.10.240.1"      # DFN, Telekom, RWTH, Hetzner
         ["欧洲-英国"]="131.111.8.46 163.1.0.1 212.58.244.20 193.136.1.1"       # Cambridge, Oxford, BBC, LINX
-        ["澳洲"]="1.1.1.1 139.130.4.5 203.50.0.1 150.203.1.10"                # Cloudflare, Telstra, Telstra-2, ANU
+        ["澳洲"]="139.130.4.5 203.50.0.1 150.203.1.10 203.2.218.1"             # Telstra, Telstra-2, ANU, Optus
     )
     
     # 定义显示顺序
@@ -2640,6 +2640,7 @@ apply_mss_clamp_with_value() {
         netfilter-persistent save >/dev/null 2>&1
         echo -e "${gl_lv}✅ 规则已持久化保存${gl_bai}"
     elif command -v iptables-save &>/dev/null; then
+        mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null
         echo -e "${gl_lv}✅ 规则已保存${gl_bai}"
     else
@@ -10152,6 +10153,7 @@ add_port_block_rule() {
     if command -v netfilter-persistent &> /dev/null; then
         netfilter-persistent save >/dev/null 2>&1
     elif command -v iptables-save &> /dev/null; then
+        mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     fi
 
@@ -10186,6 +10188,7 @@ remove_port_block_rule() {
     if command -v netfilter-persistent &> /dev/null; then
         netfilter-persistent save >/dev/null 2>&1
     elif command -v iptables-save &> /dev/null; then
+        mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     fi
 
@@ -10244,6 +10247,7 @@ EOF
     if command -v netfilter-persistent &> /dev/null; then
         netfilter-persistent save >/dev/null 2>&1
     elif command -v iptables-save &> /dev/null; then
+        mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     fi
 
