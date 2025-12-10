@@ -5287,6 +5287,26 @@ DNSStubListener=yes
     
     echo -e "${gl_lv}  ✅ systemd-resolved 配置已重新加载并验证${gl_bai}"
     
+    # 🔒 检测 immutable 属性（云服务商保护机制）
+    if [[ -e /etc/resolv.conf ]] && lsattr /etc/resolv.conf 2>/dev/null | grep -q 'i'; then
+        echo ""
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_hong}⚠️  检测到 /etc/resolv.conf 被锁定保护${gl_bai}"
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "原因：您的服务器设置了不可变属性（通常是云服务商的保护机制）"
+        echo ""
+        echo "风险：强制修改可能导致机器失联或网络异常"
+        echo ""
+        echo "建议：如非必要，不建议继续修改"
+        echo "      能正常执行的系统不会弹出此提示"
+        echo ""
+        echo -e "${gl_lv}状态：本次操作已安全终止，您的配置未被修改${gl_bai}"
+        echo ""
+        break_end
+        return 1
+    fi
+    
     # 🛡️ 关键修复：安全地创建 resolv.conf 链接
     # 备份并创建 resolv.conf 链接（只有在验证通过后才执行）
     if [[ -e /etc/resolv.conf ]] && [[ ! -L /etc/resolv.conf ]]; then
