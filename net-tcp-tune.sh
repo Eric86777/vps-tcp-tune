@@ -5838,7 +5838,7 @@ ROLLBACK_SCRIPT
     echo -e "${gl_lv}DNS净化脚本执行完成${gl_bai}"
     echo "原作者：NSdesk"
     echo "安全增强：SSH防断连优化"
-    echo "更多信息：https://www.nodeseek.com/space/23129/"
+    echo "更多信息：https://www.nodeseek.com/space/23129#/general"
     echo "════════════════════════════════════════════════════════"
     echo ""
 
