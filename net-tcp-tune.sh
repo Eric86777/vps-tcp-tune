@@ -4977,7 +4977,7 @@ dns_purify_and_harden() {
     fi
 
     echo -e "${gl_kjlan}功能说明：${gl_bai}"
-    echo "  ✓ 配置安全的DNS服务器（Google DNS + Cloudflare DNS）"
+    echo "  ✓ 配置安全的DNS服务器（支持国外/国内/混合模式）"
     echo "  ✓ 防止DHCP覆盖DNS配置"
     echo "  ✓ 清除厂商残留的DNS配置"
     echo "  ✓ 启用DNS安全功能（DNSSEC + DNS over TLS）"
@@ -5124,6 +5124,9 @@ dns_purify_and_harden() {
     local FALLBACK_DNS=""
     local DNS_OVER_TLS=""
     local MODE_NAME=""
+    # 网卡级 DNS（用于 resolvectl，不含 DoT 后缀）
+    local INTERFACE_DNS_PRIMARY=""
+    local INTERFACE_DNS_SECONDARY=""
     
     case "$dns_mode_choice" in
         1)
@@ -5132,6 +5135,8 @@ dns_purify_and_harden() {
             FALLBACK_DNS=""
             DNS_OVER_TLS="yes"
             MODE_NAME="纯国外模式"
+            INTERFACE_DNS_PRIMARY="8.8.8.8"
+            INTERFACE_DNS_SECONDARY="1.1.1.1"
             ;;
         2)
             # 纯国内模式
@@ -5139,6 +5144,8 @@ dns_purify_and_harden() {
             FALLBACK_DNS=""
             DNS_OVER_TLS="opportunistic"
             MODE_NAME="纯国内模式"
+            INTERFACE_DNS_PRIMARY="223.5.5.5"
+            INTERFACE_DNS_SECONDARY="119.29.29.29"
             ;;
         3)
             # 混合模式
@@ -5146,6 +5153,8 @@ dns_purify_and_harden() {
             FALLBACK_DNS="223.5.5.5 114.114.114.114"
             DNS_OVER_TLS="opportunistic"
             MODE_NAME="混合模式"
+            INTERFACE_DNS_PRIMARY="8.8.8.8"
+            INTERFACE_DNS_SECONDARY="1.1.1.1"
             ;;
     esac
     
@@ -5264,8 +5273,8 @@ DNSStubListener=yes
         [[ -f /etc/resolv.conf ]] && cp /etc/resolv.conf "$BACKUP_DIR/resolv.conf.pre_remove" 2>/dev/null || true
         
         # 创建临时DNS配置（避免卸载期间DNS中断）
-        echo "nameserver 8.8.8.8" > /etc/resolv.conf.tmp
-        echo "nameserver 1.1.1.1" >> /etc/resolv.conf.tmp
+        echo "nameserver $INTERFACE_DNS_PRIMARY" > /etc/resolv.conf.tmp
+        echo "nameserver $INTERFACE_DNS_SECONDARY" >> /etc/resolv.conf.tmp
         
         # 使用临时DNS配置
         mv /etc/resolv.conf /etc/resolv.conf.old 2>/dev/null || true
@@ -5405,7 +5414,7 @@ DNSStubListener=yes
     
     # 检测是否需要修复D-Bus接口
     local need_dbus_fix=false
-    local debian_version=""
+    # 注意：debian_version 已在5180行定义，这里不再重复定义
     
     # 获取Debian版本
     if [ -f /etc/os-release ]; then
@@ -5438,10 +5447,10 @@ DNSStubListener=yes
         fi
         
         # 创建临时DNS配置文件
-        cat > /etc/resolv.conf.dbus_fix_temp << 'TEMP_DNS'
+        cat > /etc/resolv.conf.dbus_fix_temp << TEMP_DNS
 # 临时DNS配置（D-Bus修复期间使用）
-nameserver 8.8.8.8
-nameserver 1.1.1.1
+nameserver $INTERFACE_DNS_PRIMARY
+nameserver $INTERFACE_DNS_SECONDARY
 TEMP_DNS
         
         # 使用临时DNS配置
@@ -5551,9 +5560,9 @@ DBUS_FIX
             echo "  → 创建临时DNS保护..."
             
             # 创建临时DNS保护
-            cat > /etc/resolv.conf.stage4_temp << 'STAGE4_TEMP'
-nameserver 8.8.8.8
-nameserver 1.1.1.1
+            cat > /etc/resolv.conf.stage4_temp << STAGE4_TEMP
+nameserver $INTERFACE_DNS_PRIMARY
+nameserver $INTERFACE_DNS_SECONDARY
 STAGE4_TEMP
             cp /etc/resolv.conf /etc/resolv.conf.stage4_backup 2>/dev/null || true
             cp /etc/resolv.conf.stage4_temp /etc/resolv.conf
@@ -5618,7 +5627,7 @@ STAGE4_TEMP
             local dns_config_success=true
             
             echo "    正在应用DNS服务器配置..."
-            if timeout "$resolvectl_timeout" resolvectl dns "$main_interface" 8.8.8.8 1.1.1.1 2>/dev/null; then
+            if timeout "$resolvectl_timeout" resolvectl dns "$main_interface" $INTERFACE_DNS_PRIMARY $INTERFACE_DNS_SECONDARY 2>/dev/null; then
                 echo -e "    ${gl_lv}✅ DNS服务器配置成功${gl_bai}"
             else
                 echo -e "    ${gl_huang}⚠️  DNS服务器配置超时或失败（配置已通过resolved.conf生效）${gl_bai}"
@@ -5695,10 +5704,12 @@ STAGE4_TEMP
             verify_success=false
         fi
         
-        # 检测2: DNS Servers
-        if echo "$verify_output" | grep -q "DNS Servers:.*8\.8\.8\.8" && \
-           echo "$verify_output" | grep -q "DNS Servers:.*1\.1\.1\.1"; then
-            echo -e "  ${gl_lv}✅ DNS Servers: 8.8.8.8, 1.1.1.1${gl_bai}"
+        # 检测2: DNS Servers（根据用户选择的模式动态验证）
+        local escaped_dns_primary=$(echo "$INTERFACE_DNS_PRIMARY" | sed 's/\./\\./g')
+        local escaped_dns_secondary=$(echo "$INTERFACE_DNS_SECONDARY" | sed 's/\./\\./g')
+        if echo "$verify_output" | grep -q "DNS Servers:.*${escaped_dns_primary}" && \
+           echo "$verify_output" | grep -q "DNS Servers:.*${escaped_dns_secondary}"; then
+            echo -e "  ${gl_lv}✅ DNS Servers: ${INTERFACE_DNS_PRIMARY}, ${INTERFACE_DNS_SECONDARY}${gl_bai}"
         else
             echo -e "  ${gl_huang}⚠️  DNS Servers: 配置可能未完全生效${gl_bai}"
             verify_success=false
@@ -5741,24 +5752,34 @@ STAGE4_TEMP
     
     local dns_test_passed=false
     
+    # 根据用户选择的模式选择测试域名
+    local test_domain=""
+    if [[ "$dns_mode_choice" == "2" ]]; then
+        # 纯国内模式：使用国内域名测试
+        test_domain="baidu.com"
+    else
+        # 国外/混合模式：使用国外域名测试
+        test_domain="google.com"
+    fi
+    
     # 方法1: 使用 getent（最可靠）
     if command -v getent > /dev/null 2>&1; then
-        if getent hosts google.com > /dev/null 2>&1; then
-            echo -e "${gl_lv}  ✅ DNS解析正常 (getent测试)${gl_bai}"
+        if getent hosts "$test_domain" > /dev/null 2>&1; then
+            echo -e "${gl_lv}  ✅ DNS解析正常 (getent测试: $test_domain)${gl_bai}"
             dns_test_passed=true
         fi
     fi
     
     # 方法2: 使用 ping
-    if [ "$dns_test_passed" = false ] && ping -c 1 -W 2 google.com > /dev/null 2>&1; then
-        echo -e "${gl_lv}  ✅ DNS解析正常 (ping测试)${gl_bai}"
+    if [ "$dns_test_passed" = false ] && ping -c 1 -W 2 "$test_domain" > /dev/null 2>&1; then
+        echo -e "${gl_lv}  ✅ DNS解析正常 (ping测试: $test_domain)${gl_bai}"
         dns_test_passed=true
     fi
     
     # 方法3: 使用 nslookup（如果可用）
     if [ "$dns_test_passed" = false ] && command -v nslookup > /dev/null 2>&1; then
-        if nslookup google.com > /dev/null 2>&1; then
-            echo -e "${gl_lv}  ✅ DNS解析正常 (nslookup测试)${gl_bai}"
+        if nslookup "$test_domain" > /dev/null 2>&1; then
+            echo -e "${gl_lv}  ✅ DNS解析正常 (nslookup测试: $test_domain)${gl_bai}"
             dns_test_passed=true
         fi
     fi
@@ -5767,8 +5788,8 @@ STAGE4_TEMP
     if [ "$dns_test_passed" = false ]; then
         echo -e "${gl_huang}  ⚠️  DNS测试未通过，但配置已完成${gl_bai}"
         echo -e "${gl_huang}  提示: 请手动执行以下命令测试DNS：${gl_bai}"
-        echo "       ping google.com"
-        echo "       curl google.com"
+        echo "       ping $test_domain"
+        echo "       curl $test_domain"
     fi
     echo ""
 
