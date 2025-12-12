@@ -5003,7 +5003,7 @@ dns_purify_and_harden() {
     echo "  2. 🇨🇳 纯国内模式（低延迟推荐）"
     echo "     首选：阿里云 DNS + 腾讯 DNSPod"
     echo "     备用：无"
-    echo "     加密：机会性 DNS over TLS"
+    echo "     加密：无（国内DNS不支持DoT/DNSSEC）"
     echo ""
     echo "  3. 🔀 混合模式（最大容错）"
     echo "     首选：Google DNS + Cloudflare DNS"
@@ -5123,6 +5123,7 @@ dns_purify_and_harden() {
     local TARGET_DNS=""
     local FALLBACK_DNS=""
     local DNS_OVER_TLS=""
+    local DNSSEC_MODE=""
     local MODE_NAME=""
     # 网卡级 DNS（用于 resolvectl，不含 DoT 后缀）
     local INTERFACE_DNS_PRIMARY=""
@@ -5134,15 +5135,17 @@ dns_purify_and_harden() {
             TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
             FALLBACK_DNS=""
             DNS_OVER_TLS="yes"
+            DNSSEC_MODE="allow-downgrade"
             MODE_NAME="纯国外模式"
             INTERFACE_DNS_PRIMARY="8.8.8.8"
             INTERFACE_DNS_SECONDARY="1.1.1.1"
             ;;
         2)
-            # 纯国内模式
+            # 纯国内模式（国内DNS和国内域名大多不支持DNSSEC，必须禁用）
             TARGET_DNS="223.5.5.5 119.29.29.29"
             FALLBACK_DNS=""
-            DNS_OVER_TLS="opportunistic"
+            DNS_OVER_TLS="no"
+            DNSSEC_MODE="no"
             MODE_NAME="纯国内模式"
             INTERFACE_DNS_PRIMARY="223.5.5.5"
             INTERFACE_DNS_SECONDARY="119.29.29.29"
@@ -5152,6 +5155,7 @@ dns_purify_and_harden() {
             TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
             FALLBACK_DNS="223.5.5.5 114.114.114.114"
             DNS_OVER_TLS="opportunistic"
+            DNSSEC_MODE="allow-downgrade"
             MODE_NAME="混合模式"
             INTERFACE_DNS_PRIMARY="8.8.8.8"
             INTERFACE_DNS_SECONDARY="1.1.1.1"
@@ -5167,7 +5171,7 @@ DNS=${TARGET_DNS}
 ${FALLBACK_DNS:+FallbackDNS=${FALLBACK_DNS}}
 LLMNR=no
 MulticastDNS=no
-DNSSEC=allow-downgrade
+DNSSEC=${DNSSEC_MODE}
 DNSOverTLS=${DNS_OVER_TLS}
 Cache=yes
 DNSStubListener=yes
