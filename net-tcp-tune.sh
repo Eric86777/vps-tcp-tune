@@ -4992,6 +4992,34 @@ dns_purify_and_harden() {
         echo ""
     fi
     
+    # ==================== DNS模式选择 ====================
+    echo -e "${gl_kjlan}请选择 DNS 配置模式：${gl_bai}"
+    echo ""
+    echo "  1. 🌍 纯国外模式（抗污染推荐）"
+    echo "     首选：Google DNS + Cloudflare DNS"
+    echo "     备用：无"
+    echo "     加密：强制 DNS over TLS"
+    echo ""
+    echo "  2. 🇨🇳 纯国内模式（低延迟推荐）"
+    echo "     首选：阿里云 DNS + 腾讯 DNSPod"
+    echo "     备用：无"
+    echo "     加密：机会性 DNS over TLS"
+    echo ""
+    echo "  3. 🔀 混合模式（最大容错）"
+    echo "     首选：Google DNS + Cloudflare DNS"
+    echo "     备用：阿里云 DNS + 114DNS"
+    echo "     加密：机会性 DNS over TLS"
+    echo ""
+    read -e -p "$(echo -e "${gl_huang}请选择 (1/2/3，默认1): ${gl_bai}")" dns_mode_choice
+    dns_mode_choice=${dns_mode_choice:-1}
+    
+    # 验证输入
+    if [[ ! "$dns_mode_choice" =~ ^[1-3]$ ]]; then
+        dns_mode_choice=1
+    fi
+    
+    echo ""
+    
     read -e -p "$(echo -e "${gl_huang}是否继续执行？(y/n): ${gl_bai}")" confirm
     
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -5091,15 +5119,47 @@ dns_purify_and_harden() {
     echo -e "${gl_lv}✅ 创建备份目录：$BACKUP_DIR${gl_bai}"
     echo ""
 
-    # 目标DNS配置
-    local TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
+    # 目标DNS配置（根据用户选择的模式）
+    local TARGET_DNS=""
+    local FALLBACK_DNS=""
+    local DNS_OVER_TLS=""
+    local MODE_NAME=""
+    
+    case "$dns_mode_choice" in
+        1)
+            # 纯国外模式
+            TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
+            FALLBACK_DNS=""
+            DNS_OVER_TLS="yes"
+            MODE_NAME="纯国外模式"
+            ;;
+        2)
+            # 纯国内模式
+            TARGET_DNS="223.5.5.5 119.29.29.29"
+            FALLBACK_DNS=""
+            DNS_OVER_TLS="opportunistic"
+            MODE_NAME="纯国内模式"
+            ;;
+        3)
+            # 混合模式
+            TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
+            FALLBACK_DNS="223.5.5.5 114.114.114.114"
+            DNS_OVER_TLS="opportunistic"
+            MODE_NAME="混合模式"
+            ;;
+    esac
+    
+    echo -e "${gl_lv}已选择：${MODE_NAME}${gl_bai}"
+    echo ""
+    
+    # 构建配置
     local SECURE_RESOLVED_CONFIG="[Resolve]
 DNS=${TARGET_DNS}
-FallbackDNS=223.5.5.5 114.114.114.114
+${FALLBACK_DNS:+FallbackDNS=${FALLBACK_DNS}}
 LLMNR=no
 MulticastDNS=no
 DNSSEC=allow-downgrade
-DNSOverTLS=opportunistic
+DNSOverTLS=${DNS_OVER_TLS}
 Cache=yes
 DNSStubListener=yes
 "
