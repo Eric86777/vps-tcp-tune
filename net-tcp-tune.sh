@@ -7326,7 +7326,7 @@ run_unlock_check() {
     echo ""
 
     # 执行解锁检测脚本
-    bash <(curl -sL Media.Check.Place)
+    bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)
 
     echo ""
     echo "------------------------------------------------"
