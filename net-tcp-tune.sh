@@ -6733,7 +6733,7 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "33. PF_realm转发脚本 ⭐ 推荐"
+    echo "33. zywe_realm转发脚本 ⭐ 推荐"
     echo "34. F佬一键sing box脚本"
     echo "35. 科技lion脚本"
     echo "36. 酷雪云脚本"
@@ -7335,19 +7335,19 @@ run_unlock_check() {
 
 run_pf_realm() {
     clear
-    echo -e "${gl_kjlan}=== PF_realm转发脚本 ===${gl_bai}"
+    echo -e "${gl_kjlan}=== zywe_realm转发脚本 ===${gl_bai}"
     echo ""
-    echo "正在运行 PF_realm 转发脚本安装程序..."
+    echo "正在运行 zywe_realm 转发脚本安装程序..."
     echo "------------------------------------------------"
     echo ""
 
-    # 执行 PF_realm 转发脚本
+    # 执行 zywe_realm 转发脚本
     if wget -qO- https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | bash -s install; then
         echo ""
-        echo -e "${gl_lv}✅ PF_realm 脚本执行完成${gl_bai}"
+        echo -e "${gl_lv}✅ zywe_realm 脚本执行完成${gl_bai}"
     else
         echo ""
-        echo -e "${gl_hong}❌ PF_realm 脚本执行失败${gl_bai}"
+        echo -e "${gl_hong}❌ zywe_realm 脚本执行失败${gl_bai}"
         echo "可能原因："
         echo "1. 网络连接问题（无法访问GitHub）"
         echo "2. 脚本服务器不可用"
