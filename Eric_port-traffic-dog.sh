@@ -1,9 +1,9 @@
 #!/bin/bash
-# v1.2.7 更新: 修复配额累加逻辑(只用drop规则×2)、修复提前触发限制的bug (by Eric86777)
+# v1.2.8 更新: 新增邮件通知功能(Resend API)，与订阅通知系统保持一致 (by Eric86777)
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.7"
+readonly SCRIPT_VERSION="1.2.8"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -203,7 +203,15 @@ init_config() {
     },
     "email": {
       "enabled": false,
-      "status": "coming_soon"
+      "resend_api_key": "",
+      "email_from": "",
+      "email_from_name": "",
+      "email_to": "",
+      "server_name": "",
+      "status_notifications": {
+        "enabled": false,
+        "interval": "1h"
+      }
     },
     "wecom": {
       "enabled": false,
@@ -2541,6 +2549,7 @@ uninstall_script() {
 
         remove_telegram_notification_cron 2>/dev/null || true
         remove_wecom_notification_cron 2>/dev/null || true
+        remove_email_notification_cron 2>/dev/null || true
 
         rm -rf "$CONFIG_DIR" 2>/dev/null || true
         rm -f "/usr/local/bin/$SHORTCUT_COMMAND" 2>/dev/null || true
@@ -2559,7 +2568,7 @@ uninstall_script() {
 manage_notifications() {
     echo -e "${BLUE}=== 通知管理 ===${NC}"
     echo "1. Telegram机器人通知"
-    echo "2. 邮箱通知 [敬请期待]"
+    echo "2. 邮件通知 (Resend)"
     echo "3. 企业wx 机器人通知"
     echo "0. 返回主菜单"
     echo
@@ -2567,11 +2576,7 @@ manage_notifications() {
 
     case $choice in
         1) manage_telegram_notifications ;;
-        2)
-            echo -e "${YELLOW}预留的邮箱通知功能(画饼的)${NC}"
-            sleep 2
-            manage_notifications
-            ;;
+        2) manage_email_notifications ;;
         3) manage_wecom_notifications ;;
         0) show_main_menu ;;
         *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_notifications ;;
@@ -2593,6 +2598,11 @@ manage_telegram_notifications() {
         sleep 2
         manage_notifications
     fi
+}
+
+manage_email_notifications() {
+    email_configure
+    manage_notifications
 }
 
 manage_wecom_notifications() {
@@ -2663,6 +2673,31 @@ setup_wecom_notification_cron() {
     rm -f "$temp_cron"
 }
 
+setup_email_notification_cron() {
+    local script_path="$SCRIPT_PATH"
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗邮件通知" > "$temp_cron" || true
+
+    # 检查邮件通知是否启用
+    local email_enabled=$(jq -r '.notifications.email.status_notifications.enabled // false' "$CONFIG_FILE")
+    if [ "$email_enabled" = "true" ]; then
+        local email_interval=$(jq -r '.notifications.email.status_notifications.interval' "$CONFIG_FILE")
+        case "$email_interval" in
+            "1m")  echo "* * * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+        esac
+    fi
+
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
 # 通用间隔选择函数
 select_notification_interval() {
     # 显示选择菜单到stderr，避免被变量捕获
@@ -2702,9 +2737,17 @@ remove_wecom_notification_cron() {
     rm -f "$temp_cron"
 }
 
+remove_email_notification_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗邮件通知" > "$temp_cron" || true
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
 export_notification_functions() {
     export -f setup_telegram_notification_cron
     export -f setup_wecom_notification_cron
+    export -f setup_email_notification_cron
     export -f select_notification_interval
 }
 
@@ -2823,6 +2866,520 @@ log_notification() {
     fi
 }
 
+#=============================================================================
+# 邮件通知模块 (内嵌) - 使用 Resend API
+#=============================================================================
+
+# 邮件通知网络参数
+EMAIL_MAX_RETRIES=2
+EMAIL_CONNECT_TIMEOUT=10
+EMAIL_MAX_TIMEOUT=30
+
+# 检查邮件通知是否启用
+email_is_enabled() {
+    local enabled=$(jq -r '.notifications.email.enabled // false' "$CONFIG_FILE")
+    [ "$enabled" = "true" ]
+}
+
+# 生成单个端口的 HTML 卡片
+generate_port_html_card() {
+    local port=$1
+    local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE" 2>/dev/null)
+    
+    local remark=$(echo "$port_config" | jq -r '.remark // ""')
+    local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "double"')
+    local traffic_data=($(get_port_traffic "$port"))
+    local input_bytes=${traffic_data[0]}
+    local output_bytes=${traffic_data[1]}
+    
+    local total_traffic_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
+    local total_traffic_str=$(format_bytes "$total_traffic_bytes")
+    local input_str=$(format_bytes "$input_bytes")
+    local output_str=$(format_bytes "$output_bytes")
+    
+    local quota_info_html=""
+    local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
+    local monthly_limit=$(echo "$port_config" | jq -r '.quota.monthly_limit // "unlimited"')
+    
+    # 备注处理
+    local remark_html=""
+    if [ -n "$remark" ] && [ "$remark" != "null" ] && [ "$remark" != "" ]; then
+        remark_html="<span class=\"remark-badge\">${remark}</span>"
+    fi
+
+    # 计费模式显示
+    local mode_display="双向计费"
+    if [ "$billing_mode" != "double" ] && [ "$billing_mode" != "relay" ]; then
+        mode_display="单向计费(只输出站)"
+    fi
+
+    echo "<div class=\"card\">
+            <div class=\"card-header\">
+                <span class=\"port-badge\">端口 ${port}</span>
+                ${remark_html}
+            </div>
+            <div class=\"info-row\">
+                <span>总流量: <span class=\"traffic-highlight\">${total_traffic_str}</span></span>
+                <span>${mode_display}</span>
+            </div>
+            <div class=\"info-row\">
+                <span>📥 入站: ${input_str}</span>
+                <span>📤 出站: ${output_str}</span>
+            </div>"
+
+    # 配额进度条逻辑
+    if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
+        local limit_bytes=$(parse_size_to_bytes "$monthly_limit")
+        local usage_percent=0
+        if [ $limit_bytes -gt 0 ]; then
+            usage_percent=$((total_traffic_bytes * 100 / limit_bytes))
+        fi
+        
+        # 进度条颜色：超过80%变黄，超过95%变红
+        local bar_color="#3b82f6" # 蓝
+        if [ $usage_percent -ge 95 ]; then
+            bar_color="#ef4444" # 红
+        elif [ $usage_percent -ge 80 ]; then
+            bar_color="#f59e0b" # 黄
+        fi
+
+        # 限制进度条显示最大100%
+        local display_percent=$usage_percent
+        if [ $display_percent -gt 100 ]; then display_percent=100; fi
+
+        local reset_day_raw=$(echo "$port_config" | jq -r '.quota.reset_day')
+        local reset_msg=""
+        if [ "$reset_day_raw" != "null" ]; then
+             reset_msg="| 每月${reset_day_raw}日重置"
+        fi
+
+        echo "<div style=\"margin-top: 8px; font-size: 12px; color: #6b7280; display: flex; justify-content: space-between;\">
+                <span>📊 配额使用: ${usage_percent}%</span>
+                <span>${monthly_limit} ${reset_msg}</span>
+              </div>
+              <div class=\"progress-container\">
+                <div class=\"progress-bar\" style=\"width: ${display_percent}%; background-color: ${bar_color};\"></div>
+              </div>"
+    fi
+
+    echo "</div>"
+}
+
+# 生成精美的 HTML 邮件内容
+generate_html_email_body() {
+    local title="$1"
+    local server_name="$2"
+    local send_time=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
+    
+    # 获取汇总数据
+    local active_ports=($(get_active_ports))
+    local port_count=${#active_ports[@]}
+    local daily_total=$(get_daily_total_traffic)
+    
+    # CSS 样式定义
+    local css_styles="
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; color: #1f2937; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .header { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); padding: 24px; color: white; text-align: center; }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+        .header-stats { background-color: #eff6ff; padding: 16px; display: flex; justify-content: space-around; border-bottom: 1px solid #e5e7eb; font-size: 14px; color: #3b82f6; font-weight: 500; text-align: center; }
+        .stat-item { flex: 1; }
+        .content { padding: 20px; }
+        .card { background-color: white; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 16px; padding: 16px; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb; }
+        .port-badge { background-color: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; }
+        .traffic-highlight { color: #059669; font-weight: 600; font-size: 15px; }
+        .info-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; color: #4b5563; }
+        .remark-badge { background-color: #f3f4f6; color: #4b5563; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+        .progress-container { height: 8px; background-color: #e5e7eb; border-radius: 4px; margin-top: 8px; overflow: hidden; }
+        .progress-bar { height: 100%; background-color: #3b82f6; border-radius: 4px; }
+        .footer { background-color: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; }
+    "
+
+    echo "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+    <title>${title}</title>
+    <style>${css_styles}</style></head><body>
+    <div class=\"container\">
+        <div class=\"header\">
+            <h1>📊 ${title}</h1>
+        </div>
+        <div class=\"header-stats\">
+            <div class=\"stat-item\">🟢 监控中</div>
+            <div class=\"stat-item\">🛡️ 端口: ${port_count}个</div>
+            <div class=\"stat-item\">📈 总流量: ${daily_total}</div>
+        </div>
+        <div class=\"content\">"
+
+    # 遍历生成端口卡片
+    for port in "${active_ports[@]}"; do
+        generate_port_html_card "$port"
+    done
+
+    echo "</div>
+        <div class=\"footer\">
+            <p>🔗 服务器: ${server_name}</p>
+            <p>端口流量狗 v${SCRIPT_VERSION} | 发送时间: ${send_time}</p>
+        </div>
+    </div></body></html>"
+}
+
+# 核心发送函数：调用 Resend API 发送邮件
+send_email_notification() {
+    local title="$1"
+    local html_content="$2"
+
+    local api_key=$(jq -r '.notifications.email.resend_api_key // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    local email_from=$(jq -r '.notifications.email.email_from // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    local email_from_name=$(jq -r '.notifications.email.email_from_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    local email_to=$(jq -r '.notifications.email.email_to // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+
+    if [ -z "$api_key" ] || [ -z "$email_from" ] || [ -z "$email_to" ]; then
+        log_notification "[邮件通知] 配置不完整，缺少必要参数"
+        return 1
+    fi
+
+    local from_address="$email_from"
+    if [ -n "$email_from_name" ] && [ "$email_from_name" != "null" ]; then
+        from_address="${email_from_name} <${email_from}>"
+    fi
+
+    # 纯文本备用内容
+    local text_content="请使用支持HTML的邮箱客户端查看此邮件。"
+
+    # 构建JSON请求体
+    local json_body=$(jq -n \
+        --arg from "$from_address" \
+        --arg to "$email_to" \
+        --arg subject "$title" \
+        --arg html "$html_content" \
+        --arg text "$text_content" \
+        '{from: $from, to: $to, subject: $subject, html: $html, text: $text}')
+
+    local retry_count=0
+
+    # 重试机制
+    while [ $retry_count -le $EMAIL_MAX_RETRIES ]; do
+        local response=$(curl -s --connect-timeout $EMAIL_CONNECT_TIMEOUT --max-time $EMAIL_MAX_TIMEOUT \
+            -X POST "https://api.resend.com/emails" \
+            -H "Authorization: Bearer ${api_key}" \
+            -H "Content-Type: application/json" \
+            -d "$json_body" 2>/dev/null)
+
+        # Resend API 成功响应包含 id 字段
+        if echo "$response" | grep -q '"id"'; then
+            if [ $retry_count -gt 0 ]; then
+                log_notification "[邮件通知] 发送成功 (重试第${retry_count}次后成功)"
+            else
+                log_notification "[邮件通知] 发送成功"
+            fi
+            return 0
+        fi
+
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -le $EMAIL_MAX_RETRIES ]; then
+            sleep 2
+        fi
+    done
+
+    log_notification "[邮件通知] 发送失败 (已重试${EMAIL_MAX_RETRIES}次)"
+    return 1
+}
+
+# 标准通知接口：发送邮件状态通知
+email_send_status_notification() {
+    local status_enabled=$(jq -r '.notifications.email.status_notifications.enabled // false' "$CONFIG_FILE")
+    if [ "$status_enabled" != "true" ]; then
+        log_notification "[邮件通知] 状态通知未启用"
+        return 1
+    fi
+
+    local server_name=$(jq -r '.notifications.email.server_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "$(hostname)")
+    if [ -z "$server_name" ] || [ "$server_name" = "null" ]; then
+        server_name=$(hostname)
+    fi
+
+    local title="端口流量狗状态通知 - ${server_name}"
+    
+    # 获取精美的HTML内容
+    local html_content=$(generate_html_email_body "$title" "$server_name")
+    
+    if send_email_notification "$title" "$html_content"; then
+        log_notification "[邮件通知] 状态通知发送成功"
+        return 0
+    else
+        log_notification "[邮件通知] 状态通知发送失败"
+        return 1
+    fi
+}
+
+# 测试邮件发送
+email_test() {
+    echo -e "${BLUE}=== 发送测试邮件 ===${NC}"
+    echo
+
+    if ! email_is_enabled; then
+        echo -e "${RED}请先配置邮件通知信息${NC}"
+        sleep 2
+        return 1
+    fi
+
+    local email_to=$(jq -r '.notifications.email.email_to // ""' "$CONFIG_FILE")
+    echo "正在发送测试邮件到: $email_to"
+
+    if email_send_status_notification; then
+        echo -e "${GREEN}✅ 邮件发送成功！${NC}"
+    else
+        echo -e "${RED}❌ 邮件发送失败${NC}"
+    fi
+
+    sleep 3
+}
+
+# 邮件通知配置主菜单
+email_configure() {
+    while true; do
+        local status_notifications_enabled=$(jq -r '.notifications.email.status_notifications.enabled // false' "$CONFIG_FILE")
+        local api_key=$(jq -r '.notifications.email.resend_api_key // ""' "$CONFIG_FILE")
+
+        # 判断配置状态
+        local config_status="[未配置]"
+        if [ -n "$api_key" ] && [ "$api_key" != "" ] && [ "$api_key" != "null" ]; then
+            config_status="[已配置]"
+        fi
+
+        # 判断开关状态
+        local enable_status="[关闭]"
+        if [ "$status_notifications_enabled" = "true" ]; then
+            enable_status="[开启]"
+        fi
+
+        local status_interval=$(jq -r '.notifications.email.status_notifications.interval' "$CONFIG_FILE")
+
+        echo -e "${BLUE}=== 邮件通知配置 (Resend) ===${NC}"
+        local interval_display="未设置"
+        if [ -n "$status_interval" ] && [ "$status_interval" != "null" ]; then
+            interval_display="每${status_interval}"
+        fi
+        echo -e "当前状态: ${enable_status} | ${config_status} | 状态通知: ${interval_display}"
+        echo
+        echo "1. 配置邮件信息 (API Key + 发件人 + 收件人)"
+        echo "2. 通知设置管理"
+        echo "3. 发送测试邮件"
+        echo "4. 查看通知日志"
+        echo "0. 返回上级菜单"
+        echo
+        read -p "请选择操作 [0-4]: " choice
+
+        case $choice in
+            1) email_configure_info ;;
+            2) email_manage_settings ;;
+            3) email_test ;;
+            4) email_view_logs ;;
+            0) return 0 ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# 配置邮件信息
+email_configure_info() {
+    echo -e "${BLUE}=== 配置邮件通知 (Resend API) ===${NC}"
+    echo
+    echo -e "${GREEN}配置步骤说明:${NC}"
+    echo "1. 访问 https://resend.com 注册账号"
+    echo "2. 在 Resend 控制台验证发件域名"
+    echo "3. 获取 API Key"
+    echo
+
+    local current_api_key=$(jq -r '.notifications.email.resend_api_key' "$CONFIG_FILE")
+    local current_email_from=$(jq -r '.notifications.email.email_from' "$CONFIG_FILE")
+    local current_email_from_name=$(jq -r '.notifications.email.email_from_name' "$CONFIG_FILE")
+    local current_email_to=$(jq -r '.notifications.email.email_to' "$CONFIG_FILE")
+
+    # 显示当前配置
+    if [ "$current_api_key" != "" ] && [ "$current_api_key" != "null" ]; then
+        local masked_key="${current_api_key:0:10}...${current_api_key: -5}"
+        echo -e "${GREEN}当前API Key: $masked_key${NC}"
+    fi
+    if [ "$current_email_from" != "" ] && [ "$current_email_from" != "null" ]; then
+        echo -e "${GREEN}当前发件人邮箱: $current_email_from${NC}"
+    fi
+    if [ "$current_email_from_name" != "" ] && [ "$current_email_from_name" != "null" ]; then
+        echo -e "${GREEN}当前发件人名称: $current_email_from_name${NC}"
+    fi
+    if [ "$current_email_to" != "" ] && [ "$current_email_to" != "null" ]; then
+        echo -e "${GREEN}当前收件人邮箱: $current_email_to${NC}"
+    fi
+    echo
+
+    # 输入 API Key
+    read -p "请输入 Resend API Key: " api_key
+    if [ -z "$api_key" ]; then
+        echo -e "${RED}API Key 不能为空${NC}"
+        sleep 2
+        return
+    fi
+
+    if ! [[ "$api_key" =~ ^re_ ]]; then
+        echo -e "${RED}API Key 格式错误，应以 re_ 开头${NC}"
+        sleep 2
+        return
+    fi
+
+    # 输入发件人邮箱
+    read -p "请输入发件人邮箱 (需在Resend验证的域名): " email_from
+    if [ -z "$email_from" ]; then
+        echo -e "${RED}发件人邮箱不能为空${NC}"
+        sleep 2
+        return
+    fi
+
+    if ! [[ "$email_from" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+        echo -e "${RED}邮箱格式错误${NC}"
+        sleep 2
+        return
+    fi
+
+    # 从邮箱提取默认名称 (截取 @ 前面的部分)
+    local default_name="${email_from%%@*}"
+
+    # 输入发件人名称
+    read -p "请输入发件人名称 (回车默认: ${default_name}): " email_from_name
+    if [ -z "$email_from_name" ]; then
+        email_from_name="$default_name"
+    fi
+
+    # 输入收件人邮箱
+    read -p "请输入收件人邮箱: " email_to
+    if [ -z "$email_to" ]; then
+        echo -e "${RED}收件人邮箱不能为空${NC}"
+        sleep 2
+        return
+    fi
+
+    if ! [[ "$email_to" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+        echo -e "${RED}邮箱格式错误${NC}"
+        sleep 2
+        return
+    fi
+
+    # 输入服务器名称
+    read -p "请输入服务器名称 (回车默认: ${default_name}): " server_name
+    if [ -z "$server_name" ]; then
+        server_name="$default_name"
+    fi
+
+    # 保存配置
+    update_config ".notifications.email.resend_api_key = \"$api_key\" |
+        .notifications.email.email_from = \"$email_from\" |
+        .notifications.email.email_from_name = \"$email_from_name\" |
+        .notifications.email.email_to = \"$email_to\" |
+        .notifications.email.server_name = \"$server_name\" |
+        .notifications.email.enabled = true |
+        .notifications.email.status_notifications.enabled = true"
+
+    echo -e "${GREEN}✅ 配置保存成功！${NC}"
+    echo
+
+    # 设置通知间隔
+    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
+    local interval=$(select_notification_interval)
+
+    update_config ".notifications.email.status_notifications.interval = \"$interval\""
+    echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
+
+    # 设置定时任务
+    setup_email_notification_cron
+
+    echo
+    echo "正在发送测试邮件..."
+
+    if email_send_status_notification; then
+        echo -e "${GREEN}✅ 邮件发送成功！${NC}"
+    else
+        echo -e "${RED}❌ 邮件发送失败，请检查配置${NC}"
+    fi
+
+    sleep 3
+}
+
+# 邮件通知设置管理
+email_manage_settings() {
+    while true; do
+        echo -e "${BLUE}=== 通知设置管理 ===${NC}"
+        echo "1. 状态通知间隔"
+        echo "2. 开启/关闭切换"
+        echo "0. 返回上级菜单"
+        echo
+        read -p "请选择操作 [0-2]: " choice
+
+        case $choice in
+            1) email_configure_interval ;;
+            2) email_toggle_status_notifications ;;
+            0) return 0 ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# 配置邮件通知间隔
+email_configure_interval() {
+    local current_interval=$(jq -r '.notifications.email.status_notifications.interval' "$CONFIG_FILE")
+
+    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
+    local interval_display="未设置"
+    if [ -n "$current_interval" ] && [ "$current_interval" != "null" ]; then
+        interval_display="$current_interval"
+    fi
+    echo -e "当前间隔: $interval_display"
+    echo
+    local interval=$(select_notification_interval)
+
+    update_config ".notifications.email.status_notifications.interval = \"$interval\""
+    echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
+
+    setup_email_notification_cron
+
+    sleep 2
+}
+
+# 切换邮件状态通知开关
+email_toggle_status_notifications() {
+    local current_status=$(jq -r '.notifications.email.status_notifications.enabled // false' "$CONFIG_FILE")
+
+    if [ "$current_status" = "true" ]; then
+        update_config ".notifications.email.status_notifications.enabled = false"
+        echo -e "${GREEN}状态通知已关闭${NC}"
+    else
+        update_config ".notifications.email.status_notifications.enabled = true"
+        echo -e "${GREEN}状态通知已开启${NC}"
+    fi
+
+    setup_email_notification_cron
+    sleep 2
+}
+
+# 查看邮件通知日志
+email_view_logs() {
+    echo -e "${BLUE}=== 邮件通知日志 ===${NC}"
+    echo
+
+    local log_file="$CONFIG_DIR/logs/notification.log"
+    if [ ! -f "$log_file" ]; then
+        echo -e "${YELLOW}暂无通知日志${NC}"
+        sleep 2
+        return
+    fi
+
+    echo "最近20条邮件相关日志:"
+    echo "────────────────────────────────────────────────────────"
+    grep "邮件通知" "$log_file" | tail -n 20 || echo "暂无邮件相关日志"
+    echo "────────────────────────────────────────────────────────"
+    echo
+    read -p "按回车键返回..."
+}
+
 # 通用状态通知发送函数
 send_status_notification() {
     local success_count=0
@@ -2844,6 +3401,14 @@ send_status_notification() {
         source "$wecom_script"
         total_count=$((total_count + 1))
         if wecom_send_status_notification; then
+            success_count=$((success_count + 1))
+        fi
+    fi
+
+    # 发送邮件通知
+    if email_is_enabled; then
+        total_count=$((total_count + 1))
+        if email_send_status_notification; then
             success_count=$((success_count + 1))
         fi
     fi
@@ -2908,6 +3473,10 @@ main() {
                 fi
                 exit 0
                 ;;
+            --send-email-status)
+                email_send_status_notification
+                exit 0
+                ;;
             --reset-port)
                 if [ $# -lt 2 ]; then
                     echo -e "${RED}错误：--reset-port 需要指定端口号${NC}"
@@ -2926,6 +3495,7 @@ main() {
                 echo "  --send-status             发送所有启用的状态通知"
                 echo "  --send-telegram-status    发送Telegram状态通知"
                 echo "  --send-wecom-status       发送企业wx 状态通知"
+                echo "  --send-email-status       发送邮件状态通知"
                 echo "  --reset-port PORT         重置指定端口流量"
                 echo
                 echo -e "${GREEN}快捷命令: $SHORTCUT_COMMAND${NC}"
