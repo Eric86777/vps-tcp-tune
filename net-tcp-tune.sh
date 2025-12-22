@@ -6393,14 +6393,18 @@ run_speedtest() {
                         printf "${gl_huang}%-8s %-35s %-18s %s${gl_bai}\n" "ID" "名称" "位置" "距离"
                         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         
-                        echo "$json_output" | jq -r '.servers[:15] | .[] | "\(.id)|\(.name)|\(.location)|\(.country)|\(.distance)"' 2>/dev/null | while IFS='|' read -r id name location country distance; do
+                        echo "$json_output" | jq -r '.servers[:15] | .[] | "\(.id)|\(.name // "-")|\(.location // "-")|\(.distance // "")"' 2>/dev/null | while IFS='|' read -r id name location distance; do
                             # 截断过长的名称
                             if [ ${#name} -gt 32 ]; then
                                 name="${name:0:29}..."
                             fi
+                            # 截断过长的位置
+                            if [ ${#location} -gt 15 ]; then
+                                location="${location:0:12}..."
+                            fi
                             # 格式化距离
-                            if [ -n "$distance" ]; then
-                                distance_km=$(printf "%.1f km" "$distance")
+                            if [ -n "$distance" ] && [ "$distance" != "null" ]; then
+                                distance_km=$(printf "%.1f km" "$distance" 2>/dev/null || echo "-")
                             else
                                 distance_km="-"
                             fi
