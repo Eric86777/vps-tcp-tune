@@ -6214,113 +6214,219 @@ Kernel_optimize() {
 }
 
 run_speedtest() {
-    clear
-    echo -e "${gl_kjlan}=== 服务器带宽测试 ===${gl_bai}"
-    echo ""
-
-    # 检测 CPU 架构
-    local cpu_arch=$(uname -m)
-    echo "检测到系统架构: ${gl_huang}${cpu_arch}${gl_bai}"
-    echo ""
-
-    # 检查 speedtest 是否已安装
-    if command -v speedtest &>/dev/null; then
-        echo -e "${gl_lv}Speedtest 已安装，直接运行测试...${gl_bai}"
-        echo "------------------------------------------------"
+    while true; do
+        clear
+        echo -e "${gl_kjlan}=== 服务器带宽测试 ===${gl_bai}"
         echo ""
-        speedtest --accept-license
+        
+        # 检测 CPU 架构
+        local cpu_arch=$(uname -m)
+        echo "检测到系统架构: ${gl_huang}${cpu_arch}${gl_bai}"
         echo ""
-        echo "------------------------------------------------"
-        break_end
-        return 0
-    fi
-
-    echo "Speedtest 未安装，正在下载安装..."
-    echo "------------------------------------------------"
-    echo ""
-
-    # 根据架构选择下载链接
-    local download_url
-    local tarball_name
-
-    case "$cpu_arch" in
-        x86_64)
-            download_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
-            tarball_name="ookla-speedtest-1.2.0-linux-x86_64.tgz"
-            echo "使用 AMD64 架构版本..."
-            ;;
-        aarch64)
-            download_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
-            tarball_name="speedtest.tgz"
-            echo "使用 ARM64 架构版本..."
-            ;;
-        *)
-            echo -e "${gl_hong}错误: 不支持的架构 ${cpu_arch}${gl_bai}"
-            echo "目前仅支持 x86_64 和 aarch64 架构"
+        
+        # 检查并安装 speedtest
+        if ! command -v speedtest &>/dev/null; then
+            echo "Speedtest 未安装，正在下载安装..."
+            echo "------------------------------------------------"
             echo ""
-            break_end
-            return 1
-            ;;
-    esac
-
-    # 切换到临时目录
-    cd /tmp || {
-        echo -e "${gl_hong}错误: 无法切换到 /tmp 目录${gl_bai}"
-        break_end
-        return 1
-    }
-
-    # 下载
-    echo "正在下载..."
-    if [ "$cpu_arch" = "aarch64" ]; then
-        curl -Lo "$tarball_name" "$download_url"
-    else
-        wget "$download_url"
-    fi
-
-    if [ $? -ne 0 ]; then
-        echo -e "${gl_hong}下载失败！${gl_bai}"
-        break_end
-        return 1
-    fi
-
-    # 解压
-    echo "正在解压..."
-    tar -xvzf "$tarball_name"
-
-    if [ $? -ne 0 ]; then
-        echo -e "${gl_hong}解压失败！${gl_bai}"
-        rm -f "$tarball_name"
-        break_end
-        return 1
-    fi
-
-    # 移动到系统目录
-    echo "正在安装..."
-    mv speedtest /usr/local/bin/
-
-    if [ $? -ne 0 ]; then
-        echo -e "${gl_hong}安装失败！${gl_bai}"
-        rm -f "$tarball_name"
-        break_end
-        return 1
-    fi
-
-    # 清理临时文件
-    rm -f "$tarball_name"
-
-    echo -e "${gl_lv}✅ Speedtest 安装成功！${gl_bai}"
-    echo ""
-    echo "开始带宽测试..."
-    echo "------------------------------------------------"
-    echo ""
-
-    # 运行测试（自动接受许可）
-    speedtest --accept-license
-
-    echo ""
-    echo "------------------------------------------------"
-    break_end
+            
+            local download_url
+            local tarball_name
+            
+            case "$cpu_arch" in
+                x86_64)
+                    download_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
+                    tarball_name="ookla-speedtest-1.2.0-linux-x86_64.tgz"
+                    echo "使用 AMD64 架构版本..."
+                    ;;
+                aarch64)
+                    download_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
+                    tarball_name="speedtest.tgz"
+                    echo "使用 ARM64 架构版本..."
+                    ;;
+                *)
+                    echo -e "${gl_hong}错误: 不支持的架构 ${cpu_arch}${gl_bai}"
+                    echo "目前仅支持 x86_64 和 aarch64 架构"
+                    echo ""
+                    break_end
+                    return 1
+                    ;;
+            esac
+            
+            cd /tmp || {
+                echo -e "${gl_hong}错误: 无法切换到 /tmp 目录${gl_bai}"
+                break_end
+                return 1
+            }
+            
+            echo "正在下载..."
+            if [ "$cpu_arch" = "aarch64" ]; then
+                curl -Lo "$tarball_name" "$download_url"
+            else
+                wget -q "$download_url"
+            fi
+            
+            if [ $? -ne 0 ]; then
+                echo -e "${gl_hong}下载失败！${gl_bai}"
+                break_end
+                return 1
+            fi
+            
+            echo "正在解压..."
+            tar -xzf "$tarball_name"
+            
+            if [ $? -ne 0 ]; then
+                echo -e "${gl_hong}解压失败！${gl_bai}"
+                rm -f "$tarball_name"
+                break_end
+                return 1
+            fi
+            
+            mv speedtest /usr/local/bin/
+            rm -f "$tarball_name"
+            
+            echo -e "${gl_lv}✅ Speedtest 安装成功！${gl_bai}"
+            echo ""
+        else
+            echo -e "${gl_lv}✅ Speedtest 已安装${gl_bai}"
+        fi
+        
+        echo ""
+        echo -e "${gl_kjlan}请选择测速模式：${gl_bai}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "1. 自动测速"
+        echo "2. 手动选择服务器 ⭐ 推荐"
+        echo ""
+        echo "0. 返回主菜单"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        read -e -p "请输入选择 [1]: " speed_choice
+        speed_choice=${speed_choice:-1}
+        
+        case "$speed_choice" in
+            1)
+                # 自动测速（使用智能重试逻辑）
+                echo ""
+                echo -e "${gl_zi}正在搜索附近测速服务器...${gl_bai}"
+                
+                # 获取附近服务器列表
+                local servers_list=$(speedtest --accept-license --servers 2>/dev/null | grep -oP '^\s*\K[0-9]+' | head -n 10)
+                
+                if [ -z "$servers_list" ]; then
+                    echo -e "${gl_huang}无法获取服务器列表，使用自动选择...${gl_bai}"
+                    servers_list="auto"
+                else
+                    local server_count=$(echo "$servers_list" | wc -l)
+                    echo -e "${gl_lv}✅ 找到 ${server_count} 个附近服务器${gl_bai}"
+                fi
+                echo ""
+                
+                local speedtest_output=""
+                local test_success=false
+                local attempt=0
+                local max_attempts=5
+                
+                for server_id in $servers_list; do
+                    attempt=$((attempt + 1))
+                    
+                    if [ $attempt -gt $max_attempts ]; then
+                        echo -e "${gl_huang}已尝试 ${max_attempts} 个服务器，停止尝试${gl_bai}"
+                        break
+                    fi
+                    
+                    if [ "$server_id" = "auto" ]; then
+                        echo -e "${gl_zi}[尝试 ${attempt}] 自动选择最近服务器...${gl_bai}"
+                        echo "------------------------------------------------"
+                        speedtest --accept-license
+                        test_success=true
+                        break
+                    else
+                        echo -e "${gl_zi}[尝试 ${attempt}] 测试服务器 #${server_id}...${gl_bai}"
+                        echo "------------------------------------------------"
+                        speedtest_output=$(speedtest --accept-license --server-id="$server_id" 2>&1)
+                        echo "$speedtest_output"
+                        echo ""
+                        
+                        # 检查是否成功
+                        if echo "$speedtest_output" | grep -q "Download:" && ! echo "$speedtest_output" | grep -qi "FAILED\|error"; then
+                            echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                            echo -e "${gl_lv}✅ 测速成功！${gl_bai}"
+                            echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                            test_success=true
+                            break
+                        else
+                            echo -e "${gl_huang}⚠️ 此服务器测速失败，尝试下一个...${gl_bai}"
+                            echo ""
+                        fi
+                    fi
+                done
+                
+                if [ "$test_success" = false ]; then
+                    echo ""
+                    echo -e "${gl_hong}❌ 所有服务器测速均失败${gl_bai}"
+                    echo -e "${gl_zi}建议使用「手动选择服务器」模式${gl_bai}"
+                fi
+                
+                echo ""
+                break_end
+                ;;
+            2)
+                # 手动选择服务器
+                echo ""
+                echo -e "${gl_zi}正在获取附近服务器列表...${gl_bai}"
+                echo ""
+                
+                # 获取服务器列表（带详细信息）
+                local server_list_output=$(speedtest --accept-license --servers 2>/dev/null | head -n 20)
+                
+                if [ -z "$server_list_output" ]; then
+                    echo -e "${gl_hong}❌ 无法获取服务器列表${gl_bai}"
+                    echo ""
+                    break_end
+                    continue
+                fi
+                
+                echo -e "${gl_kjlan}附近的测速服务器列表：${gl_bai}"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "$server_list_output"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo -e "${gl_zi}💡 提示：每行开头的数字就是服务器ID${gl_bai}"
+                echo ""
+                
+                local server_id=""
+                while true; do
+                    read -e -p "$(echo -e "${gl_huang}请输入服务器ID（纯数字，输入0返回）: ${gl_bai}")" server_id
+                    
+                    if [ "$server_id" = "0" ]; then
+                        break
+                    elif [[ "$server_id" =~ ^[0-9]+$ ]]; then
+                        echo ""
+                        echo -e "${gl_huang}正在使用服务器 #${server_id} 测速...${gl_bai}"
+                        echo "------------------------------------------------"
+                        echo ""
+                        
+                        speedtest --accept-license --server-id="$server_id"
+                        
+                        echo ""
+                        echo "------------------------------------------------"
+                        break_end
+                        break
+                    else
+                        echo -e "${gl_hong}❌ 无效输入，请输入纯数字的服务器ID${gl_bai}"
+                    fi
+                done
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo -e "${gl_hong}无效选择${gl_bai}"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 run_backtrace() {
