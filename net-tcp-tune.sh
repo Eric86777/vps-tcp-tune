@@ -6377,22 +6377,64 @@ run_speedtest() {
                 echo -e "${gl_zi}正在获取附近服务器列表...${gl_bai}"
                 echo ""
                 
-                # 获取服务器列表（带详细信息）
-                local server_list_output=$(speedtest --accept-license --servers 2>/dev/null | head -n 20)
-                
-                if [ -z "$server_list_output" ]; then
-                    echo -e "${gl_hong}❌ 无法获取服务器列表${gl_bai}"
-                    echo ""
-                    break_end
-                    continue
+                # 尝试使用 JSON 格式获取更详细的信息（包含距离）
+                local use_json=false
+                if command -v jq &>/dev/null; then
+                    use_json=true
                 fi
                 
-                echo -e "${gl_kjlan}附近的测速服务器列表：${gl_bai}"
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo "$server_list_output"
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                if [ "$use_json" = true ]; then
+                    # 使用 JSON 格式获取服务器列表
+                    local json_output=$(speedtest --accept-license --servers --format=json 2>/dev/null)
+                    
+                    if [ -n "$json_output" ] && echo "$json_output" | jq -e '.servers' &>/dev/null; then
+                        echo -e "${gl_kjlan}附近的测速服务器列表：${gl_bai}"
+                        echo ""
+                        printf "${gl_huang}%-8s %-35s %-18s %s${gl_bai}\n" "ID" "名称" "位置" "距离"
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        
+                        echo "$json_output" | jq -r '.servers[:15] | .[] | "\(.id)|\(.name)|\(.location)|\(.country)|\(.distance)"' 2>/dev/null | while IFS='|' read -r id name location country distance; do
+                            # 截断过长的名称
+                            if [ ${#name} -gt 32 ]; then
+                                name="${name:0:29}..."
+                            fi
+                            # 格式化距离
+                            if [ -n "$distance" ]; then
+                                distance_km=$(printf "%.1f km" "$distance")
+                            else
+                                distance_km="-"
+                            fi
+                            printf "%-8s %-35s %-18s %s\n" "$id" "$name" "$location" "$distance_km"
+                        done
+                        
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo ""
+                    else
+                        use_json=false
+                    fi
+                fi
+                
+                # 如果 JSON 方式失败，回退到普通格式
+                if [ "$use_json" = false ]; then
+                    local server_list_output=$(speedtest --accept-license --servers 2>/dev/null | head -n 20)
+                    
+                    if [ -z "$server_list_output" ]; then
+                        echo -e "${gl_hong}❌ 无法获取服务器列表${gl_bai}"
+                        echo ""
+                        break_end
+                        continue
+                    fi
+                    
+                    echo -e "${gl_kjlan}附近的测速服务器列表：${gl_bai}"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$server_list_output"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo ""
+                    echo -e "${gl_zi}💡 提示：安装 jq 可显示距离信息（apt install jq）${gl_bai}"
+                fi
+                
                 echo ""
-                echo -e "${gl_zi}💡 提示：每行开头的数字就是服务器ID${gl_bai}"
+                echo -e "${gl_zi}💡 提示：ID 列的数字就是服务器ID${gl_bai}"
                 echo ""
                 
                 local server_id=""
