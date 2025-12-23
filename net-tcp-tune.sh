@@ -10604,7 +10604,7 @@ install_anytls_binary() {
 generate_anytls_link() {
     local ip="$1" port="$2" password="$3" sni="$4" node_name="$5"
     local encoded_name=$(echo -n "$node_name" | sed 's/ /%20/g; s/#/%23/g')
-    echo "anytls://${password}@${ip}:${port}?sni=${sni}#${encoded_name}"
+    echo "anytls://${password}@${ip}:${port}?sni=${sni}&allowInsecure=1#${encoded_name}"
 }
 
 # 安装 AnyTLS 实例
