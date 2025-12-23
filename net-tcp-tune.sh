@@ -10301,7 +10301,7 @@ list_tuic_instances() {
             fi
             
             printf "%-25s %-10s ${status_color}%-12s${none} %-10s\n" "$node_name" "$port" "$status_text" "$cert_type"
-            ((count++))
+            ((count++)) || true
         fi
     done
     
@@ -10475,10 +10475,10 @@ tuic_menu() {
         
         for service_file in /etc/systemd/system/tuic-*.service; do
             if [[ -f "$service_file" ]]; then
-                ((instance_count++))
+                ((instance_count++)) || true
                 local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
                 if systemctl is-active --quiet "tuic-${port}.service"; then
-                    ((running_count++))
+                    ((running_count++)) || true
                 fi
             fi
         done
@@ -10796,7 +10796,7 @@ list_anytls_instances() {
             fi
             
             printf "%-25s %-10s ${status_color}%-12s${none} %-15s\n" "$node_name" "$port" "$status_text" "$sni"
-            ((count++))
+            ((count++)) || true
         fi
     done
     
@@ -10956,10 +10956,10 @@ anytls_menu() {
         
         for service_file in /etc/systemd/system/anytls-*.service; do
             if [[ -f "$service_file" ]]; then
-                ((instance_count++))
+                ((instance_count++)) || true
                 local port=$(echo "$service_file" | sed -E 's/.*anytls-([0-9]+)\.service/\1/')
                 if systemctl is-active --quiet "anytls-${port}.service"; then
-                    ((running_count++))
+                    ((running_count++)) || true
                 fi
             fi
         done
