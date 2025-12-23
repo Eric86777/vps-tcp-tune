@@ -10309,7 +10309,6 @@ list_tuic_instances() {
         echo "暂无安装任何 TUIC 实例"
     fi
     echo "================================================================"
-    return $count
 }
 
 # 卸载 TUIC 实例
@@ -10317,9 +10316,14 @@ uninstall_tuic() {
     echo -e "${green}=== 卸载 TUIC 服务 ===${none}"
     
     list_tuic_instances
-    local instance_count=$?
     
-    if [[ $instance_count -eq 0 ]]; then
+    # 检查是否有实例
+    local has_instance=false
+    for f in /etc/systemd/system/tuic-*.service; do
+        [[ -f "$f" ]] && has_instance=true && break
+    done
+    
+    if [[ "$has_instance" != "true" ]]; then
         warning "未检测到任何 TUIC 实例，无需卸载"
         return
     fi
@@ -10503,11 +10507,11 @@ tuic_menu() {
         read -p "请输入选项编号: " tuic_choice || true
         
         case "$tuic_choice" in
-            1) install_tuic; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            2) uninstall_tuic; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            1) install_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            2) uninstall_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             3) list_tuic_instances; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            4) update_tuic; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            5) view_tuic_config; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            4) update_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            5) view_tuic_config || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             0) return ;;
             *) error "无效选项"; sleep 1 ;;
         esac
@@ -10804,7 +10808,6 @@ list_anytls_instances() {
         echo "暂无安装任何 AnyTLS 实例"
     fi
     echo "================================================================"
-    return $count
 }
 
 # 卸载 AnyTLS 实例
@@ -10812,9 +10815,14 @@ uninstall_anytls() {
     echo -e "${green}=== 卸载 AnyTLS 服务 ===${none}"
     
     list_anytls_instances
-    local instance_count=$?
     
-    if [[ $instance_count -eq 0 ]]; then
+    # 检查是否有实例
+    local has_instance=false
+    for f in /etc/systemd/system/anytls-*.service; do
+        [[ -f "$f" ]] && has_instance=true && break
+    done
+    
+    if [[ "$has_instance" != "true" ]]; then
         warning "未检测到任何 AnyTLS 实例，无需卸载"
         return
     fi
@@ -10985,11 +10993,11 @@ anytls_menu() {
         read -p "请输入选项编号: " anytls_choice || true
         
         case "$anytls_choice" in
-            1) install_anytls; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            2) uninstall_anytls; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            1) install_anytls || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            2) uninstall_anytls || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             3) list_anytls_instances; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            4) update_anytls; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            5) view_anytls_config; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            4) update_anytls || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            5) view_anytls_config || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             0) return ;;
             *) error "无效选项"; sleep 1 ;;
         esac
