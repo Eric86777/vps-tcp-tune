@@ -10735,7 +10735,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${ANYTLS_BIN_PATH} --listen ${listen_addr} --password ${password} --sni ${sni_domain}
+ExecStart=${ANYTLS_BIN_PATH} -l ${listen_addr} -p ${password}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=51200
