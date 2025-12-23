@@ -9893,7 +9893,17 @@ delete_socks5_proxy() {
 # --- TUIC v5 协议管理 ---
 readonly TUIC_CONF_DIR="/etc/tuic"
 readonly TUIC_BIN_PATH="/usr/local/bin/tuic-server"
-readonly TUIC_VERSION="1.0.0"
+
+# 获取 TUIC 最新版本
+get_tuic_latest_version() {
+    local version
+    # TUIC 的 release 格式是 tuic-server-x.x.x
+    version=$(curl -fsSL --max-time 10 "https://api.github.com/repos/EAimTY/tuic/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"tuic-server-([^"]+)".*/\1/')
+    if [[ -z "$version" ]]; then
+        version="1.0.0"  # 默认版本
+    fi
+    echo "$version"
+}
 
 # 检查 TUIC 是否已安装
 check_tuic_installed() {
@@ -9924,9 +9934,11 @@ install_tuic_binary() {
         return 0
     fi
     
-    info "正在下载 TUIC v${TUIC_VERSION}..."
-    local download_url="https://github.com/EAimTY/tuic/releases/download/tuic-server-${TUIC_VERSION}/tuic-server-${TUIC_VERSION}-${arch}"
+    local version=$(get_tuic_latest_version)
+    info "正在下载 TUIC v${version}..."
+    local download_url="https://github.com/EAimTY/tuic/releases/download/tuic-server-${version}/tuic-server-${version}-${arch}"
     local tmp_file=$(mktemp)
+
     
     if curl -fSL -o "$tmp_file" --connect-timeout 30 --retry 3 "$download_url" 2>/dev/null; then
         if file "$tmp_file" 2>/dev/null | grep -qE "ELF.*executable"; then
@@ -10491,7 +10503,8 @@ tuic_menu() {
         echo -e "运行中实例: ${green}${running_count}${none} 个"
         
         if check_tuic_installed; then
-            echo -e "核心版本: ${green}v${TUIC_VERSION}${none}"
+            local version=$(get_tuic_latest_version)
+            echo -e "核心版本: ${green}v${version}${none}"
         else
             echo -e "核心版本: ${red}未安装${none}"
         fi
