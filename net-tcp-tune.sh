@@ -10438,9 +10438,14 @@ update_tuic() {
 # 查看 TUIC 配置
 view_tuic_config() {
     list_tuic_instances
-    local count=$?
     
-    if [[ $count -eq 0 ]]; then
+    # 检查是否有实例
+    local has_instance=false
+    for f in /etc/systemd/system/tuic-*.service; do
+        [[ -f "$f" ]] && has_instance=true && break
+    done
+    
+    if [[ "$has_instance" != "true" ]]; then
         return
     fi
     
@@ -10471,6 +10476,12 @@ view_tuic_config() {
     echo -e "${cyan}【分享链接】${none}"
     echo -e "${green}${link}${none}"
     echo ""
+    
+    if [[ -n "$surge_config" ]]; then
+        echo -e "${cyan}【Surge 配置】${none}"
+        echo -e "${green}${surge_config}${none}"
+        echo ""
+    fi
     
     if [[ "$cert_type" == "self-signed" ]]; then
         echo -e "${yellow}【证书内容】${none}"
@@ -10932,9 +10943,14 @@ update_anytls() {
 # 查看 AnyTLS 配置
 view_anytls_config() {
     list_anytls_instances
-    local count=$?
     
-    if [[ $count -eq 0 ]]; then
+    # 检查是否有实例
+    local has_instance=false
+    for f in /etc/systemd/system/anytls-*.service; do
+        [[ -f "$f" ]] && has_instance=true && break
+    done
+    
+    if [[ "$has_instance" != "true" ]]; then
         return
     fi
     
@@ -10962,6 +10978,15 @@ view_anytls_config() {
     echo ""
     echo -e "${cyan}【分享链接】${none}"
     echo -e "${green}${link}${none}"
+    echo ""
+    echo -e "${cyan}【Clash/mihomo 配置】${none}"
+    echo -e "${green}- name: ${node_name}${none}"
+    echo -e "${green}  type: anytls${none}"
+    echo -e "${green}  server: ${server_ip}${none}"
+    echo -e "${green}  port: ${port}${none}"
+    echo -e "${green}  password: ${password}${none}"
+    echo -e "${green}  sni: ${sni}${none}"
+    echo -e "${green}  skip-cert-verify: true${none}"
     echo ""
 }
 
