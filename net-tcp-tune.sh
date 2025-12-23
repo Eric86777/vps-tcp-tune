@@ -6814,7 +6814,7 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[代理部署]${gl_bai}"
     echo "18. 星辰大海Snell协议 ⭐ 推荐"
-    echo "19. 星辰大海Xray一键双协议 ⭐ 推荐"
+    echo "19. 星辰大海Xray一键多协议 ⭐ 推荐"
     echo "20. 禁止端口通过中国大陆直连"
     echo "21. 一键部署SOCKS5代理"
     echo "22. Sub-Store多实例管理"
@@ -8165,12 +8165,12 @@ snell_menu() {
 }
 
 #=============================================================================
-# 星辰大海 Xray 一键双协议
+# 星辰大海 Xray 一键多协议
 #=============================================================================
 
 run_xinchendahai_xray() {
     clear
-    echo -e "${gl_kjlan}=== 星辰大海Xray一键双协议（增强版） ===${gl_bai}"
+    echo -e "${gl_kjlan}=== 星辰大海Xray一键多协议（增强版） ===${gl_bai}"
     echo ""
     echo -e "${gl_lv}✨ 功能特性：${gl_bai}"
     echo "  • 支持多 VLESS 节点部署（不同端口）"
