@@ -10109,11 +10109,11 @@ install_tuic() {
     read -p "请输入选项 [1-3，默认为 3]: " listen_mode || true
     listen_mode=${listen_mode:-3}
     
-    local listen_addr
+    local listen_addr ip_version
     case $listen_mode in
-        1) listen_addr="0.0.0.0:${tuic_port}"; success "已选择：仅 IPv4 模式" ;;
-        2) listen_addr="[::]:${tuic_port}"; success "已选择：仅 IPv6 模式" ;;
-        *) listen_addr="[::]:${tuic_port}"; success "已选择：双栈模式" ;;
+        1) listen_addr="0.0.0.0:${tuic_port}"; ip_version="v4-only"; success "已选择：仅 IPv4 模式" ;;
+        2) listen_addr="[::]:${tuic_port}"; ip_version="v6-only"; success "已选择：仅 IPv6 模式" ;;
+        *) listen_addr="[::]:${tuic_port}"; ip_version="dual"; success "已选择：双栈模式" ;;
     esac
     
     # 获取服务器 IP
@@ -10193,6 +10193,12 @@ EOF
     
     # 保存节点信息
     local tuic_link=$(generate_tuic_link "$server_ip" "$tuic_port" "$uuid" "$password" "$sni_domain" "$node_name")
+    # 生成 Surge 配置格式
+    local uuid_upper=$(echo "$uuid" | tr '[:lower:]' '[:upper:]')
+    local ip_version_str=""
+    [[ "$ip_version" != "dual" ]] && ip_version_str=", ip-version=${ip_version}"
+    local surge_config="${node_name} = tuic-v5, ${server_ip}, ${tuic_port}, password=${password}, uuid=${uuid_upper}, alpn=h3${ip_version_str}, sni=${sni_domain}"
+    
     cat > "${TUIC_CONF_DIR}/tuic-${tuic_port}.info" << EOF
 node_name=${node_name}
 port=${tuic_port}
@@ -10201,7 +10207,9 @@ password=${password}
 server_ip=${server_ip}
 sni=${sni_domain}
 cert_type=${cert_type}
+ip_version=${ip_version}
 link=${tuic_link}
+surge_config=${surge_config}
 EOF
     
     # 创建 Systemd 服务文件
@@ -10243,6 +10251,9 @@ EOF
         echo ""
         echo -e "${cyan}【分享链接】${none}"
         echo -e "${green}${tuic_link}${none}"
+        echo ""
+        echo -e "${cyan}【Surge 配置】${none}"
+        echo -e "${green}${surge_config}${none}"
         echo ""
         
         if [[ "$cert_type" == "self-signed" ]]; then
