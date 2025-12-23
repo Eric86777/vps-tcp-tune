@@ -9890,6 +9890,1101 @@ delete_socks5_proxy() {
     fi
 }
 
+# --- TUIC v5 协议管理 ---
+readonly TUIC_CONF_DIR="/etc/tuic"
+readonly TUIC_BIN_PATH="/usr/local/bin/tuic-server"
+readonly TUIC_VERSION="1.0.0"
+
+# 检查 TUIC 是否已安装
+check_tuic_installed() {
+    [[ -x "$TUIC_BIN_PATH" ]] && file "$TUIC_BIN_PATH" 2>/dev/null | grep -qE "ELF.*executable"
+}
+
+# 获取系统架构
+get_tuic_arch() {
+    local arch=$(uname -m)
+    case $arch in
+        x86_64)  echo "x86_64-unknown-linux-gnu" ;;
+        aarch64) echo "aarch64-unknown-linux-gnu" ;;
+        armv7l)  echo "armv7-unknown-linux-gnueabihf" ;;
+        *) echo "" ;;
+    esac
+}
+
+# 安装 TUIC 核心程序
+install_tuic_binary() {
+    local arch=$(get_tuic_arch)
+    if [[ -z "$arch" ]]; then
+        error "不支持的系统架构: $(uname -m)"
+        return 1
+    fi
+    
+    if check_tuic_installed; then
+        success "TUIC 核心已安装"
+        return 0
+    fi
+    
+    info "正在下载 TUIC v${TUIC_VERSION}..."
+    local download_url="https://github.com/EAimTY/tuic/releases/download/tuic-server-${TUIC_VERSION}/tuic-server-${TUIC_VERSION}-${arch}"
+    local tmp_file=$(mktemp)
+    
+    if curl -fSL -o "$tmp_file" --connect-timeout 30 --retry 3 "$download_url" 2>/dev/null; then
+        if file "$tmp_file" 2>/dev/null | grep -qE "ELF.*executable"; then
+            install -m 755 "$tmp_file" "$TUIC_BIN_PATH"
+            rm -f "$tmp_file"
+            success "TUIC 核心安装成功"
+            return 0
+        else
+            rm -f "$tmp_file"
+            error "下载的文件不是有效的可执行文件"
+            return 1
+        fi
+    else
+        rm -f "$tmp_file"
+        error "下载 TUIC 失败，请检查网络连接"
+        return 1
+    fi
+}
+
+# 生成自签名证书
+generate_self_signed_cert() {
+    local port="$1"
+    local server_ip="$2"
+    local cert_dir="${TUIC_CONF_DIR}/certs"
+    
+    mkdir -p "$cert_dir"
+    
+    info "正在生成自签名证书..."
+    openssl req -x509 -nodes \
+        -newkey ec:<(openssl ecparam -name prime256v1) \
+        -keyout "${cert_dir}/tuic-${port}.key" \
+        -out "${cert_dir}/tuic-${port}.crt" \
+        -subj "/CN=${server_ip}" \
+        -days 36500 \
+        -addext "subjectAltName=IP:${server_ip}" \
+        -addext "basicConstraints=critical,CA:FALSE" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth" 2>/dev/null
+    
+    chmod 600 "${cert_dir}/tuic-${port}.key"
+    chmod 644 "${cert_dir}/tuic-${port}.crt"
+    
+    success "自签名证书生成成功"
+    echo "cert_type=self-signed"
+    echo "cert_path=${cert_dir}/tuic-${port}.crt"
+    echo "key_path=${cert_dir}/tuic-${port}.key"
+}
+
+# 申请 Let's Encrypt 证书
+apply_letsencrypt_cert() {
+    local port="$1"
+    local domain="$2"
+    local email="${3:-}"
+    local cert_dir="${TUIC_CONF_DIR}/certs"
+    
+    mkdir -p "$cert_dir"
+    
+    # 检查域名解析
+    info "正在检查域名解析..."
+    local server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
+    local domain_ip=$(dig +short "$domain" A 2>/dev/null | head -1)
+    
+    if [[ "$server_ip" != "$domain_ip" ]]; then
+        error "域名解析不匹配"
+        echo "  本机 IP: $server_ip"
+        echo "  域名解析: $domain_ip"
+        return 1
+    fi
+    success "域名已正确解析到本机"
+    
+    # 检查 80 端口
+    if ss -tlnp 2>/dev/null | grep -q ":80 "; then
+        warning "80 端口被占用，正在尝试临时释放..."
+        local nginx_running=false
+        if systemctl is-active --quiet nginx 2>/dev/null; then
+            nginx_running=true
+            systemctl stop nginx
+        fi
+    fi
+    
+    # 安装 acme.sh
+    if [[ ! -f ~/.acme.sh/acme.sh ]]; then
+        info "正在安装 acme.sh..."
+        curl -fsSL https://get.acme.sh | sh -s email="${email:-admin@${domain}}" 2>/dev/null
+    fi
+    
+    # 申请证书
+    info "正在申请 Let's Encrypt 证书..."
+    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --keylength ec-256 --force 2>/dev/null
+    
+    if [[ $? -ne 0 ]]; then
+        # 恢复 nginx
+        [[ "$nginx_running" == "true" ]] && systemctl start nginx
+        error "证书申请失败"
+        return 1
+    fi
+    
+    # 安装证书
+    ~/.acme.sh/acme.sh --install-cert -d "$domain" --ecc \
+        --key-file "${cert_dir}/tuic-${port}.key" \
+        --fullchain-file "${cert_dir}/tuic-${port}.crt" \
+        --reloadcmd "systemctl reload tuic-${port} 2>/dev/null || true" 2>/dev/null
+    
+    chmod 600 "${cert_dir}/tuic-${port}.key"
+    chmod 644 "${cert_dir}/tuic-${port}.crt"
+    
+    # 恢复 nginx
+    [[ "$nginx_running" == "true" ]] && systemctl start nginx
+    
+    success "Let's Encrypt 证书申请成功"
+    echo "cert_type=letsencrypt"
+    echo "cert_path=${cert_dir}/tuic-${port}.crt"
+    echo "key_path=${cert_dir}/tuic-${port}.key"
+    echo "domain=${domain}"
+}
+
+# 生成 TUIC 分享链接
+generate_tuic_link() {
+    local ip="$1" port="$2" uuid="$3" password="$4" sni="$5" node_name="$6"
+    local encoded_name=$(echo -n "$node_name" | sed 's/ /%20/g; s/#/%23/g')
+    echo "tuic://${uuid}:${password}@${ip}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&udp_relay_mode=native&allow_insecure=1#${encoded_name}"
+}
+
+# 安装 TUIC 实例
+install_tuic() {
+    info "=== 安装 TUIC v5 实例 ==="
+    echo ""
+    
+    # 安装核心程序
+    if ! install_tuic_binary; then
+        return 1
+    fi
+    
+    # 创建配置目录
+    mkdir -p "$TUIC_CONF_DIR"
+    
+    # 生成随机端口
+    local default_port=$(shuf -i 30000-60000 -n 1)
+    
+    # 询问端口
+    echo -e "${cyan}请输入端口号 (1-65535)，直接回车使用随机端口 [默认: ${default_port}]:${none}"
+    while true; do
+        read -p "端口: " tuic_port || true
+        if [[ -z "$tuic_port" ]]; then
+            tuic_port=$default_port
+            success "使用随机端口: ${tuic_port}"
+            break
+        fi
+        if [[ "$tuic_port" =~ ^[0-9]+$ ]] && [[ "$tuic_port" -ge 1 ]] && [[ "$tuic_port" -le 65535 ]]; then
+            if ss -tulpn 2>/dev/null | grep -q ":${tuic_port} "; then
+                error "端口 ${tuic_port} 已被占用，请选择其他端口"
+            else
+                success "已设置端口为: ${tuic_port}"
+                break
+            fi
+        else
+            error "无效端口，请输入 1-65535 之间的数字"
+        fi
+    done
+    
+    # 检查端口是否已有 TUIC 实例
+    if [[ -f "/etc/systemd/system/tuic-${tuic_port}.service" ]]; then
+        error "端口 ${tuic_port} 已存在 TUIC 实例"
+        return 1
+    fi
+    
+    # 询问节点名称
+    echo -e "${cyan}请输入节点名称 (例如: 🇯🇵TUIC-Tokyo):${none}"
+    read -p "节点名称: " node_name || true
+    if [[ -z "$node_name" ]]; then
+        node_name="TUIC-${tuic_port}"
+        warning "未输入名称，使用默认名称: ${node_name}"
+    fi
+    
+    # 询问监听模式
+    echo -e "${cyan}请选择监听模式:${none}"
+    echo "1. 仅 IPv4 (0.0.0.0)"
+    echo "2. 仅 IPv6 (::)"
+    echo "3. 双栈 (同时支持 IPv4 和 IPv6)"
+    read -p "请输入选项 [1-3，默认为 3]: " listen_mode || true
+    listen_mode=${listen_mode:-3}
+    
+    local listen_addr
+    case $listen_mode in
+        1) listen_addr="0.0.0.0:${tuic_port}"; success "已选择：仅 IPv4 模式" ;;
+        2) listen_addr="[::]:${tuic_port}"; success "已选择：仅 IPv6 模式" ;;
+        *) listen_addr="[::]:${tuic_port}"; success "已选择：双栈模式" ;;
+    esac
+    
+    # 获取服务器 IP
+    local server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
+    if [[ -z "$server_ip" ]]; then
+        server_ip=$(curl -6s --max-time 5 https://api64.ipify.org 2>/dev/null)
+    fi
+    
+    # 询问证书类型
+    echo ""
+    echo -e "${cyan}请选择证书类型:${none}"
+    echo "1. 自签名证书 (无需域名，客户端需持有证书)"
+    echo "2. Let's Encrypt 证书 (需要域名，客户端自动信任)"
+    read -p "请输入选项 [1-2，默认为 1]: " cert_choice || true
+    cert_choice=${cert_choice:-1}
+    
+    local cert_type cert_path key_path sni_domain
+    
+    if [[ "$cert_choice" == "2" ]]; then
+        # Let's Encrypt 证书
+        echo -e "${cyan}请输入你的域名 (例如: tuic.example.com):${none}"
+        read -p "域名: " user_domain || true
+        if [[ -z "$user_domain" ]]; then
+            error "域名不能为空"
+            return 1
+        fi
+        
+        echo -e "${cyan}请输入邮箱 (用于 Let's Encrypt 通知，可留空):${none}"
+        read -p "邮箱: " user_email || true
+        
+        local cert_result=$(apply_letsencrypt_cert "$tuic_port" "$user_domain" "$user_email")
+        if [[ $? -ne 0 ]]; then
+            return 1
+        fi
+        
+        cert_type="letsencrypt"
+        cert_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.crt"
+        key_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.key"
+        sni_domain="$user_domain"
+        server_ip="$user_domain"  # 使用域名作为连接地址
+    else
+        # 自签名证书
+        generate_self_signed_cert "$tuic_port" "$server_ip" >/dev/null
+        cert_type="self-signed"
+        cert_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.crt"
+        key_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.key"
+        sni_domain="$server_ip"
+    fi
+    
+    # 生成 UUID 和密码
+    local uuid=$(cat /proc/sys/kernel/random/uuid)
+    local password=$(openssl rand -base64 16 | tr -d '/+=' | head -c 16)
+    
+    info "正在生成配置..."
+    
+    # 创建 TUIC 配置文件
+    cat > "${TUIC_CONF_DIR}/tuic-${tuic_port}.json" << EOF
+{
+    "server": "${listen_addr}",
+    "users": {
+        "${uuid}": "${password}"
+    },
+    "certificate": "${cert_path}",
+    "private_key": "${key_path}",
+    "congestion_control": "bbr",
+    "alpn": ["h3"],
+    "zero_rtt_handshake": false,
+    "auth_timeout": "3s",
+    "max_idle_time": "10s",
+    "max_external_packet_size": 1500,
+    "gc_interval": "3s",
+    "gc_lifetime": "15s",
+    "log_level": "warn"
+}
+EOF
+    chmod 600 "${TUIC_CONF_DIR}/tuic-${tuic_port}.json"
+    
+    # 保存节点信息
+    local tuic_link=$(generate_tuic_link "$server_ip" "$tuic_port" "$uuid" "$password" "$sni_domain" "$node_name")
+    cat > "${TUIC_CONF_DIR}/tuic-${tuic_port}.info" << EOF
+node_name=${node_name}
+port=${tuic_port}
+uuid=${uuid}
+password=${password}
+server_ip=${server_ip}
+sni=${sni_domain}
+cert_type=${cert_type}
+link=${tuic_link}
+EOF
+    
+    # 创建 Systemd 服务文件
+    cat > "/etc/systemd/system/tuic-${tuic_port}.service" << EOF
+[Unit]
+Description=TUIC v5 Proxy Service (Port ${tuic_port})
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${TUIC_BIN_PATH} -c ${TUIC_CONF_DIR}/tuic-${tuic_port}.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 启动服务
+    systemctl daemon-reload
+    systemctl enable "tuic-${tuic_port}.service" >/dev/null 2>&1
+    systemctl start "tuic-${tuic_port}.service"
+    
+    sleep 2
+    
+    if systemctl is-active --quiet "tuic-${tuic_port}.service"; then
+        echo ""
+        echo -e "${green}═══════════════════════════════════════════════${none}"
+        success "TUIC v5 (端口 ${tuic_port}) 安装成功！"
+        echo -e "${green}═══════════════════════════════════════════════${none}"
+        echo ""
+        echo -e "${cyan}【节点信息】${none}"
+        echo -e "  名称: ${yellow}${node_name}${none}"
+        echo -e "  端口: ${yellow}${tuic_port}${none}"
+        echo -e "  UUID: ${yellow}${uuid}${none}"
+        echo -e "  密码: ${yellow}${password}${none}"
+        echo -e "  证书: ${yellow}${cert_type}${none}"
+        echo ""
+        echo -e "${cyan}【分享链接】${none}"
+        echo -e "${green}${tuic_link}${none}"
+        echo ""
+        
+        if [[ "$cert_type" == "self-signed" ]]; then
+            echo -e "${yellow}⚠️  重要提示：${none}"
+            echo -e "  客户端需要持有服务端证书才能连接！"
+            echo ""
+            echo -e "  方法1 - 使用 SCP 下载证书:"
+            echo -e "  ${cyan}scp root@${server_ip}:${cert_path} ./tuic-${tuic_port}.crt${none}"
+            echo ""
+            echo -e "  方法2 - 直接查看证书内容:"
+            echo -e "  ${cyan}cat ${cert_path}${none}"
+        fi
+    else
+        error "TUIC 服务启动失败"
+        echo "请检查日志: journalctl -u tuic-${tuic_port} -n 20"
+        return 1
+    fi
+}
+
+# 列出 TUIC 实例
+list_tuic_instances() {
+    echo -e "${cyan}当前已安装的 TUIC 实例：${none}"
+    echo "================================================================"
+    printf "%-25s %-10s %-12s %-10s\n" "节点名称" "端口" "状态" "证书类型"
+    echo "================================================================"
+    
+    local count=0
+    for service_file in /etc/systemd/system/tuic-*.service; do
+        if [[ -f "$service_file" ]]; then
+            local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
+            local info_file="${TUIC_CONF_DIR}/tuic-${port}.info"
+            
+            local node_name="未命名"
+            local cert_type="未知"
+            if [[ -f "$info_file" ]]; then
+                node_name=$(grep "^node_name=" "$info_file" | cut -d'=' -f2)
+                cert_type=$(grep "^cert_type=" "$info_file" | cut -d'=' -f2)
+            fi
+            
+            local status_text="已停止"
+            local status_color="${red}"
+            if systemctl is-active --quiet "tuic-${port}.service"; then
+                status_text="运行中"
+                status_color="${green}"
+            fi
+            
+            printf "%-25s %-10s ${status_color}%-12s${none} %-10s\n" "$node_name" "$port" "$status_text" "$cert_type"
+            ((count++))
+        fi
+    done
+    
+    if [[ $count -eq 0 ]]; then
+        echo "暂无安装任何 TUIC 实例"
+    fi
+    echo "================================================================"
+    return $count
+}
+
+# 卸载 TUIC 实例
+uninstall_tuic() {
+    echo -e "${green}=== 卸载 TUIC 服务 ===${none}"
+    
+    list_tuic_instances
+    local instance_count=$?
+    
+    if [[ $instance_count -eq 0 ]]; then
+        warning "未检测到任何 TUIC 实例，无需卸载"
+        return
+    fi
+    
+    echo ""
+    echo "请选择卸载方式："
+    echo "1. 卸载指定端口的实例"
+    echo "2. 卸载所有实例"
+    echo "0. 取消"
+    read -p "请输入选项 [0-2]: " uninstall_choice || true
+    
+    case "$uninstall_choice" in
+        1)
+            read -p "请输入要卸载的端口号: " port_to_uninstall || true
+            if [[ -z "$port_to_uninstall" ]]; then
+                error "端口号不能为空"
+                return
+            fi
+            
+            if [[ ! -f "/etc/systemd/system/tuic-${port_to_uninstall}.service" ]]; then
+                error "未找到端口 ${port_to_uninstall} 的 TUIC 实例"
+                return
+            fi
+            
+            systemctl stop "tuic-${port_to_uninstall}.service" 2>/dev/null
+            systemctl disable "tuic-${port_to_uninstall}.service" 2>/dev/null
+            rm -f "/etc/systemd/system/tuic-${port_to_uninstall}.service"
+            rm -f "${TUIC_CONF_DIR}/tuic-${port_to_uninstall}.json"
+            rm -f "${TUIC_CONF_DIR}/tuic-${port_to_uninstall}.info"
+            rm -f "${TUIC_CONF_DIR}/certs/tuic-${port_to_uninstall}.crt"
+            rm -f "${TUIC_CONF_DIR}/certs/tuic-${port_to_uninstall}.key"
+            systemctl daemon-reload
+            
+            success "TUIC 实例 (端口 ${port_to_uninstall}) 卸载成功"
+            ;;
+        2)
+            read -p "确定要卸载所有 TUIC 实例吗？[y/N]: " confirm || true
+            if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+                info "已取消"
+                return
+            fi
+            
+            for service_file in /etc/systemd/system/tuic-*.service; do
+                if [[ -f "$service_file" ]]; then
+                    local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
+                    systemctl stop "tuic-${port}.service" 2>/dev/null
+                    systemctl disable "tuic-${port}.service" 2>/dev/null
+                    rm -f "$service_file"
+                    rm -f "${TUIC_CONF_DIR}/tuic-${port}.json"
+                    rm -f "${TUIC_CONF_DIR}/tuic-${port}.info"
+                    rm -f "${TUIC_CONF_DIR}/certs/tuic-${port}.crt"
+                    rm -f "${TUIC_CONF_DIR}/certs/tuic-${port}.key"
+                fi
+            done
+            
+            systemctl daemon-reload
+            success "所有 TUIC 实例已卸载"
+            ;;
+        *)
+            info "已取消"
+            ;;
+    esac
+}
+
+# 更新 TUIC 核心
+update_tuic() {
+    if ! check_tuic_installed; then
+        warning "TUIC 未安装，无需更新"
+        return
+    fi
+    
+    info "正在更新 TUIC 核心..."
+    
+    # 停止所有实例
+    for service_file in /etc/systemd/system/tuic-*.service; do
+        if [[ -f "$service_file" ]]; then
+            local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
+            systemctl stop "tuic-${port}.service" 2>/dev/null
+        fi
+    done
+    
+    # 删除旧版本
+    rm -f "$TUIC_BIN_PATH"
+    
+    # 安装新版本
+    if install_tuic_binary; then
+        # 重启所有实例
+        for service_file in /etc/systemd/system/tuic-*.service; do
+            if [[ -f "$service_file" ]]; then
+                local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
+                systemctl start "tuic-${port}.service"
+            fi
+        done
+        success "TUIC 核心更新成功"
+    else
+        error "TUIC 更新失败"
+    fi
+}
+
+# 查看 TUIC 配置
+view_tuic_config() {
+    list_tuic_instances
+    local count=$?
+    
+    if [[ $count -eq 0 ]]; then
+        return
+    fi
+    
+    echo ""
+    read -p "请输入要查看配置的端口号: " view_port || true
+    
+    local info_file="${TUIC_CONF_DIR}/tuic-${view_port}.info"
+    if [[ ! -f "$info_file" ]]; then
+        error "未找到端口 ${view_port} 的配置文件"
+        return
+    fi
+    
+    echo ""
+    echo -e "${cyan}═══════════════════════════════════════════════${none}"
+    echo -e "${cyan}  TUIC 节点配置 (端口 ${view_port})${none}"
+    echo -e "${cyan}═══════════════════════════════════════════════${none}"
+    
+    source "$info_file"
+    
+    echo -e "  节点名称: ${yellow}${node_name}${none}"
+    echo -e "  端口: ${yellow}${port}${none}"
+    echo -e "  UUID: ${yellow}${uuid}${none}"
+    echo -e "  密码: ${yellow}${password}${none}"
+    echo -e "  服务器: ${yellow}${server_ip}${none}"
+    echo -e "  SNI: ${yellow}${sni}${none}"
+    echo -e "  证书类型: ${yellow}${cert_type}${none}"
+    echo ""
+    echo -e "${cyan}【分享链接】${none}"
+    echo -e "${green}${link}${none}"
+    echo ""
+    
+    if [[ "$cert_type" == "self-signed" ]]; then
+        echo -e "${yellow}【证书内容】${none}"
+        echo -e "${cyan}cat ${TUIC_CONF_DIR}/certs/tuic-${view_port}.crt${none}"
+        echo ""
+    fi
+}
+
+# TUIC 管理菜单
+tuic_menu() {
+    while true; do
+        clear
+        echo -e "${cyan}=== TUIC v5 管理工具 ===${none}"
+        
+        # 统计实例数量
+        local instance_count=0
+        local running_count=0
+        
+        for service_file in /etc/systemd/system/tuic-*.service; do
+            if [[ -f "$service_file" ]]; then
+                ((instance_count++))
+                local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
+                if systemctl is-active --quiet "tuic-${port}.service"; then
+                    ((running_count++))
+                fi
+            fi
+        done
+        
+        echo -e "已安装实例: ${green}${instance_count}${none} 个"
+        echo -e "运行中实例: ${green}${running_count}${none} 个"
+        
+        if check_tuic_installed; then
+            echo -e "核心版本: ${green}v${TUIC_VERSION}${none}"
+        else
+            echo -e "核心版本: ${red}未安装${none}"
+        fi
+        
+        echo ""
+        echo "1. 安装/添加 TUIC 服务"
+        echo "2. 卸载/删除 TUIC 服务"
+        echo "3. 查看所有 TUIC 实例"
+        echo "4. 更新 TUIC 核心"
+        echo "5. 查看 TUIC 配置"
+        echo "0. 返回上级菜单"
+        echo "======================"
+        read -p "请输入选项编号: " tuic_choice || true
+        
+        case "$tuic_choice" in
+            1) install_tuic; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            2) uninstall_tuic; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            3) list_tuic_instances; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            4) update_tuic; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            5) view_tuic_config; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            0) return ;;
+            *) error "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- AnyTLS 协议管理 ---
+readonly ANYTLS_CONF_DIR="/etc/anytls"
+readonly ANYTLS_BIN_PATH="/usr/local/bin/anytls-server"
+
+# 获取 AnyTLS 最新版本
+get_anytls_latest_version() {
+    local version
+    version=$(curl -fsSL --max-time 10 "https://api.github.com/repos/anytls/anytls-go/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [[ -z "$version" ]]; then
+        version="v0.0.12"  # 默认版本
+    fi
+    echo "$version"
+}
+
+# 检查 AnyTLS 是否已安装
+check_anytls_installed() {
+    [[ -x "$ANYTLS_BIN_PATH" ]] && file "$ANYTLS_BIN_PATH" 2>/dev/null | grep -qE "ELF.*executable"
+}
+
+# 获取系统架构
+get_anytls_arch() {
+    local arch=$(uname -m)
+    case $arch in
+        x86_64)  echo "amd64" ;;
+        aarch64) echo "arm64" ;;
+        armv7l)  echo "armv7" ;;
+        *) echo "" ;;
+    esac
+}
+
+# 安装 AnyTLS 核心程序
+install_anytls_binary() {
+    local arch=$(get_anytls_arch)
+    if [[ -z "$arch" ]]; then
+        error "不支持的系统架构: $(uname -m)"
+        return 1
+    fi
+    
+    if check_anytls_installed; then
+        success "AnyTLS 核心已安装"
+        return 0
+    fi
+    
+    local version=$(get_anytls_latest_version)
+    info "正在下载 AnyTLS ${version}..."
+    
+    local download_url="https://github.com/anytls/anytls-go/releases/download/${version}/anytls_${version#v}_linux_${arch}.zip"
+    local tmp_dir=$(mktemp -d)
+    
+    if curl -fSL -o "${tmp_dir}/anytls.zip" --connect-timeout 30 --retry 3 "$download_url" 2>/dev/null; then
+        # 解压
+        if command -v unzip &>/dev/null; then
+            unzip -q "${tmp_dir}/anytls.zip" -d "$tmp_dir"
+        else
+            error "需要安装 unzip: apt install unzip"
+            rm -rf "$tmp_dir"
+            return 1
+        fi
+        
+        # 查找并安装二进制文件
+        local bin_file=$(find "$tmp_dir" -name "anytls-server" -o -name "anytls_server" 2>/dev/null | head -1)
+        if [[ -z "$bin_file" ]]; then
+            bin_file=$(find "$tmp_dir" -type f -perm -111 2>/dev/null | head -1)
+        fi
+        
+        if [[ -n "$bin_file" ]] && file "$bin_file" 2>/dev/null | grep -qE "ELF.*executable"; then
+            install -m 755 "$bin_file" "$ANYTLS_BIN_PATH"
+            rm -rf "$tmp_dir"
+            success "AnyTLS 核心安装成功"
+            return 0
+        else
+            rm -rf "$tmp_dir"
+            error "解压后未找到有效的可执行文件"
+            return 1
+        fi
+    else
+        rm -rf "$tmp_dir"
+        error "下载 AnyTLS 失败，请检查网络连接"
+        return 1
+    fi
+}
+
+# 生成 AnyTLS 分享链接
+generate_anytls_link() {
+    local ip="$1" port="$2" password="$3" sni="$4" node_name="$5"
+    local encoded_name=$(echo -n "$node_name" | sed 's/ /%20/g; s/#/%23/g')
+    echo "anytls://${password}@${ip}:${port}?sni=${sni}#${encoded_name}"
+}
+
+# 安装 AnyTLS 实例
+install_anytls() {
+    info "=== 安装 AnyTLS 实例 ==="
+    echo ""
+    
+    # 安装核心程序
+    if ! install_anytls_binary; then
+        return 1
+    fi
+    
+    # 创建配置目录
+    mkdir -p "$ANYTLS_CONF_DIR"
+    
+    # 生成随机端口
+    local default_port=$(shuf -i 30000-60000 -n 1)
+    
+    # 询问端口
+    echo -e "${cyan}请输入端口号 (1-65535)，直接回车使用随机端口 [默认: ${default_port}]:${none}"
+    while true; do
+        read -p "端口: " anytls_port || true
+        if [[ -z "$anytls_port" ]]; then
+            anytls_port=$default_port
+            success "使用随机端口: ${anytls_port}"
+            break
+        fi
+        if [[ "$anytls_port" =~ ^[0-9]+$ ]] && [[ "$anytls_port" -ge 1 ]] && [[ "$anytls_port" -le 65535 ]]; then
+            if ss -tulpn 2>/dev/null | grep -q ":${anytls_port} "; then
+                error "端口 ${anytls_port} 已被占用，请选择其他端口"
+            else
+                success "已设置端口为: ${anytls_port}"
+                break
+            fi
+        else
+            error "无效端口，请输入 1-65535 之间的数字"
+        fi
+    done
+    
+    # 检查端口是否已有 AnyTLS 实例
+    if [[ -f "/etc/systemd/system/anytls-${anytls_port}.service" ]]; then
+        error "端口 ${anytls_port} 已存在 AnyTLS 实例"
+        return 1
+    fi
+    
+    # 询问节点名称
+    echo -e "${cyan}请输入节点名称 (例如: 🇯🇵AnyTLS-Tokyo):${none}"
+    read -p "节点名称: " node_name || true
+    if [[ -z "$node_name" ]]; then
+        node_name="AnyTLS-${anytls_port}"
+        warning "未输入名称，使用默认名称: ${node_name}"
+    fi
+    
+    # 询问 SNI 域名
+    echo ""
+    echo -e "${cyan}请选择 SNI 域名:${none}"
+    echo "1. www.microsoft.com"
+    echo "2. www.apple.com"
+    echo "3. www.cloudflare.com"
+    echo "4. addons.mozilla.org"
+    echo "5. 自定义输入"
+    read -p "请输入选项 [1-5，默认为 1]: " sni_choice || true
+    sni_choice=${sni_choice:-1}
+    
+    local sni_domain
+    case $sni_choice in
+        1) sni_domain="www.microsoft.com" ;;
+        2) sni_domain="www.apple.com" ;;
+        3) sni_domain="www.cloudflare.com" ;;
+        4) sni_domain="addons.mozilla.org" ;;
+        5)
+            echo -e "${cyan}请输入自定义 SNI 域名:${none}"
+            read -p "域名: " sni_domain || true
+            if [[ -z "$sni_domain" ]]; then
+                sni_domain="www.microsoft.com"
+                warning "未输入域名，使用默认: ${sni_domain}"
+            fi
+            ;;
+        *) sni_domain="www.microsoft.com" ;;
+    esac
+    success "SNI 域名: ${sni_domain}"
+    
+    # 询问监听模式
+    echo ""
+    echo -e "${cyan}请选择监听模式:${none}"
+    echo "1. 仅 IPv4 (0.0.0.0)"
+    echo "2. 仅 IPv6 (::)"
+    echo "3. 双栈 (同时支持 IPv4 和 IPv6)"
+    read -p "请输入选项 [1-3，默认为 3]: " listen_mode || true
+    listen_mode=${listen_mode:-3}
+    
+    local listen_addr
+    case $listen_mode in
+        1) listen_addr="0.0.0.0:${anytls_port}"; success "已选择：仅 IPv4 模式" ;;
+        2) listen_addr="[::]:${anytls_port}"; success "已选择：仅 IPv6 模式" ;;
+        *) listen_addr="[::]:${anytls_port}"; success "已选择：双栈模式" ;;
+    esac
+    
+    # 获取服务器 IP
+    local server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
+    if [[ -z "$server_ip" ]]; then
+        server_ip=$(curl -6s --max-time 5 https://api64.ipify.org 2>/dev/null)
+    fi
+    
+    # 生成密码
+    local password=$(openssl rand -base64 16 | tr -d '/+=' | head -c 16)
+    
+    info "正在生成配置..."
+    
+    # 保存节点信息
+    local anytls_link=$(generate_anytls_link "$server_ip" "$anytls_port" "$password" "$sni_domain" "$node_name")
+    cat > "${ANYTLS_CONF_DIR}/anytls-${anytls_port}.info" << EOF
+node_name=${node_name}
+port=${anytls_port}
+password=${password}
+server_ip=${server_ip}
+sni=${sni_domain}
+listen_addr=${listen_addr}
+link=${anytls_link}
+EOF
+    
+    # 创建 Systemd 服务文件
+    # AnyTLS 使用命令行参数而非配置文件
+    cat > "/etc/systemd/system/anytls-${anytls_port}.service" << EOF
+[Unit]
+Description=AnyTLS Proxy Service (Port ${anytls_port})
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${ANYTLS_BIN_PATH} --listen ${listen_addr} --password ${password} --sni ${sni_domain}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 启动服务
+    systemctl daemon-reload
+    systemctl enable "anytls-${anytls_port}.service" >/dev/null 2>&1
+    systemctl start "anytls-${anytls_port}.service"
+    
+    sleep 2
+    
+    if systemctl is-active --quiet "anytls-${anytls_port}.service"; then
+        echo ""
+        echo -e "${green}═══════════════════════════════════════════════${none}"
+        success "AnyTLS (端口 ${anytls_port}) 安装成功！"
+        echo -e "${green}═══════════════════════════════════════════════${none}"
+        echo ""
+        echo -e "${cyan}【节点信息】${none}"
+        echo -e "  名称: ${yellow}${node_name}${none}"
+        echo -e "  端口: ${yellow}${anytls_port}${none}"
+        echo -e "  密码: ${yellow}${password}${none}"
+        echo -e "  SNI: ${yellow}${sni_domain}${none}"
+        echo ""
+        echo -e "${cyan}【分享链接】${none}"
+        echo -e "${green}${anytls_link}${none}"
+    else
+        error "AnyTLS 服务启动失败"
+        echo "请检查日志: journalctl -u anytls-${anytls_port} -n 20"
+        return 1
+    fi
+}
+
+# 列出 AnyTLS 实例
+list_anytls_instances() {
+    echo -e "${cyan}当前已安装的 AnyTLS 实例：${none}"
+    echo "================================================================"
+    printf "%-25s %-10s %-12s %-15s\n" "节点名称" "端口" "状态" "SNI"
+    echo "================================================================"
+    
+    local count=0
+    for service_file in /etc/systemd/system/anytls-*.service; do
+        if [[ -f "$service_file" ]]; then
+            local port=$(echo "$service_file" | sed -E 's/.*anytls-([0-9]+)\.service/\1/')
+            local info_file="${ANYTLS_CONF_DIR}/anytls-${port}.info"
+            
+            local node_name="未命名"
+            local sni="未知"
+            if [[ -f "$info_file" ]]; then
+                node_name=$(grep "^node_name=" "$info_file" | cut -d'=' -f2)
+                sni=$(grep "^sni=" "$info_file" | cut -d'=' -f2)
+            fi
+            
+            local status_text="已停止"
+            local status_color="${red}"
+            if systemctl is-active --quiet "anytls-${port}.service"; then
+                status_text="运行中"
+                status_color="${green}"
+            fi
+            
+            printf "%-25s %-10s ${status_color}%-12s${none} %-15s\n" "$node_name" "$port" "$status_text" "$sni"
+            ((count++))
+        fi
+    done
+    
+    if [[ $count -eq 0 ]]; then
+        echo "暂无安装任何 AnyTLS 实例"
+    fi
+    echo "================================================================"
+    return $count
+}
+
+# 卸载 AnyTLS 实例
+uninstall_anytls() {
+    echo -e "${green}=== 卸载 AnyTLS 服务 ===${none}"
+    
+    list_anytls_instances
+    local instance_count=$?
+    
+    if [[ $instance_count -eq 0 ]]; then
+        warning "未检测到任何 AnyTLS 实例，无需卸载"
+        return
+    fi
+    
+    echo ""
+    echo "请选择卸载方式："
+    echo "1. 卸载指定端口的实例"
+    echo "2. 卸载所有实例"
+    echo "0. 取消"
+    read -p "请输入选项 [0-2]: " uninstall_choice || true
+    
+    case "$uninstall_choice" in
+        1)
+            read -p "请输入要卸载的端口号: " port_to_uninstall || true
+            if [[ -z "$port_to_uninstall" ]]; then
+                error "端口号不能为空"
+                return
+            fi
+            
+            if [[ ! -f "/etc/systemd/system/anytls-${port_to_uninstall}.service" ]]; then
+                error "未找到端口 ${port_to_uninstall} 的 AnyTLS 实例"
+                return
+            fi
+            
+            systemctl stop "anytls-${port_to_uninstall}.service" 2>/dev/null
+            systemctl disable "anytls-${port_to_uninstall}.service" 2>/dev/null
+            rm -f "/etc/systemd/system/anytls-${port_to_uninstall}.service"
+            rm -f "${ANYTLS_CONF_DIR}/anytls-${port_to_uninstall}.info"
+            systemctl daemon-reload
+            
+            success "AnyTLS 实例 (端口 ${port_to_uninstall}) 卸载成功"
+            ;;
+        2)
+            read -p "确定要卸载所有 AnyTLS 实例吗？[y/N]: " confirm || true
+            if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+                info "已取消"
+                return
+            fi
+            
+            for service_file in /etc/systemd/system/anytls-*.service; do
+                if [[ -f "$service_file" ]]; then
+                    local port=$(echo "$service_file" | sed -E 's/.*anytls-([0-9]+)\.service/\1/')
+                    systemctl stop "anytls-${port}.service" 2>/dev/null
+                    systemctl disable "anytls-${port}.service" 2>/dev/null
+                    rm -f "$service_file"
+                    rm -f "${ANYTLS_CONF_DIR}/anytls-${port}.info"
+                fi
+            done
+            
+            systemctl daemon-reload
+            success "所有 AnyTLS 实例已卸载"
+            ;;
+        *)
+            info "已取消"
+            ;;
+    esac
+}
+
+# 更新 AnyTLS 核心
+update_anytls() {
+    if ! check_anytls_installed; then
+        warning "AnyTLS 未安装，无需更新"
+        return
+    fi
+    
+    info "正在更新 AnyTLS 核心..."
+    
+    # 停止所有实例
+    for service_file in /etc/systemd/system/anytls-*.service; do
+        if [[ -f "$service_file" ]]; then
+            local port=$(echo "$service_file" | sed -E 's/.*anytls-([0-9]+)\.service/\1/')
+            systemctl stop "anytls-${port}.service" 2>/dev/null
+        fi
+    done
+    
+    # 删除旧版本
+    rm -f "$ANYTLS_BIN_PATH"
+    
+    # 安装新版本
+    if install_anytls_binary; then
+        # 重启所有实例
+        for service_file in /etc/systemd/system/anytls-*.service; do
+            if [[ -f "$service_file" ]]; then
+                local port=$(echo "$service_file" | sed -E 's/.*anytls-([0-9]+)\.service/\1/')
+                systemctl start "anytls-${port}.service"
+            fi
+        done
+        success "AnyTLS 核心更新成功"
+    else
+        error "AnyTLS 更新失败"
+    fi
+}
+
+# 查看 AnyTLS 配置
+view_anytls_config() {
+    list_anytls_instances
+    local count=$?
+    
+    if [[ $count -eq 0 ]]; then
+        return
+    fi
+    
+    echo ""
+    read -p "请输入要查看配置的端口号: " view_port || true
+    
+    local info_file="${ANYTLS_CONF_DIR}/anytls-${view_port}.info"
+    if [[ ! -f "$info_file" ]]; then
+        error "未找到端口 ${view_port} 的配置文件"
+        return
+    fi
+    
+    echo ""
+    echo -e "${cyan}═══════════════════════════════════════════════${none}"
+    echo -e "${cyan}  AnyTLS 节点配置 (端口 ${view_port})${none}"
+    echo -e "${cyan}═══════════════════════════════════════════════${none}"
+    
+    source "$info_file"
+    
+    echo -e "  节点名称: ${yellow}${node_name}${none}"
+    echo -e "  端口: ${yellow}${port}${none}"
+    echo -e "  密码: ${yellow}${password}${none}"
+    echo -e "  服务器: ${yellow}${server_ip}${none}"
+    echo -e "  SNI: ${yellow}${sni}${none}"
+    echo ""
+    echo -e "${cyan}【分享链接】${none}"
+    echo -e "${green}${link}${none}"
+    echo ""
+}
+
+# AnyTLS 管理菜单
+anytls_menu() {
+    while true; do
+        clear
+        echo -e "${cyan}=== AnyTLS 管理工具 ===${none}"
+        
+        # 统计实例数量
+        local instance_count=0
+        local running_count=0
+        
+        for service_file in /etc/systemd/system/anytls-*.service; do
+            if [[ -f "$service_file" ]]; then
+                ((instance_count++))
+                local port=$(echo "$service_file" | sed -E 's/.*anytls-([0-9]+)\.service/\1/')
+                if systemctl is-active --quiet "anytls-${port}.service"; then
+                    ((running_count++))
+                fi
+            fi
+        done
+        
+        echo -e "已安装实例: ${green}${instance_count}${none} 个"
+        echo -e "运行中实例: ${green}${running_count}${none} 个"
+        
+        if check_anytls_installed; then
+            local version=$(get_anytls_latest_version)
+            echo -e "最新版本: ${green}${version}${none}"
+        else
+            echo -e "核心版本: ${red}未安装${none}"
+        fi
+        
+        echo ""
+        echo "1. 安装/添加 AnyTLS 服务"
+        echo "2. 卸载/删除 AnyTLS 服务"
+        echo "3. 查看所有 AnyTLS 实例"
+        echo "4. 更新 AnyTLS 核心"
+        echo "5. 查看 AnyTLS 配置"
+        echo "0. 返回上级菜单"
+        echo "======================"
+        read -p "请输入选项编号: " anytls_choice || true
+        
+        case "$anytls_choice" in
+            1) install_anytls; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            2) uninstall_anytls; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            3) list_anytls_instances; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            4) update_anytls; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            5) view_anytls_config; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            0) return ;;
+            *) error "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
 # --- 路由过滤规则管理 ---
 manage_routing_rules() {
     clear
@@ -10081,25 +11176,31 @@ main_menu() {
         printf "  ${magenta}%-2s${none} %-35s\n" "6." "删除指定 Shadowsocks-2022 节点"
         printf "  ${yellow}%-2s${none} %-35s\n" "7." "修改 Shadowsocks-2022 配置"
         draw_divider
-        echo -e "${cyan}[SOCKS5 链式代理管理] 🆕${none}"
+        echo -e "${cyan}[SOCKS5 链式代理管理]${none}"
         printf "  ${green}%-2s${none} %-35s\n" "8." "🔗 新增 SOCKS5 链式代理"
         printf "  ${cyan}%-2s${none} %-35s\n" "9." "📋 查看 SOCKS5 链式代理列表"
         printf "  ${magenta}%-2s${none} %-35s\n" "10." "❌ 删除 SOCKS5 链式代理"
         draw_divider
+        echo -e "${cyan}[TUIC v5 协议管理] 🆕${none}"
+        printf "  ${green}%-2s${none} %-35s\n" "11." "🚀 TUIC v5 管理"
+        draw_divider
+        echo -e "${cyan}[AnyTLS 协议管理] 🆕${none}"
+        printf "  ${green}%-2s${none} %-35s\n" "12." "🔐 AnyTLS 管理"
+        draw_divider
         echo -e "${cyan}[Xray 服务管理]${none}"
-        printf "  ${green}%-2s${none} %-35s\n" "11." "更新 Xray"
-        printf "  ${red}%-2s${none} %-35s\n" "12." "卸载 Xray"
-        printf "  ${cyan}%-2s${none} %-35s\n" "13." "重启 Xray"
-        printf "  ${magenta}%-2s${none} %-35s\n" "14." "查看 Xray 日志"
-        printf "  ${yellow}%-2s${none} %-35s\n" "15." "查看订阅信息"
+        printf "  ${green}%-2s${none} %-35s\n" "13." "更新 Xray"
+        printf "  ${red}%-2s${none} %-35s\n" "14." "卸载 Xray"
+        printf "  ${cyan}%-2s${none} %-35s\n" "15." "重启 Xray"
+        printf "  ${magenta}%-2s${none} %-35s\n" "16." "查看 Xray 日志"
+        printf "  ${yellow}%-2s${none} %-35s\n" "17." "查看订阅信息"
         draw_divider
         echo -e "${cyan}[高级功能]${none}"
-        printf "  ${green}%-2s${none} %-35s ⭐\n" "16." "路由过滤规则管理"
+        printf "  ${green}%-2s${none} %-35s ⭐\n" "18." "路由过滤规则管理"
         draw_divider
         printf "  ${red}%-2s${none} %-35s\n" "0." "退出脚本"
         draw_divider
 
-        read -p " 请输入选项 [0-16]: " choice || true
+        read -p " 请输入选项 [0-18]: " choice || true
 
         local needs_pause=true
 
@@ -10114,14 +11215,16 @@ main_menu() {
             8) add_socks5_proxy ;;
             9) list_socks5_proxies ;;
             10) delete_socks5_proxy ;;
-            11) update_xray ;;
-            12) uninstall_xray ;;
-            13) restart_xray ;;
-            14) view_xray_log; needs_pause=false ;;
-            15) view_all_info ;;
-            16) manage_routing_rules ;;
+            11) tuic_menu; needs_pause=false ;;
+            12) anytls_menu; needs_pause=false ;;
+            13) update_xray ;;
+            14) uninstall_xray ;;
+            15) restart_xray ;;
+            16) view_xray_log; needs_pause=false ;;
+            17) view_all_info ;;
+            18) manage_routing_rules ;;
             0) success "感谢使用！"; exit 0 ;;
-            *) error "无效选项。请输入0到16之间的数字。" ;;
+            *) error "无效选项。请输入0到18之间的数字。" ;;
         esac
 
         if [ "$needs_pause" = true ]; then
