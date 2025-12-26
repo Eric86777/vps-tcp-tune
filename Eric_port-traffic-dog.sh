@@ -2985,7 +2985,10 @@ setup_telegram_notification_cron() {
             "2h")  echo "0 */2 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "6h")  echo "0 */6 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "12h") echo "0 */12 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "24h"|"1d") echo "0 0 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "3d")  echo "0 0 */3 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "7d")  echo "0 0 * * 1 $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "15d") echo "0 0 1,15 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -3010,7 +3013,10 @@ setup_wecom_notification_cron() {
             "2h")  echo "0 */2 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "6h")  echo "0 */6 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "24h"|"1d") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "3d")  echo "0 0 */3 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "7d")  echo "0 0 * * 1 $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "15d") echo "0 0 1,15 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -3035,7 +3041,10 @@ setup_email_notification_cron() {
             "2h")  echo "0 */2 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "6h")  echo "0 */6 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "12h") echo "0 */12 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "24h"|"1d") echo "0 0 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "3d")  echo "0 0 */3 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "7d")  echo "0 0 * * 1 $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "15d") echo "0 0 1,15 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -3047,24 +3056,25 @@ setup_email_notification_cron() {
 select_notification_interval() {
     # 显示选择菜单到stderr，避免被变量捕获
     echo "请选择状态通知发送间隔:" >&2
-    echo "1. 1分钟   2. 15分钟  3. 30分钟  4. 1小时" >&2
-    echo "5. 2小时   6. 6小时   7. 12小时  8. 24小时" >&2
-    read -p "请选择(回车默认1小时) [1-8]: " interval_choice >&2
+    echo "1. 1小时" >&2
+    echo "2. 6小时" >&2
+    echo "3. 1天 (24小时)" >&2
+    echo "4. 3天" >&2
+    echo "5. 一周 (7天)" >&2
+    echo "6. 半个月 (15天)" >&2
+    read -p "请选择(回车默认1小时) [1-6]: " interval_choice >&2
 
     # 默认1小时
     local interval="1h"
     case $interval_choice in
-        1) interval="1m" ;;
-        2) interval="15m" ;;
-        3) interval="30m" ;;
-        4|"") interval="1h" ;;
-        5) interval="2h" ;;
-        6) interval="6h" ;;
-        7) interval="12h" ;;
-        8) interval="24h" ;;
+        1|"") interval="1h" ;;
+        2) interval="6h" ;;
+        3) interval="1d" ;;
+        4) interval="3d" ;;
+        5) interval="7d" ;;
+        6) interval="15d" ;;
         *) interval="1h" ;;
     esac
-
     echo "$interval"
 }
 
