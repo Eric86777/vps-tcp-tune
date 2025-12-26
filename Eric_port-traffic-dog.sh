@@ -1,9 +1,9 @@
 #!/bin/bash
-# v1.2.8 更新: 新增邮件通知功能(Resend API)，与订阅通知系统保持一致 (by Eric86777)
+# v1.2.9 更新: 新增端口组功能，支持多端口共享配额/带宽/重置日期；新增合并端口为组功能 (by Eric86777)
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.8"
+readonly SCRIPT_VERSION="1.2.9"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -312,7 +312,25 @@ show_port_list() {
     for i in "${!active_ports[@]}"; do
         local port=${active_ports[$i]}
         local status_label=$(get_port_status_label "$port")
-        echo "$((i+1)). 端口 $port $status_label"
+        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+        
+        # 端口类型判断和显示
+        local port_display
+        if is_port_group "$port"; then
+            local display_str="$port"
+            if [ ${#port} -gt 25 ]; then
+                local count=$(echo "$port" | tr -cd ',' | wc -c)
+                count=$((count + 1))
+                display_str="${port:0:22}...(${count}个)"
+            fi
+            port_display="端口组[${display_str}]"
+        elif is_port_range "$port"; then
+            port_display="端口段[$port]"
+        else
+            port_display="端口 $port"
+        fi
+        
+        echo "$((i+1)). $port_display $status_label"
     done
     return 0
 }
@@ -415,19 +433,20 @@ get_nftables_counter_data() {
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
-    if is_port_range "$port"; then
-        # 端口段使用下划线替换连字符作为计数器名称
-        local port_safe=$(echo "$port" | tr '-' '_')
-        local input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
-        local output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
+    # 根据端口类型确定计数器名称
+    local port_safe
+    if is_port_group "$port"; then
+        port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+        port_safe=$(echo "$port" | tr '-' '_')
     else
-        local input_bytes=$(nft list counter $family $table_name "port_${port}_in" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
-        local output_bytes=$(nft list counter $family $table_name "port_${port}_out" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
+        port_safe="$port"
     fi
+
+    local input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | \
+        grep -o 'bytes [0-9]*' | awk '{print $2}')
+    local output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | \
+        grep -o 'bytes [0-9]*' | awk '{print $2}')
 
     input_bytes=${input_bytes:-0}
     output_bytes=${output_bytes:-0}
@@ -491,17 +510,19 @@ restore_monitoring_if_needed() {
     local need_restore=false
 
     for port in "${active_ports[@]}"; do
-        if is_port_range "$port"; then
-            local port_safe=$(echo "$port" | tr '-' '_')
-            if ! nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1; then
-                need_restore=true
-                break
-            fi
+        # 根据端口类型确定计数器名称
+        local port_safe
+        if is_port_group "$port"; then
+            port_safe=$(generate_port_group_safe_name "$port")
+        elif is_port_range "$port"; then
+            port_safe=$(echo "$port" | tr '-' '_')
         else
-            if ! nft list counter $family $table_name "port_${port}_in" >/dev/null 2>&1; then
-                need_restore=true
-                break
-            fi
+            port_safe="$port"
+        fi
+
+        if ! nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1; then
+            need_restore=true
+            break
         fi
     done
 
@@ -540,15 +561,22 @@ restore_counter_value() {
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
-    if is_port_range "$port"; then
-        local port_safe=$(echo "$port" | tr '-' '_')
-        # nftables支持创建带初始值的计数器
-        nft add counter $family $table_name "port_${port_safe}_in" { packets 0 bytes $target_input } 2>/dev/null || true
-        nft add counter $family $table_name "port_${port_safe}_out" { packets 0 bytes $target_output } 2>/dev/null || true
+    # 根据端口类型确定计数器名称
+    local port_safe
+    if is_port_group "$port"; then
+        port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+        port_safe=$(echo "$port" | tr '-' '_')
     else
-        nft add counter $family $table_name "port_${port}_in" { packets 0 bytes $target_input } 2>/dev/null || true
-        nft add counter $family $table_name "port_${port}_out" { packets 0 bytes $target_output } 2>/dev/null || true
+        port_safe="$port"
     fi
+
+    # 先删除已存在的计数器（如果有），再创建带初始值的计数器
+    nft delete counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
+    nft delete counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
+    
+    nft add counter $family $table_name "port_${port_safe}_in" { packets 0 bytes $target_input } 2>/dev/null || true
+    nft add counter $family $table_name "port_${port_safe}_out" { packets 0 bytes $target_output } 2>/dev/null || true
 }
 
 restore_all_monitoring_rules() {
@@ -739,6 +767,67 @@ is_port_range() {
     [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]
 }
 
+# 判断是否为端口组（多个端口用逗号分隔，共享配额）
+# 端口组格式: "101,102,105" (包含逗号，且不是端口段)
+is_port_group() {
+    local port=$1
+    # 包含逗号，且不是端口段格式
+    [[ "$port" =~ , ]] && ! is_port_range "$port"
+}
+
+# 获取端口组中的所有端口列表
+get_group_ports() {
+    local port_key=$1
+    if is_port_group "$port_key"; then
+        # 端口组：按逗号分隔返回
+        echo "$port_key" | tr ',' ' '
+    elif is_port_range "$port_key"; then
+        # 端口段：展开所有端口（用于TC规则）
+        local start_port=$(echo "$port_key" | cut -d'-' -f1)
+        local end_port=$(echo "$port_key" | cut -d'-' -f2)
+        seq $start_port $end_port | tr '\n' ' '
+    else
+        # 单端口
+        echo "$port_key"
+    fi
+}
+
+# 为端口组生成安全的命名（用于nftables计数器/配额名称）
+# 将逗号替换为下划线，连字符也替换为下划线
+generate_port_group_safe_name() {
+    local port_key=$1
+    echo "$port_key" | tr ',-' '__'
+}
+
+# 为端口组生成TC标记（用于共享带宽限制）
+generate_port_group_mark() {
+    local port_key=$1
+    local safe_name=$(generate_port_group_safe_name "$port_key")
+    # 使用字符串哈希生成唯一标记
+    local hash=$(echo -n "$safe_name" | cksum | cut -d' ' -f1)
+    echo $(( hash % 65000 + 1000 ))  # 范围 1000-66000，避免与端口号冲突
+}
+
+# 生成端口的人类可读显示名称
+format_port_display_name() {
+    local port=$1
+    local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE" 2>/dev/null)
+    
+    if is_port_group "$port"; then
+        local display_str="$port"
+        if [ ${#port} -gt 25 ]; then
+            local count=$(echo "$port" | tr -cd ',' | wc -c)
+            count=$((count + 1))
+            display_str="${port:0:22}...(${count}个)"
+        fi
+        echo "端口组[${display_str}]"
+    elif is_port_range "$port"; then
+        echo "端口段[$port]"
+    else
+        echo "端口 $port"
+    fi
+}
+
 generate_port_range_mark() {
     local port_range=$1
     local start_port=$(echo "$port_range" | cut -d'-' -f1)
@@ -787,7 +876,11 @@ parse_tc_rate_to_kbps() {
 
 generate_tc_class_id() {
     local port=$1
-    if is_port_range "$port"; then
+    if is_port_group "$port"; then
+        # 端口组使用0x3000+标记避免冲突
+        local mark_id=$(generate_port_group_mark "$port")
+        echo "1:$(printf '%x' $((0x3000 + (mark_id % 4096))))"
+    elif is_port_range "$port"; then
         # 端口段使用0x2000+标记避免与单端口冲突
         local mark_id=$(generate_port_range_mark "$port")
         echo "1:$(printf '%x' $((0x2000 + mark_id)))"
@@ -825,19 +918,35 @@ format_port_list() {
         local total_formatted=$(format_bytes $total_bytes)
         local output_formatted=$(format_bytes $output_bytes)
         local status_label=$(get_port_status_label "$port")
+        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
 
         # 所有模式都×2显示，反映真实网卡消耗
         local input_formatted=$(format_bytes $((input_bytes * 2)))
         local output_formatted=$(format_bytes $((output_bytes * 2)))
 
+        # 端口显示逻辑优化
+        local port_display="$port"
+        local prefix="端口"
+        
+        if is_port_group "$port"; then
+            prefix="端口组"
+            if [ ${#port} -gt 25 ]; then
+                local count=$(echo "$port" | tr -cd ',' | wc -c)
+                count=$((count + 1))
+                port_display="${port:0:22}...(${count}个)"
+            fi
+        elif is_port_range "$port"; then
+            prefix="端口段"
+        fi
+
         if [ "$format_type" = "display" ]; then
-            echo -e "端口:${GREEN}$port${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
+            echo -e "${prefix}:${GREEN}$port_display${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
         elif [ "$format_type" = "markdown" ]; then
-            result+="> 端口:**${port}** | 总流量:**${total_formatted}** | 上行:**${input_formatted}** | 下行:**${output_formatted}** | ${status_label}
+            result+="> ${prefix}:**${port_display}** | 总流量:**${total_formatted}** | 上行:**${input_formatted}** | 下行:**${output_formatted}** | ${status_label}
 "
         else
             result+="
-端口:${port} | 总流量:${total_formatted} | 上行(入站): ${input_formatted} | 下行(出站):${output_formatted} | ${status_label}"
+${prefix}:${port_display} | 总流量:${total_formatted} | 上行(入站): ${input_formatted} | 下行(出站):${output_formatted} | ${status_label}"
         fi
     done
 
@@ -873,23 +982,22 @@ show_main_menu() {
 
     echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
     echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
-    echo -e "${BLUE}5.${NC} 安装依赖(更新)脚本    ${BLUE}6.${NC} 卸载脚本"
-    echo -e "${BLUE}7.${NC} 通知管理              ${BLUE}8.${NC} 一键刷新配额规则"
+    echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 一键刷新原版流量狗配额规则"
+    echo -e "${BLUE}7.${NC} 卸载脚本"
     echo -e "${BLUE}0.${NC} 退出"
     echo
-    read -p "请选择操作 [0-8]: " choice
+    read -p "请选择操作 [0-7]: " choice
 
     case $choice in
         1) manage_port_monitoring ;;
         2) manage_traffic_limits ;;
         3) manage_traffic_reset ;;
         4) manage_configuration ;;
-        5) install_update_script ;;
-        6) uninstall_script ;;
-        7) manage_notifications ;;
-        8) migrate_from_old_version ;;
+        5) manage_notifications ;;
+        6) migrate_from_old_version ;;
+        7) uninstall_script ;;
         0) exit 0 ;;
-        *) echo -e "${RED}无效选择，请输入0-8${NC}"; sleep 1; show_main_menu ;;
+        *) echo -e "${RED}无效选择，请输入0-7${NC}"; sleep 1; show_main_menu ;;
     esac
 }
 
@@ -897,13 +1005,15 @@ manage_port_monitoring() {
     echo -e "${BLUE}=== 端口监控管理 ===${NC}"
     echo "1. 添加端口监控"
     echo "2. 删除端口监控"
+    echo "3. 合并端口为组"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-2]: " choice
+    read -p "请选择操作 [0-3]: " choice
 
     case $choice in
         1) add_port_monitoring ;;
         2) remove_port_monitoring ;;
+        3) merge_ports_to_group ;;
         0) show_main_menu ;;
         *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_port_monitoring ;;
     esac
@@ -952,18 +1062,65 @@ add_port_monitoring() {
 
     read -p "请输入要监控的端口号（多端口使用逗号,分隔,端口段使用-分隔）: " port_input
 
-    local PORTS=()
-    parse_port_range_input "$port_input" PORTS
-    local valid_ports=()
-
-    for port in "${PORTS[@]}"; do
-        if jq -e ".ports.\"$port\"" "$CONFIG_FILE" >/dev/null 2>&1; then
-            echo -e "${YELLOW}端口 $port 已在监控列表中，跳过${NC}"
-            continue
+    # 检查是否包含多个端口（非端口段的情况）
+    local single_port_count=0
+    IFS=',' read -ra PORT_PARTS <<< "$port_input"
+    for part in "${PORT_PARTS[@]}"; do
+        part=$(echo "$part" | tr -d ' ')
+        if [[ "$part" =~ ^[0-9]+$ ]]; then
+            single_port_count=$((single_port_count + 1))
         fi
-
-        valid_ports+=("$port")
     done
+
+    local valid_ports=()
+    
+    # 判断处理模式
+    if [ $single_port_count -gt 1 ]; then
+        # 多个端口：直接创建端口组（共享统计）
+        local group_key=""
+        for part in "${PORT_PARTS[@]}"; do
+            part=$(echo "$part" | tr -d ' ')
+            if [[ "$part" =~ ^[0-9]+$ ]] && [ "$part" -ge 1 ] && [ "$part" -le 65535 ]; then
+                if [ -n "$group_key" ]; then
+                    group_key="${group_key},${part}"
+                else
+                    group_key="$part"
+                fi
+            elif [[ "$part" =~ ^[0-9]+-[0-9]+$ ]]; then
+                # 端口段也支持加入组，展开后添加
+                local start_port=$(echo "$part" | cut -d'-' -f1)
+                local end_port=$(echo "$part" | cut -d'-' -f2)
+                for p in $(seq $start_port $end_port); do
+                    if [ -n "$group_key" ]; then
+                        group_key="${group_key},${p}"
+                    else
+                        group_key="$p"
+                    fi
+                done
+            fi
+        done
+        
+        if [ -n "$group_key" ]; then
+            if jq -e ".ports.\"$group_key\"" "$CONFIG_FILE" >/dev/null 2>&1; then
+                echo -e "${YELLOW}端口组 $group_key 已在监控列表中${NC}"
+            else
+                valid_ports+=("$group_key")
+                echo -e "${GREEN}创建端口组: $group_key (所有端口共享统计)${NC}"
+            fi
+        fi
+    else
+        # 单个端口或端口段：使用原有逻辑（独立统计）
+        local PORTS=()
+        parse_port_range_input "$port_input" PORTS
+        
+        for port in "${PORTS[@]}"; do
+            if jq -e ".ports.\"$port\"" "$CONFIG_FILE" >/dev/null 2>&1; then
+                echo -e "${YELLOW}端口 $port 已在监控列表中，跳过${NC}"
+                continue
+            fi
+            valid_ports+=("$port")
+        done
+    fi
 
     if [ ${#valid_ports[@]} -eq 0 ]; then
         echo -e "${RED}没有有效的端口可添加${NC}"
@@ -1184,7 +1341,15 @@ remove_port_monitoring() {
         # 清理连接跟踪：确保现有连接不受限制
         echo "正在清理网络状态..."
         for port in "${ports_to_delete[@]}"; do
-            if is_port_range "$port"; then
+            if is_port_group "$port"; then
+                # 端口组：清理组内每个端口
+                echo "清理端口组 $port 连接状态..."
+                local group_ports=($(get_group_ports "$port"))
+                for p in "${group_ports[@]}"; do
+                    conntrack -D -p tcp --dport $p 2>/dev/null || true
+                    conntrack -D -p udp --dport $p 2>/dev/null || true
+                done
+            elif is_port_range "$port"; then
                 local start_port=$(echo "$port" | cut -d'-' -f1)
                 local end_port=$(echo "$port" | cut -d'-' -f2)
                 echo "清理端口段 $port 连接状态..."
@@ -1214,12 +1379,202 @@ remove_port_monitoring() {
     manage_port_monitoring
 }
 
+# 合并多个单端口为端口组
+merge_ports_to_group() {
+    echo -e "${BLUE}=== 合并端口为组 ===${NC}"
+    echo
+    echo "此功能可将多个单独的端口合并为一个端口组，实现流量共享统计。"
+    echo
+
+    local active_ports=($(get_active_ports))
+    
+    # 过滤出可合并的单端口（排除已有的端口组和端口段）
+    local single_ports=()
+    for port in "${active_ports[@]}"; do
+        if ! is_port_group "$port" && ! is_port_range "$port"; then
+            single_ports+=("$port")
+        fi
+    done
+
+    if [ ${#single_ports[@]} -lt 2 ]; then
+        echo -e "${YELLOW}需要至少2个单独端口才能合并为组${NC}"
+        echo "当前可合并的单端口数量: ${#single_ports[@]}"
+        sleep 2
+        manage_port_monitoring
+        return
+    fi
+
+    echo "可合并的单端口:"
+    for i in "${!single_ports[@]}"; do
+        local port=${single_ports[$i]}
+        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+        local traffic_data=($(get_port_traffic "$port"))
+        local input_bytes=${traffic_data[0]}
+        local output_bytes=${traffic_data[1]}
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+        local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
+        local total_formatted=$(format_bytes $total_bytes)
+        
+        if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+            echo "$((i+1)). 端口 $port [$remark] - 流量: $total_formatted"
+        else
+            echo "$((i+1)). 端口 $port - 流量: $total_formatted"
+        fi
+    done
+    echo
+    
+    read -p "请选择要合并的端口（用逗号分隔，如1,2,3）: " choice_input
+
+    local valid_choices=()
+    local ports_to_merge=()
+    parse_multi_choice_input "$choice_input" "${#single_ports[@]}" valid_choices
+
+    for choice in "${valid_choices[@]}"; do
+        local port=${single_ports[$((choice-1))]}
+        ports_to_merge+=("$port")
+    done
+
+    if [ ${#ports_to_merge[@]} -lt 2 ]; then
+        echo -e "${RED}至少需要选择2个端口才能合并${NC}"
+        sleep 2
+        merge_ports_to_group
+        return
+    fi
+
+    # 生成新的端口组key
+    local group_key=$(IFS=','; echo "${ports_to_merge[*]}")
+    
+    echo
+    echo "将合并以下端口为组: $group_key"
+    
+    # 计算合并后的总流量
+    local total_input=0
+    local total_output=0
+    for port in "${ports_to_merge[@]}"; do
+        local traffic_data=($(get_port_traffic "$port"))
+        total_input=$((total_input + ${traffic_data[0]}))
+        total_output=$((total_output + ${traffic_data[1]}))
+    done
+    
+    # 获取第一个端口的配置作为模板
+    local first_port=${ports_to_merge[0]}
+    local billing_mode=$(jq -r ".ports.\"$first_port\".billing_mode // \"double\"" "$CONFIG_FILE")
+    local quota_config=$(jq -r ".ports.\"$first_port\".quota" "$CONFIG_FILE")
+    local bandwidth_config=$(jq -r ".ports.\"$first_port\".bandwidth_limit" "$CONFIG_FILE")
+    local remark=$(jq -r ".ports.\"$first_port\".remark // \"\"" "$CONFIG_FILE")
+    
+    local total_traffic=$(calculate_total_traffic "$total_input" "$total_output" "$billing_mode")
+    echo "合并后总流量: $(format_bytes $total_traffic)"
+    echo "将继承端口 $first_port 的配置（配额、带宽限制、计费模式）"
+    echo
+    
+    read -p "确认合并? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "取消合并"
+        sleep 2
+        manage_port_monitoring
+        return
+    fi
+
+    echo "正在合并端口..."
+    
+    # 1. 删除原有端口的规则
+    for port in "${ports_to_merge[@]}"; do
+        remove_nftables_rules "$port" >/dev/null 2>&1
+        remove_nftables_quota "$port" >/dev/null 2>&1
+        remove_tc_limit "$port" >/dev/null 2>&1
+        remove_port_auto_reset_cron "$port" >/dev/null 2>&1
+        update_config "del(.ports.\"$port\")"
+    done
+
+    # 2. 创建新的端口组配置
+    local port_config="{
+        \"name\": \"端口组${group_key}\",
+        \"enabled\": true,
+        \"billing_mode\": \"$billing_mode\",
+        \"bandwidth_limit\": $bandwidth_config,
+        \"quota\": $quota_config,
+        \"remark\": \"$remark\",
+        \"created_at\": \"$(get_beijing_time -Iseconds)\"
+    }"
+    
+    jq ".ports.\"$group_key\" = $port_config" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    
+    # 3. 先恢复流量计数器值（创建带初始值的计数器）
+    restore_counter_value "$group_key" "$total_input" "$total_output"
+    
+    # 4. 添加新的端口组规则（计数器已存在不会重新创建）
+    add_nftables_rules "$group_key"
+    
+    # 5. 应用配额限制
+    local monthly_limit=$(echo "$quota_config" | jq -r '.monthly_limit // "unlimited"')
+    if [ "$monthly_limit" != "unlimited" ]; then
+        apply_nftables_quota "$group_key" "$monthly_limit"
+    fi
+    
+    # 6. 应用带宽限制
+    local rate_limit=$(echo "$bandwidth_config" | jq -r '.rate // "unlimited"')
+    local limit_enabled=$(echo "$bandwidth_config" | jq -r '.enabled // false')
+    if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
+        local limit_lower=$(echo "$rate_limit" | tr '[:upper:]' '[:lower:]')
+        local tc_limit
+        if [[ "$limit_lower" =~ kbps$ ]]; then
+            tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
+        elif [[ "$limit_lower" =~ mbps$ ]]; then
+            tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
+        elif [[ "$limit_lower" =~ gbps$ ]]; then
+            tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
+        fi
+        if [ -n "$tc_limit" ]; then
+            apply_tc_limit "$group_key" "$tc_limit"
+        fi
+    fi
+    
+    # 7. 设置自动重置任务
+    setup_port_auto_reset_cron "$group_key"
+
+    echo
+    echo -e "${GREEN}端口合并成功！${NC}"
+    echo "新端口组: $group_key"
+    echo "合并流量: $(format_bytes $total_traffic)"
+    
+    sleep 3
+    manage_port_monitoring
+}
+
 add_nftables_rules() {
     local port=$1
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
-    if is_port_range "$port"; then
+    if is_port_group "$port"; then
+        # 端口组：多个端口共享同一个计数器
+        local port_safe=$(generate_port_group_safe_name "$port")
+        local mark_id=$(generate_port_group_mark "$port")
+
+        # 创建共享计数器
+        nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || \
+            nft add counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
+        nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
+            nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
+
+        # 为组内每个端口添加规则，指向同一个计数器
+        local group_ports=($(get_group_ports "$port"))
+        for single_port in "${group_ports[@]}"; do
+            # 入站规则
+            nft add rule $family $table_name input tcp dport $single_port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name input udp dport $single_port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name forward tcp dport $single_port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name forward udp dport $single_port meta mark set $mark_id counter name "port_${port_safe}_in"
+
+            # 出站规则
+            nft add rule $family $table_name output tcp sport $single_port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output udp sport $single_port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward tcp sport $single_port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward udp sport $single_port meta mark set $mark_id counter name "port_${port_safe}_out"
+        done
+
+    elif is_port_range "$port"; then
         # 端口段：使用下划线替换连字符，添加标记用于TC分类
         local port_safe=$(echo "$port" | tr '-' '_')
         local mark_id=$(generate_port_range_mark "$port")
@@ -1264,12 +1619,16 @@ remove_nftables_rules() {
 
     echo "删除端口 $port 的所有规则..."
 
-    if is_port_range "$port"; then
-        local port_safe=$(echo "$port" | tr '-' '_')
-        local search_pattern="port_${port_safe}_"
+    # 根据端口类型确定搜索模式
+    local port_safe
+    if is_port_group "$port"; then
+        port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+        port_safe=$(echo "$port" | tr '-' '_')
     else
-        local search_pattern="port_${port}_"
+        port_safe="$port"
     fi
+    local search_pattern="port_${port_safe}_"
 
     # 使用handle删除法：逐个删除匹配的规则
     local deleted_count=0
@@ -1298,20 +1657,15 @@ remove_nftables_rules() {
             echo "删除规则 handle $handle 失败，跳过"
         fi
 
-        if [ $deleted_count -ge 100 ]; then
-            echo "已删除100条规则，停止删除以防无限循环"
+        if [ $deleted_count -ge 200 ]; then
+            echo "已删除200条规则，停止删除以防无限循环"
             break
         fi
     done
 
-    if is_port_range "$port"; then
-        local port_safe=$(echo "$port" | tr '-' '_')
-        nft delete counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
-        nft delete counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
-    else
-        nft delete counter $family $table_name "port_${port}_in" 2>/dev/null || true
-        nft delete counter $family $table_name "port_${port}_out" 2>/dev/null || true
-    fi
+    # 删除计数器
+    nft delete counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
+    nft delete counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
     echo "端口 $port 的规则删除完成"
 }
@@ -1557,117 +1911,92 @@ apply_nftables_quota() {
     local current_output=${current_traffic[1]}
     local current_total=$(calculate_total_traffic "$current_input" "$current_output" "$billing_mode")
 
-    if is_port_range "$port"; then
-        local port_safe=$(echo "$port" | tr '-' '_')
-        local quota_name="port_${port_safe}_quota"
-
-        # 确保清理旧的 quota 规则和对象（防止 add 失败）
-        local delete_attempts=0
-        while [ $delete_attempts -lt 100 ]; do
-            local old_handle=$(nft -a list table $family $table_name 2>/dev/null | \
-                grep "quota name \"$quota_name\"" | head -n1 | sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
-            [ -z "$old_handle" ] && break
-            local deleted=false
-            for chain in input output forward; do
-                if nft delete rule $family $table_name $chain handle $old_handle 2>/dev/null; then
-                    deleted=true
-                    break
-                fi
-            done
-            [ "$deleted" = false ] && break
-            delete_attempts=$((delete_attempts + 1))
-        done
-        nft delete quota $family $table_name $quota_name 2>/dev/null || true
-
-        nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
-
-        if [ "$billing_mode" = "relay" ] || [ "$billing_mode" = "double" ]; then
-            # 双向统计：(In + Out) × 2
-            # drop 规则本身会累加流量，重复2次实现 ×2
-            # 入站 ×2
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 出站 ×2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-        else
-            # 单向统计：Out × 2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-        fi
+    # 根据端口类型确定配额名称
+    local port_safe
+    if is_port_group "$port"; then
+        port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+        port_safe=$(echo "$port" | tr '-' '_')
     else
-        local quota_name="port_${port}_quota"
+        port_safe="$port"
+    fi
+    local quota_name="port_${port_safe}_quota"
 
-        # 确保清理旧的 quota 规则和对象（防止 add 失败）
-        local delete_attempts=0
-        while [ $delete_attempts -lt 100 ]; do
-            local old_handle=$(nft -a list table $family $table_name 2>/dev/null | \
-                grep "quota name \"$quota_name\"" | head -n1 | sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
-            [ -z "$old_handle" ] && break
-            local deleted=false
-            for chain in input output forward; do
-                if nft delete rule $family $table_name $chain handle $old_handle 2>/dev/null; then
-                    deleted=true
-                    break
-                fi
-            done
-            [ "$deleted" = false ] && break
-            delete_attempts=$((delete_attempts + 1))
+    # 确保清理旧的 quota 规则和对象
+    local delete_attempts=0
+    while [ $delete_attempts -lt 200 ]; do
+        local old_handle=$(nft -a list table $family $table_name 2>/dev/null | \
+            grep "quota name \"$quota_name\"" | head -n1 | sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
+        [ -z "$old_handle" ] && break
+        local deleted=false
+        for chain in input output forward; do
+            if nft delete rule $family $table_name $chain handle $old_handle 2>/dev/null; then
+                deleted=true
+                break
+            fi
         done
-        nft delete quota $family $table_name $quota_name 2>/dev/null || true
+        [ "$deleted" = false ] && break
+        delete_attempts=$((delete_attempts + 1))
+    done
+    nft delete quota $family $table_name $quota_name 2>/dev/null || true
 
-        nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
+    # 创建新配额
+    nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
-        if [ "$billing_mode" = "relay" ] || [ "$billing_mode" = "double" ]; then
-            # 双向统计：(In + Out) × 2
-            # drop 规则本身会累加流量，重复2次实现 ×2
-            # 入站 ×2
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 出站 ×2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-        else
-            # 单向统计：Out × 2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-        fi
+    # 根据端口类型添加规则
+    if is_port_group "$port"; then
+        # 端口组：为每个端口添加规则，共享同一个配额
+        local group_ports=($(get_group_ports "$port"))
+        for single_port in "${group_ports[@]}"; do
+            _apply_quota_rules_for_single_port "$single_port" "$quota_name" "$billing_mode" "$family" "$table_name"
+        done
+    elif is_port_range "$port"; then
+        # 端口段：nftables原生语法支持
+        _apply_quota_rules_for_single_port "$port" "$quota_name" "$billing_mode" "$family" "$table_name"
+    else
+        # 单端口
+        _apply_quota_rules_for_single_port "$port" "$quota_name" "$billing_mode" "$family" "$table_name"
+    fi
+}
+
+# 辅助函数：为单个端口添加配额规则
+_apply_quota_rules_for_single_port() {
+    local single_port=$1
+    local quota_name=$2
+    local billing_mode=$3
+    local family=$4
+    local table_name=$5
+
+    if [ "$billing_mode" = "relay" ] || [ "$billing_mode" = "double" ]; then
+        # 双向统计：(In + Out) × 2
+        # 入站 ×2
+        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        # 出站 ×2
+        nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+    else
+        # 单向统计：Out × 2
+        nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
     fi
 }
 
@@ -1679,15 +2008,16 @@ remove_nftables_quota() {
 
     echo "删除端口 $port 的配额规则..."
 
-    # 检查是否为端口段
-    if is_port_range "$port"; then
-        # 端口段处理
-        local port_safe=$(echo "$port" | tr '-' '_')
-        local quota_name="port_${port_safe}_quota"
+    # 根据端口类型确定配额名称
+    local port_safe
+    if is_port_group "$port"; then
+        port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+        port_safe=$(echo "$port" | tr '-' '_')
     else
-        # 单个端口处理
-        local quota_name="port_${port}_quota"
+        port_safe="$port"
     fi
+    local quota_name="port_${port_safe}_quota"
 
     # 循环删除所有包含配额名称的规则 - 每次只获取一个handle
     local deleted_count=0
@@ -1747,7 +2077,12 @@ apply_tc_limit() {
 
     tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size
 
-    if is_port_range "$port"; then
+    if is_port_group "$port"; then
+        # 端口组：使用fw分类器根据共享标记分类
+        local mark_id=$(generate_port_group_mark "$port")
+        tc filter add dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
+
+    elif is_port_range "$port"; then
         # 端口段：使用fw分类器根据标记分类
         local mark_id=$(generate_port_range_mark "$port")
         tc filter add dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
@@ -1777,14 +2112,20 @@ remove_tc_limit() {
 
     local class_id=$(generate_tc_class_id "$port")
 
-    if is_port_range "$port"; then
+    if is_port_group "$port"; then
+        # 端口组：删除基于标记的过滤器
+        local mark_id=$(generate_port_group_mark "$port")
+        local mark_hex=$(printf '0x%x' "$mark_id")
+        
+        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+
+    elif is_port_range "$port"; then
         # 端口段：删除基于标记的过滤器
         local mark_id=$(generate_port_range_mark "$port")
         local mark_hex=$(printf '0x%x' "$mark_id")
         
-        # 十六进制handle删除
         tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
-        # 备选：十进制handle删除
         tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
     else
         # 单端口：删除u32精确匹配过滤器
@@ -2007,17 +2348,21 @@ reset_port_nftables_counters() {
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
-    if is_port_range "$port"; then
-        local port_safe=$(echo "$port" | tr '-' '_')
-        nft reset counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || true
-        nft reset counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || true
-        # 重置配额使用量，保持限制不变
-        nft reset quota $family $table_name "port_${port_safe}_quota" >/dev/null 2>&1 || true
+    # 根据端口类型确定名称
+    local port_safe
+    if is_port_group "$port"; then
+        port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+        port_safe=$(echo "$port" | tr '-' '_')
     else
-        nft reset counter $family $table_name "port_${port}_in" >/dev/null 2>&1 || true
-        nft reset counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || true
-        nft reset quota $family $table_name "port_${port}_quota" >/dev/null 2>&1 || true
+        port_safe="$port"
     fi
+
+    # 重置计数器
+    nft reset counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || true
+    nft reset counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || true
+    # 重置配额使用量，保持限制不变
+    nft reset quota $family $table_name "port_${port_safe}_quota" >/dev/null 2>&1 || true
 }
 
 record_reset_history() {
@@ -2755,9 +3100,17 @@ setup_port_auto_reset_cron() {
     local port="$1"
     local script_path="$SCRIPT_PATH"
     local temp_cron=$(mktemp)
+    
+    # 为端口生成唯一标识符（端口组用安全名称）
+    local port_id
+    if is_port_group "$port"; then
+        port_id=$(generate_port_group_safe_name "$port")
+    else
+        port_id="$port"
+    fi
 
     # 保留现有任务，移除该端口的旧任务
-    crontab -l 2>/dev/null | grep -v "端口流量狗自动重置端口$port" | grep -v "port-traffic-dog.*--reset-port $port" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "端口流量狗自动重置ID_$port_id" > "$temp_cron" || true
 
     local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // true" "$CONFIG_FILE")
     local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
@@ -2766,7 +3119,7 @@ setup_port_auto_reset_cron() {
     # 只有quota启用、monthly_limit不是unlimited、且reset_day存在时才添加cron任务
     if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ] && [ "$reset_day_raw" != "null" ]; then
         local reset_day="${reset_day_raw:-1}"
-        echo "5 0 $reset_day * * $script_path --reset-port $port >/dev/null 2>&1  # 端口流量狗自动重置端口$port" >> "$temp_cron"
+        echo "5 0 $reset_day * * $script_path --reset-port '$port' >/dev/null 2>&1  # 端口流量狗自动重置ID_$port_id" >> "$temp_cron"
     fi
 
     crontab "$temp_cron"
@@ -2776,8 +3129,16 @@ setup_port_auto_reset_cron() {
 remove_port_auto_reset_cron() {
     local port="$1"
     local temp_cron=$(mktemp)
+    
+    # 为端口生成唯一标识符
+    local port_id
+    if is_port_group "$port"; then
+        port_id=$(generate_port_group_safe_name "$port")
+    else
+        port_id="$port"
+    fi
 
-    crontab -l 2>/dev/null | grep -v "端口流量狗自动重置端口$port" | grep -v "port-traffic-dog.*--reset-port $port" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "端口流量狗自动重置ID_$port_id" > "$temp_cron" || true
 
     crontab "$temp_cron"
     rm -f "$temp_cron"
@@ -2902,6 +3263,20 @@ generate_port_html_card() {
     local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
     local monthly_limit=$(echo "$port_config" | jq -r '.quota.monthly_limit // "unlimited"')
     
+    # 端口显示名称处理
+    local port_display="端口 ${port}"
+    if is_port_group "$port"; then
+        local display_str="$port"
+        if [ ${#port} -gt 25 ]; then
+            local count=$(echo "$port" | tr -cd ',' | wc -c)
+            count=$((count + 1))
+            display_str="${port:0:22}...(${count}个)"
+        fi
+        port_display="端口组 [${display_str}]"
+    elif is_port_range "$port"; then
+        port_display="端口段 [${port}]"
+    fi
+    
     # 备注处理
     local remark_html=""
     if [ -n "$remark" ] && [ "$remark" != "null" ] && [ "$remark" != "" ]; then
@@ -2916,7 +3291,7 @@ generate_port_html_card() {
 
     echo "<div class=\"card\">
             <div class=\"card-header\">
-                <span class=\"port-badge\">端口 ${port}</span>
+                <span class=\"port-badge\">${port_display}</span>
                 ${remark_html}
             </div>
             <div class=\"info-row\">
