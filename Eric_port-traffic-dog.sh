@@ -2894,8 +2894,9 @@ generate_port_html_card() {
     
     local total_traffic_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
     local total_traffic_str=$(format_bytes "$total_traffic_bytes")
-    local input_str=$(format_bytes "$input_bytes")
-    local output_str=$(format_bytes "$output_bytes")
+    # 所有模式都×2显示，反映真实网卡消耗（与TG通知保持一致）
+    local input_str=$(format_bytes $((input_bytes * 2)))
+    local output_str=$(format_bytes $((output_bytes * 2)))
     
     local quota_info_html=""
     local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
