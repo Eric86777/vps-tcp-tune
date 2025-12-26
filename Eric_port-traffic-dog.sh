@@ -1,9 +1,9 @@
 #!/bin/bash
-# v1.2.9 更新: 新增端口组功能，支持多端口共享配额/带宽/重置日期；新增合并端口为组功能 (by Eric86777)
+# v1.3.0 更新: 重构邮件系统支持分端口独立通知(去中心化)；优化列表显示逻辑；自动隐藏租户邮件备注 (by Eric86777)
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.9"
+readonly SCRIPT_VERSION="1.3.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -3245,9 +3245,14 @@ email_is_enabled() {
 # 生成单个端口的 HTML 卡片
 generate_port_html_card() {
     local port=$1
+    local hide_remark=$2
     local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE" 2>/dev/null)
     
     local remark=$(echo "$port_config" | jq -r '.remark // ""')
+    # 如果要求隐藏备注，则强制清空
+    if [ "$hide_remark" = "true" ]; then
+        remark=""
+    fi
     local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "double"')
     local traffic_data=($(get_port_traffic "$port"))
     local input_bytes=${traffic_data[0]}
@@ -3404,14 +3409,24 @@ generate_html_email_body() {
 send_email_notification() {
     local title="$1"
     local html_content="$2"
+    local target_email="$3"
 
     local api_key=$(jq -r '.notifications.email.resend_api_key // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
     local email_from=$(jq -r '.notifications.email.email_from // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
     local email_from_name=$(jq -r '.notifications.email.email_from_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
-    local email_to=$(jq -r '.notifications.email.email_to // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    
+    # 如果没有指定收件人，尝试获取全局配置（兼容旧逻辑，虽然现在主要走分发）
+    local email_to="${target_email}"
+    if [ -z "$email_to" ]; then
+        email_to=$(jq -r '.notifications.email.email_to // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    fi
 
     if [ -z "$api_key" ] || [ -z "$email_from" ] || [ -z "$email_to" ]; then
-        log_notification "[邮件通知] 配置不完整，缺少必要参数"
+        if [ -z "$target_email" ]; then
+            log_notification "[邮件通知] 未指定收件人，且无全局配置"
+        else
+            log_notification "[邮件通知] 配置不完整，缺少必要参数"
+        fi
         return 1
     fi
 
@@ -3475,18 +3490,96 @@ email_send_status_notification() {
         server_name=$(hostname)
     fi
 
-    local title="端口流量狗状态通知 - ${server_name}"
+    local active_ports=($(get_active_ports))
+    local port_sent_count=0
+    local port_success_count=0
+
+    # 遍历所有端口进行分发
+    for port in "${active_ports[@]}"; do
+        local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
+        
+        # 只有配置了邮箱的端口才发送
+        if [ -n "$user_email" ] && [ "$user_email" != "null" ] && [ "$user_email" != "" ]; then
+            port_sent_count=$((port_sent_count + 1))
+            
+            # 生成标题
+            local port_display="$port"
+            if is_port_group "$port"; then
+                port_display="端口组"
+            fi
+            local title="流量使用报告 - ${port_display} - ${server_name}"
+            
+            # 生成专属HTML
+            local html_content=$(generate_single_port_email_body "$title" "$server_name" "$port")
+            
+            # 发送邮件 (传递专属收件人)
+            if send_email_notification "$title" "$html_content" "$user_email"; then
+                port_success_count=$((port_success_count + 1))
+                log_notification "[邮件通知] 端口 $port (${user_email}) 发送成功"
+            else
+                log_notification "[邮件通知] 端口 $port (${user_email}) 发送失败"
+            fi
+        fi
+    done
     
-    # 获取精美的HTML内容
-    local html_content=$(generate_html_email_body "$title" "$server_name")
-    
-    if send_email_notification "$title" "$html_content"; then
-        log_notification "[邮件通知] 状态通知发送成功"
+    if [ $port_sent_count -eq 0 ]; then
+        log_notification "[邮件通知] 未配置任何端口接收人，跳过发送"
+        # 返回成功以免被上层判为失败(其实是正常的)
         return 0
     else
-        log_notification "[邮件通知] 状态通知发送失败"
-        return 1
+        echo "已向 ${port_success_count}/${port_sent_count} 个端口接收人发送邮件"
+        if [ $port_success_count -gt 0 ]; then
+            return 0
+        else
+            return 1
+        fi
     fi
+}
+
+# 生成单端口专属 HTML 邮件内容
+generate_single_port_email_body() {
+    local title="$1"
+    local server_name="$2"
+    local port="$3"
+    local send_time=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
+    
+    # CSS 样式 (复用)
+    local css_styles="
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; color: #1f2937; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .header { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); padding: 24px; color: white; text-align: center; }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+        .content { padding: 20px; }
+        .card { background-color: white; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 16px; padding: 16px; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb; }
+        .port-badge { background-color: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; }
+        .traffic-highlight { color: #059669; font-weight: 600; font-size: 15px; }
+        .info-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; color: #4b5563; }
+        .remark-badge { background-color: #f3f4f6; color: #4b5563; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+        .progress-container { height: 8px; background-color: #e5e7eb; border-radius: 4px; margin-top: 8px; overflow: hidden; }
+        .progress-bar { height: 100%; background-color: #3b82f6; border-radius: 4px; }
+        .footer { background-color: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; }
+    "
+
+    echo "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+    <title>${title}</title>
+    <style>${css_styles}</style></head><body>
+    <div class=\"container\">
+        <div class=\"header\">
+            <h1>📊 您的流量使用报告</h1>
+        </div>
+        <div class=\"content\">"
+    
+    # 仅生成该端口的卡片
+    generate_port_html_card "$port" "true"
+
+    echo "</div>
+        <div class=\"footer\">
+            <p>🔗 服务器: ${server_name}</p>
+            <p>发送时间: ${send_time}</p>
+        </div>
+    </div></body></html>"
 }
 
 # 测试邮件发送
@@ -3500,13 +3593,36 @@ email_test() {
         return 1
     fi
 
-    local email_to=$(jq -r '.notifications.email.email_to // ""' "$CONFIG_FILE")
-    echo "正在发送测试邮件到: $email_to"
+    echo "1. 发送测试邮件到指定邮箱 (验证API连通性)"
+    echo "2. 立即触发全员状态通知分发 (测试已配置的端口收件人)"
+    echo "0. 返回"
+    echo
+    read -p "请选择测试类型 [0-2]: " test_choice
 
-    if email_send_status_notification; then
-        echo -e "${GREEN}✅ 邮件发送成功！${NC}"
+    if [ "$test_choice" = "1" ]; then
+        local email_to
+        read -p "请输入接收测试邮件的邮箱: " email_to
+        
+        if [ -z "$email_to" ]; then
+            echo -e "${RED}邮箱不能为空${NC}"
+            return 1
+        fi
+        
+        echo "正在发送测试邮件到: $email_to"
+        
+        local title="端口流量狗 - 邮件测试"
+        local html_content="<h1>✅ 邮件通知配置成功</h1><p>这是一封测试邮件，证明您的 Resend API 配置正确。</p>"
+
+        if send_email_notification "$title" "$html_content" "$email_to"; then
+            echo -e "${GREEN}✅ 邮件发送成功！${NC}"
+        else
+            echo -e "${RED}❌ 邮件发送失败${NC}"
+        fi
+    elif [ "$test_choice" = "2" ]; then
+        echo "正在执行状态通知分发..."
+        email_send_status_notification
     else
-        echo -e "${RED}❌ 邮件发送失败${NC}"
+        return 0
     fi
 
     sleep 3
@@ -3539,19 +3655,21 @@ email_configure() {
         fi
         echo -e "当前状态: ${enable_status} | ${config_status} | 状态通知: ${interval_display}"
         echo
-        echo "1. 配置邮件信息 (API Key + 发件人 + 收件人)"
-        echo "2. 通知设置管理"
-        echo "3. 发送测试邮件"
-        echo "4. 查看通知日志"
+        echo "1. 配置基础信息 (API Key + 发件人)"
+        echo "2. 配置端口收件人 (分端口独立发送)"
+        echo "3. 通知设置管理"
+        echo "4. 发送测试邮件"
+        echo "5. 查看通知日志"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-4]: " choice
+        read -p "请选择操作 [0-5]: " choice
 
         case $choice in
             1) email_configure_info ;;
-            2) email_manage_settings ;;
-            3) email_test ;;
-            4) email_view_logs ;;
+            2) email_configure_port_recipients ;;
+            3) email_manage_settings ;;
+            4) email_test ;;
+            5) email_view_logs ;;
             0) return 0 ;;
             *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
         esac
@@ -3571,8 +3689,8 @@ email_configure_info() {
     local current_api_key=$(jq -r '.notifications.email.resend_api_key' "$CONFIG_FILE")
     local current_email_from=$(jq -r '.notifications.email.email_from' "$CONFIG_FILE")
     local current_email_from_name=$(jq -r '.notifications.email.email_from_name' "$CONFIG_FILE")
-    local current_email_to=$(jq -r '.notifications.email.email_to' "$CONFIG_FILE")
-
+    local current_email_from_name=$(jq -r '.notifications.email.email_from_name' "$CONFIG_FILE")
+    
     # 显示当前配置
     if [ "$current_api_key" != "" ] && [ "$current_api_key" != "null" ]; then
         local masked_key="${current_api_key:0:10}...${current_api_key: -5}"
@@ -3583,9 +3701,6 @@ email_configure_info() {
     fi
     if [ "$current_email_from_name" != "" ] && [ "$current_email_from_name" != "null" ]; then
         echo -e "${GREEN}当前发件人名称: $current_email_from_name${NC}"
-    fi
-    if [ "$current_email_to" != "" ] && [ "$current_email_to" != "null" ]; then
-        echo -e "${GREEN}当前收件人邮箱: $current_email_to${NC}"
     fi
     echo
 
@@ -3626,58 +3741,111 @@ email_configure_info() {
         email_from_name="$default_name"
     fi
 
-    # 输入收件人邮箱
-    read -p "请输入收件人邮箱: " email_to
-    if [ -z "$email_to" ]; then
-        echo -e "${RED}收件人邮箱不能为空${NC}"
-        sleep 2
-        return
-    fi
-
-    if ! [[ "$email_to" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-        echo -e "${RED}邮箱格式错误${NC}"
-        sleep 2
-        return
-    fi
-
     # 输入服务器名称
     read -p "请输入服务器名称 (回车默认: ${default_name}): " server_name
     if [ -z "$server_name" ]; then
         server_name="$default_name"
     fi
 
-    # 保存配置
-    update_config ".notifications.email.resend_api_key = \"$api_key\" |
+    # 保存配置 (移除 email_to)
+    update_config "del(.notifications.email.email_to) | 
+        .notifications.email.resend_api_key = \"$api_key\" |
         .notifications.email.email_from = \"$email_from\" |
         .notifications.email.email_from_name = \"$email_from_name\" |
-        .notifications.email.email_to = \"$email_to\" |
         .notifications.email.server_name = \"$server_name\" |
         .notifications.email.enabled = true |
         .notifications.email.status_notifications.enabled = true"
 
-    echo -e "${GREEN}✅ 配置保存成功！${NC}"
+    echo -e "${GREEN}✅ 基础配置保存成功！请继续配置端口收件人。${NC}"
     echo
+    sleep 2
+}
 
-    # 设置通知间隔
-    echo -e "${BLUE}=== 状态通知间隔设置 ===${NC}"
-    local interval=$(select_notification_interval)
+# 配置端口独立收件人
+email_configure_port_recipients() {
+    while true; do
+        clear
+        echo -e "${BLUE}=== 配置端口独立收件人 ===${NC}"
+        echo
+        
+        local active_ports=($(get_active_ports))
+        if [ ${#active_ports[@]} -eq 0 ]; then
+             echo "暂无监控端口"
+             sleep 2
+             return
+        fi
 
-    update_config ".notifications.email.status_notifications.interval = \"$interval\""
-    echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
+        echo "端口列表:"
+        for i in "${!active_ports[@]}"; do
+            local port=${active_ports[$i]}
+            local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+            local email=$(jq -r ".ports.\"$port\".email // \"未设置\"" "$CONFIG_FILE")
+            
+            # 显示名称处理
+            # 显示名称处理
+            local display_name=""
+            if is_port_group "$port"; then
+                local display_str="$port"
+                if [ ${#port} -gt 20 ]; then
+                    local count=$(echo "$port" | tr -cd ',' | wc -c)
+                    count=$((count + 1))
+                    display_str="${port:0:17}...(${count}个)"
+                fi
+                display_name="端口组[${display_str}]"
+            elif is_port_range "$port"; then
+                display_name="端口段[$port]"
+            else
+                display_name="端口 $port"
+            fi
+            
+            if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+                display_name+=" [$remark]"
+            fi
+            
+            local email_display="${RED}未设置${NC}"
+            if [ "$email" != "未设置" ] && [ "$email" != "null" ] && [ "$email" != "" ]; then
+                email_display="${GREEN}$email${NC}"
+            fi
+            
+            echo -e "$((i+1)). $display_name -> $email_display"
+        done
+        echo
+        echo "0. 返回上级菜单"
+        echo
+        
+        read -p "请选择要配置的端口 [1-${#active_ports[@]}, 0返回]: " choice
+        
+        if [ "$choice" = "0" ]; then
+            return
+        fi
 
-    # 设置定时任务
-    setup_email_notification_cron
-
-    echo
-    echo "正在发送测试邮件..."
-
-    if email_send_status_notification; then
-        echo -e "${GREEN}✅ 邮件发送成功！${NC}"
-    else
-        echo -e "${RED}❌ 邮件发送失败，请检查配置${NC}"
-    fi
-
-    sleep 3
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#active_ports[@]} ]; then
+            local port=${active_ports[$((choice-1))]}
+            
+            echo
+            local current_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
+            if [ "$current_email" = "null" ]; then current_email=""; fi
+            
+            echo "正在配置端口: $port"
+            echo "当前邮箱: ${current_email:-未设置}"
+            echo "输入 'd' 或 'delete' 可删除邮箱配置"
+            read -p "请输入接收邮箱: " new_email
+            
+            if [ "$new_email" = "d" ] || [ "$new_email" = "delete" ]; then
+                update_config "del(.ports.\"$port\".email)"
+                echo -e "${YELLOW}已删除端口 $port 的邮箱配置${NC}"
+            elif [[ "$new_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+                update_config ".ports.\"$port\".email = \"$new_email\""
+                echo -e "${GREEN}端口 $port 邮箱已设置为: $new_email${NC}"
+            else
+                echo -e "${RED}邮箱格式错误，未保存${NC}"
+            fi
+            sleep 1
+        else
+            echo -e "${RED}无效选择${NC}"
+            sleep 1
+        fi
+    done
 }
 
 # 邮件通知设置管理
