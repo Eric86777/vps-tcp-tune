@@ -14,6 +14,9 @@ readonly CONFIG_DIR="/etc/port-traffic-dog"
 readonly CONFIG_FILE="$CONFIG_DIR/config.json"
 readonly LOG_FILE="$CONFIG_DIR/logs/traffic.log"
 readonly TRAFFIC_DATA_FILE="$CONFIG_DIR/traffic_data.json"
+readonly BACKUP_DIR="$CONFIG_DIR/backups"
+readonly BACKUP_CONFIG_FILE="$CONFIG_DIR/backup_config.json"
+readonly MAX_BACKUPS=7  # 保留最近7个备份
 
 readonly RED='\033[0;31m'
 readonly YELLOW='\033[0;33m'
@@ -990,10 +993,10 @@ show_main_menu() {
 
         echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
         echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
-        echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 卸载脚本"
-        echo -e "${BLUE}0.${NC} 退出"
+        echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 流量备份管理"
+        echo -e "${BLUE}7.${NC} 卸载脚本              ${BLUE}0.${NC} 退出"
         echo
-        read -p "请选择操作 [0-6]: " choice
+        read -p "请选择操作 [0-7]: " choice
 
         case $choice in
             1) manage_port_monitoring ;;
@@ -1001,9 +1004,10 @@ show_main_menu() {
             3) manage_traffic_reset ;;
             4) manage_configuration ;;
             5) manage_notifications ;;
-            6) uninstall_script ;;
+            6) manage_backup ;;
+            7) uninstall_script ;;
             0) exit 0 ;;
-            *) echo -e "${RED}无效选择，请输入0-6${NC}"; sleep 1 ;;
+            *) echo -e "${RED}无效选择，请输入0-7${NC}"; sleep 1 ;;
         esac
     done
 }
@@ -4401,6 +4405,418 @@ send_status_notification() {
     fi
 }
 
+# ============================================================================
+# 流量备份管理模块
+# ============================================================================
+
+# 初始化备份配置
+init_backup_config() {
+    mkdir -p "$BACKUP_DIR"
+    
+    if [ ! -f "$BACKUP_CONFIG_FILE" ]; then
+        cat > "$BACKUP_CONFIG_FILE" << 'EOF'
+{
+  "auto_backup_enabled": false,
+  "backup_time": "03:00",
+  "last_backup_time": ""
+}
+EOF
+    fi
+}
+
+# 执行流量备份
+perform_backup() {
+    local backup_time=$(get_beijing_time -Iseconds)
+    local backup_date=$(get_beijing_time +%Y%m%d_%H%M%S)
+    local backup_file="$BACKUP_DIR/traffic_backup_${backup_date}.json"
+    
+    echo -e "${BLUE}正在备份流量数据...${NC}"
+    
+    local active_ports=($(get_active_ports))
+    if [ ${#active_ports[@]} -eq 0 ]; then
+        echo -e "${YELLOW}暂无监控端口，无需备份${NC}"
+        return 1
+    fi
+    
+    # 创建备份JSON
+    local backup_data="{"
+    backup_data+="\"backup_time\":\"$backup_time\","
+    backup_data+="\"ports\":{"
+    
+    local first=true
+    for port in "${active_ports[@]}"; do
+        local traffic_data=($(get_nftables_counter_data "$port"))
+        local input_bytes=${traffic_data[0]}
+        local output_bytes=${traffic_data[1]}
+        
+        if [ "$first" = true ]; then
+            first=false
+        else
+            backup_data+=","
+        fi
+        
+        backup_data+="\"$port\":{"
+        backup_data+="\"input\":$input_bytes,"
+        backup_data+="\"output\":$output_bytes"
+        backup_data+="}"
+    done
+    
+    backup_data+="}}"
+    
+    # 保存备份文件
+    echo "$backup_data" | jq '.' > "$backup_file"
+    
+    # 更新最后备份时间
+    jq ".last_backup_time = \"$backup_time\"" "$BACKUP_CONFIG_FILE" > "${BACKUP_CONFIG_FILE}.tmp" && \
+        mv "${BACKUP_CONFIG_FILE}.tmp" "$BACKUP_CONFIG_FILE"
+    
+    # 清理旧备份，只保留最新的MAX_BACKUPS个
+    cleanup_old_backups
+    
+    local file_size=$(du -h "$backup_file" | awk '{print $1}')
+    echo -e "${GREEN}✓ 备份成功！${NC}"
+    echo "  备份文件: $backup_file"
+    echo "  文件大小: $file_size"
+    echo "  备份时间: $backup_time"
+    
+    return 0
+}
+
+# 清理旧备份
+cleanup_old_backups() {
+    local backup_files=($(ls -t "$BACKUP_DIR"/traffic_backup_*.json 2>/dev/null))
+    local count=${#backup_files[@]}
+    
+    if [ $count -gt $MAX_BACKUPS ]; then
+        echo -e "${YELLOW}清理旧备份...${NC}"
+        for ((i=$MAX_BACKUPS; i<$count; i++)); do
+            rm -f "${backup_files[$i]}"
+            echo "  已删除: $(basename "${backup_files[$i]}")"
+        done
+    fi
+}
+
+# 查看最新备份
+view_latest_backup() {
+    local latest_backup=$(ls -t "$BACKUP_DIR"/traffic_backup_*.json 2>/dev/null | head -n1)
+    
+    if [ -z "$latest_backup" ]; then
+        echo -e "${YELLOW}暂无备份记录${NC}"
+        return 1
+    fi
+    
+    echo -e "${BLUE}=== 最新备份详情 ===${NC}"
+    echo
+    
+    local backup_time=$(jq -r '.backup_time' "$latest_backup")
+    echo -e "${GREEN}备份时间:${NC} $backup_time"
+    echo -e "${GREEN}备份文件:${NC} $(basename "$latest_backup")"
+    echo
+    echo "────────────────────────────────────────────────────────"
+    
+    # 读取备份的端口数据
+    local ports=($(jq -r '.ports | keys[]' "$latest_backup"))
+    
+    for port in "${ports[@]}"; do
+        local backup_input=$(jq -r ".ports.\"$port\".input" "$latest_backup")
+        local backup_output=$(jq -r ".ports.\"$port\".output" "$latest_backup")
+        
+        # 获取当前值
+        local current_data=($(get_nftables_counter_data "$port" 2>/dev/null || echo "0 0"))
+        local current_input=${current_data[0]}
+        local current_output=${current_data[1]}
+        
+        # 计算当前总流量和备份总流量
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+        local backup_total=$(calculate_total_traffic "$backup_input" "$backup_output" "$billing_mode")
+        local current_total=$(calculate_total_traffic "$current_input" "$current_output" "$billing_mode")
+        local diff=$((current_total - backup_total))
+        
+        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+        local display_name="端口 $port"
+        if [ -n "$remark" ]; then
+            display_name+=" [$remark]"
+        fi
+        
+        echo -e "${BLUE}$display_name${NC}"
+        echo "  备份总流量: $(format_bytes $backup_total)"
+        echo "  当前总流量: $(format_bytes $current_total)"
+        if [ $diff -gt 0 ]; then
+            echo -e "  新增流量: ${GREEN}+$(format_bytes $diff)${NC}"
+        else
+            echo "  新增流量: 0B"
+        fi
+        echo
+    done
+    
+    echo "────────────────────────────────────────────────────────"
+}
+
+# 查看所有备份历史
+view_backup_history() {
+    local backup_files=($(ls -t "$BACKUP_DIR"/traffic_backup_*.json 2>/dev/null))
+    
+    if [ ${#backup_files[@]} -eq 0 ]; then
+        echo -e "${YELLOW}暂无备份记录${NC}"
+        return 1
+    fi
+    
+    echo -e "${BLUE}=== 备份历史记录 (共${#backup_files[@]}个) ===${NC}"
+    echo
+    echo "────────────────────────────────────────────────────────"
+    
+    for i in "${!backup_files[@]}"; do
+        local file="${backup_files[$i]}"
+        local backup_time=$(jq -r '.backup_time' "$file")
+        local file_size=$(du -h "$file" | awk '{print $1}')
+        local filename=$(basename "$file")
+        
+        # 计算备份中的总流量
+        local total_bytes=0
+        local ports=($(jq -r '.ports | keys[]' "$file"))
+        for port in "${ports[@]}"; do
+            local input=$(jq -r ".ports.\"$port\".input" "$file")
+            local output=$(jq -r ".ports.\"$port\".output" "$file")
+            local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+            local port_total=$(calculate_total_traffic "$input" "$output" "$billing_mode")
+            total_bytes=$((total_bytes + port_total))
+        done
+        
+        echo -e "${GREEN}$((i+1)). $filename${NC}"
+        echo "   时间: $backup_time"
+        echo "   大小: $file_size"
+        echo "   端口总流量: $(format_bytes $total_bytes)"
+        echo
+    done
+    
+    echo "────────────────────────────────────────────────────────"
+}
+
+# 从备份恢复流量数据
+restore_from_backup() {
+    local backup_files=($(ls -t "$BACKUP_DIR"/traffic_backup_*.json 2>/dev/null))
+    
+    if [ ${#backup_files[@]} -eq 0 ]; then
+        echo -e "${YELLOW}暂无可用备份${NC}"
+        return 1
+    fi
+    
+    echo -e "${RED}警告: 此操作将覆盖当前所有流量数据！${NC}"
+    echo
+    echo "可用备份列表:"
+    echo
+    
+    for i in "${!backup_files[@]}"; do
+        local file="${backup_files[$i]}"
+        local backup_time=$(jq -r '.backup_time' "$file")
+        local filename=$(basename "$file")
+        echo "$((i+1)). $filename ($backup_time)"
+    done
+    echo
+    echo "0. 取消"
+    echo
+    
+    read -p "请选择要恢复的备份 [0-${#backup_files[@]}]: " choice
+    
+    if [ "$choice" = "0" ]; then
+        echo "已取消"
+        return 0
+    fi
+    
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#backup_files[@]} ]; then
+        echo -e "${RED}无效选择${NC}"
+        return 1
+    fi
+    
+    local selected_backup="${backup_files[$((choice-1))]}"
+    local backup_time=$(jq -r '.backup_time' "$selected_backup")
+    
+    echo
+    echo -e "${YELLOW}将从以下备份恢复:${NC}"
+    echo "  文件: $(basename "$selected_backup")"
+    echo "  时间: $backup_time"
+    echo
+    read -p "确认恢复? [y/N]: " confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        return 0
+    fi
+    
+    echo
+    echo -e "${BLUE}开始恢复流量数据...${NC}"
+    
+    local ports=($(jq -r '.ports | keys[]' "$selected_backup"))
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    
+    for port in "${ports[@]}"; do
+        local backup_input=$(jq -r ".ports.\"$port\".input" "$selected_backup")
+        local backup_output=$(jq -r ".ports.\"$port\".output" "$selected_backup")
+        
+        echo "恢复端口 $port..."
+        
+        # 确定端口安全名称
+        local port_safe
+        if is_port_group "$port"; then
+            port_safe=$(generate_port_group_safe_name "$port")
+        elif is_port_range "$port"; then
+            port_safe=$(echo "$port" | tr '-' '_')
+        else
+            port_safe="$port"
+        fi
+        
+        # 删除所有规则
+        while true; do
+            handle=$(nft -a list table $family $table_name 2>/dev/null | \
+                grep -E "(tcp|udp).*(dport|sport).*port_${port_safe}_" | \
+                head -n1 | sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
+            [ -z "$handle" ] && break
+            for chain in input output forward prerouting; do
+                nft delete rule $family $table_name $chain handle $handle 2>/dev/null && break
+            done
+        done
+        
+        # 删除并重建计数器
+        nft delete counter $family $table_name "port_${port_safe}_in" 2>/dev/null
+        nft delete counter $family $table_name "port_${port_safe}_out" 2>/dev/null
+        nft add counter $family $table_name "port_${port_safe}_in" { packets 0 bytes $backup_input }
+        nft add counter $family $table_name "port_${port_safe}_out" { packets 0 bytes $backup_output }
+        
+        # 重新添加规则
+        add_nftables_rules "$port"
+        
+        echo "  ✓ 已恢复"
+    done
+    
+    echo
+    echo -e "${GREEN}✓ 所有流量数据已从备份恢复！${NC}"
+    sleep 2
+}
+
+# 设置自动备份
+toggle_auto_backup() {
+    local enabled=$(jq -r '.auto_backup_enabled' "$BACKUP_CONFIG_FILE")
+    local backup_time=$(jq -r '.backup_time' "$BACKUP_CONFIG_FILE")
+    
+    echo -e "${BLUE}=== 自动备份设置 ===${NC}"
+    echo
+    
+    if [ "$enabled" = "true" ]; then
+        echo -e "当前状态: ${GREEN}已开启${NC}"
+        echo "备份时间: 每天 $backup_time"
+        echo
+        read -p "是否关闭自动备份? [y/N]: " confirm
+        
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            jq '.auto_backup_enabled = false' "$BACKUP_CONFIG_FILE" > "${BACKUP_CONFIG_FILE}.tmp" && \
+                mv "${BACKUP_CONFIG_FILE}.tmp" "$BACKUP_CONFIG_FILE"
+            remove_backup_cron
+            echo -e "${GREEN}✓ 已关闭自动备份${NC}"
+        fi
+    else
+        echo -e "当前状态: ${YELLOW}已关闭${NC}"
+        echo
+        read -p "是否开启自动备份? [y/N]: " confirm
+        
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            echo
+            read -p "请设置每天备份时间 (格式: HH:MM, 默认03:00): " time_input
+            
+            if [ -z "$time_input" ]; then
+                time_input="03:00"
+            fi
+            
+            # 验证时间格式
+            if ! [[ "$time_input" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+                echo -e "${RED}时间格式错误，请使用 HH:MM 格式${NC}"
+                return 1
+            fi
+            
+            jq ".auto_backup_enabled = true | .backup_time = \"$time_input\"" "$BACKUP_CONFIG_FILE" > "${BACKUP_CONFIG_FILE}.tmp" && \
+                mv "${BACKUP_CONFIG_FILE}.tmp" "$BACKUP_CONFIG_FILE"
+            setup_backup_cron "$time_input"
+            echo -e "${GREEN}✓ 已开启自动备份，每天 $time_input 执行${NC}"
+        fi
+    fi
+    
+    sleep 2
+}
+
+# 设置备份定时任务
+setup_backup_cron() {
+    local time=$1
+    local hour=$(echo "$time" | cut -d':' -f1)
+    local minute=$(echo "$time" | cut -d':' -f2)
+    
+    # 删除旧的定时任务
+    remove_backup_cron
+    
+    # 添加新的定时任务
+    (crontab -l 2>/dev/null | grep -v "port-traffic-dog.*backup"; \
+     echo "$minute $hour * * * $0 --auto-backup >> $LOG_FILE 2>&1") | crontab -
+}
+
+# 删除备份定时任务
+remove_backup_cron() {
+    crontab -l 2>/dev/null | grep -v "port-traffic-dog.*backup" | crontab - 2>/dev/null || true
+}
+
+# 备份管理主菜单
+manage_backup() {
+    init_backup_config
+    
+    while true; do
+        clear
+        echo -e "${BLUE}=== 流量数据备份管理 ===${NC}"
+        echo
+        
+        local enabled=$(jq -r '.auto_backup_enabled' "$BACKUP_CONFIG_FILE")
+        local backup_time=$(jq -r '.backup_time' "$BACKUP_CONFIG_FILE")
+        local last_backup=$(jq -r '.last_backup_time' "$BACKUP_CONFIG_FILE")
+        
+        if [ "$enabled" = "true" ]; then
+            echo -e "自动备份状态: ${GREEN}已开启${NC} (每天 $backup_time)"
+        else
+            echo -e "自动备份状态: ${YELLOW}已关闭${NC}"
+        fi
+        
+        if [ -n "$last_backup" ] && [ "$last_backup" != "null" ] && [ "$last_backup" != "" ]; then
+            echo -e "最后备份时间: ${GREEN}$last_backup${NC}"
+        else
+            echo "最后备份时间: 从未备份"
+        fi
+        
+        local backup_count=$(ls "$BACKUP_DIR"/traffic_backup_*.json 2>/dev/null | wc -l)
+        echo -e "备份数量: ${BLUE}$backup_count/$MAX_BACKUPS${NC}"
+        
+        echo
+        echo "────────────────────────────────────────────────────────"
+        echo -e "${BLUE}1.${NC} 开启/关闭自动备份"
+        echo -e "${BLUE}2.${NC} 立即执行备份"
+        echo -e "${BLUE}3.${NC} 查看最新备份详情"
+        echo -e "${BLUE}4.${NC} 查看所有备份历史"
+        echo -e "${BLUE}5.${NC} 从备份恢复流量数据"
+        echo -e "${BLUE}0.${NC} 返回主菜单"
+        echo
+        read -p "请选择操作 [0-5]: " choice
+        
+        case $choice in
+            1) toggle_auto_backup ;;
+            2) perform_backup; sleep 3 ;;
+            3) view_latest_backup; read -p "按回车继续..." ;;
+            4) view_backup_history; read -p "按回车继续..." ;;
+            5) restore_from_backup ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# ============================================================================
+# 主函数
+# ============================================================================
+
 main() {
     check_root
     check_dependencies
@@ -4426,6 +4842,11 @@ main() {
                 ;;
             --uninstall)
                 uninstall_script
+                exit 0
+                ;;
+            --auto-backup)
+                init_backup_config
+                perform_backup
                 exit 0
                 ;;
             --send-status)
