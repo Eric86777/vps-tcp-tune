@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.5.1 更新: 修复Cron时区问题(所有定时任务强制使用北京时间)；修复租期管理带宽恢复格式转换缺失；调整备份时间避免冲突 (by Eric86777)
 # v1.5.0 更新: 新增流量数据备份管理系统(自动备份、手动备份、历史查看、一键恢复) (by Eric86777)
 # v1.4.3 更新: 修复租期管理导致流量数据清零的严重Bug (by Eric86777)
 # v1.4.2 更新: 修复已过期端口续费Bug，确保续费后至少获得完整计费周期 (by Eric86777)
@@ -9,7 +10,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.0"
+readonly SCRIPT_VERSION="1.5.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -165,15 +166,32 @@ setup_script_permissions() {
 }
 
 setup_cron_environment() {
-    # cron环境PATH不完整，需要设置完整路径
+    # cron环境配置：设置PATH和时区，确保所有任务按北京时间执行
     local current_cron=$(crontab -l 2>/dev/null || true)
-    if ! echo "$current_cron" | grep -q "^PATH=.*sbin"; then
-        local temp_cron=$(mktemp)
-        echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > "$temp_cron"
-        echo "$current_cron" | grep -v "^PATH=" >> "$temp_cron" || true
-        crontab "$temp_cron" 2>/dev/null || true
-        rm -f "$temp_cron"
+    local needs_update=false
+    local temp_cron=$(mktemp)
+    
+    # 设置时区为北京时间（不影响系统时区，仅影响cron任务）
+    echo "TZ=Asia/Shanghai" > "$temp_cron"
+    if ! echo "$current_cron" | grep -q "^TZ="; then
+        needs_update=true
     fi
+    
+    # 设置完整PATH
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "$temp_cron"
+    if ! echo "$current_cron" | grep -q "^PATH=.*sbin"; then
+        needs_update=true
+    fi
+    
+    # 保留现有任务（排除旧的TZ和PATH设置）
+    echo "$current_cron" | grep -v "^TZ=" | grep -v "^PATH=" >> "$temp_cron" || true
+    
+    # 只有在需要更新时才应用
+    if [ "$needs_update" = true ] || ! echo "$current_cron" | grep -q "^TZ="; then
+        crontab "$temp_cron" 2>/dev/null || true
+    fi
+    
+    rm -f "$temp_cron"
 }
 
 check_root() {
@@ -2101,7 +2119,19 @@ set_port_update_expiration() {
                 if [ "$bw_enabled" = "true" ]; then
                     local bw_rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate" "$CONFIG_FILE")
                     if [ -n "$bw_rate" ] && [ "$bw_rate" != "null" ] && [ "$bw_rate" != "unlimited" ]; then
-                         apply_tc_limit "$port" "$bw_rate"
+                        # 转换为TC格式
+                        local limit_lower=$(echo "$bw_rate" | tr '[:upper:]' '[:lower:]')
+                        local tc_limit=""
+                        if [[ "$limit_lower" =~ kbps$ ]]; then
+                            tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
+                        elif [[ "$limit_lower" =~ mbps$ ]]; then
+                            tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
+                        elif [[ "$limit_lower" =~ gbps$ ]]; then
+                            tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
+                        fi
+                        if [ -n "$tc_limit" ]; then
+                            apply_tc_limit "$port" "$tc_limit"
+                        fi
                     fi
                 fi
 
@@ -2154,7 +2184,19 @@ set_port_update_expiration() {
             if [ "$bw_enabled" = "true" ]; then
                 local bw_rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate" "$CONFIG_FILE")
                 if [ -n "$bw_rate" ] && [ "$bw_rate" != "null" ] && [ "$bw_rate" != "unlimited" ]; then
-                     apply_tc_limit "$port" "$bw_rate"
+                    # 转换为TC格式
+                    local limit_lower=$(echo "$bw_rate" | tr '[:upper:]' '[:lower:]')
+                    local tc_limit=""
+                    if [[ "$limit_lower" =~ kbps$ ]]; then
+                        tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
+                    elif [[ "$limit_lower" =~ mbps$ ]]; then
+                        tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
+                    elif [[ "$limit_lower" =~ gbps$ ]]; then
+                        tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
+                    fi
+                    if [ -n "$tc_limit" ]; then
+                        apply_tc_limit "$port" "$tc_limit"
+                    fi
                 fi
             fi
             
@@ -4419,7 +4461,7 @@ init_backup_config() {
         cat > "$BACKUP_CONFIG_FILE" << 'EOF'
 {
   "auto_backup_enabled": false,
-  "backup_time": "00:05",
+  "backup_time": "00:10",
   "last_backup_time": ""
 }
 EOF
@@ -4699,7 +4741,7 @@ restore_from_backup() {
 # 设置自动备份
 toggle_auto_backup() {
     local enabled=$(jq -r '.auto_backup_enabled' "$BACKUP_CONFIG_FILE")
-    local backup_time="00:05"  # 固定为北京时间凌晨00:05
+    local backup_time="00:10"  # 固定为北京时间凌晨00:10（与流量重置00:05错开）
     
     echo -e "${BLUE}=== 自动备份设置 ===${NC}"
     echo
