@@ -7,7 +7,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.4.2"
+readonly SCRIPT_VERSION="1.5.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -4417,7 +4417,7 @@ init_backup_config() {
         cat > "$BACKUP_CONFIG_FILE" << 'EOF'
 {
   "auto_backup_enabled": false,
-  "backup_time": "03:00",
+  "backup_time": "00:05",
   "last_backup_time": ""
 }
 EOF
@@ -4697,14 +4697,14 @@ restore_from_backup() {
 # 设置自动备份
 toggle_auto_backup() {
     local enabled=$(jq -r '.auto_backup_enabled' "$BACKUP_CONFIG_FILE")
-    local backup_time=$(jq -r '.backup_time' "$BACKUP_CONFIG_FILE")
+    local backup_time="00:05"  # 固定为北京时间凌晨00:05
     
     echo -e "${BLUE}=== 自动备份设置 ===${NC}"
     echo
     
     if [ "$enabled" = "true" ]; then
         echo -e "当前状态: ${GREEN}已开启${NC}"
-        echo "备份时间: 每天 $backup_time"
+        echo "备份时间: 每天北京时间 $backup_time"
         echo
         read -p "是否关闭自动备份? [y/N]: " confirm
         
@@ -4717,26 +4717,16 @@ toggle_auto_backup() {
     else
         echo -e "当前状态: ${YELLOW}已关闭${NC}"
         echo
+        echo "开启后将在每天北京时间 ${GREEN}$backup_time${NC} 自动备份流量数据"
+        echo "自动保留最近7天的备份（循环覆盖）"
+        echo
         read -p "是否开启自动备份? [y/N]: " confirm
         
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            echo
-            read -p "请设置每天备份时间 (格式: HH:MM, 默认03:00): " time_input
-            
-            if [ -z "$time_input" ]; then
-                time_input="03:00"
-            fi
-            
-            # 验证时间格式
-            if ! [[ "$time_input" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
-                echo -e "${RED}时间格式错误，请使用 HH:MM 格式${NC}"
-                return 1
-            fi
-            
-            jq ".auto_backup_enabled = true | .backup_time = \"$time_input\"" "$BACKUP_CONFIG_FILE" > "${BACKUP_CONFIG_FILE}.tmp" && \
+            jq ".auto_backup_enabled = true | .backup_time = \"$backup_time\"" "$BACKUP_CONFIG_FILE" > "${BACKUP_CONFIG_FILE}.tmp" && \
                 mv "${BACKUP_CONFIG_FILE}.tmp" "$BACKUP_CONFIG_FILE"
-            setup_backup_cron "$time_input"
-            echo -e "${GREEN}✓ 已开启自动备份，每天 $time_input 执行${NC}"
+            setup_backup_cron "$backup_time"
+            echo -e "${GREEN}✓ 已开启自动备份，每天 $backup_time 执行${NC}"
         fi
     fi
     
