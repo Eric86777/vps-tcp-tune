@@ -1,16 +1,12 @@
 #!/bin/bash
+# v1.5.2 更新: 修复Cron时区自动转换(检测系统时区并自动转换北京时间为本地时间)；修复备份任务清理函数失效Bug (by Eric86777)
 # v1.5.1 更新: 修复Cron时区问题(所有定时任务强制使用北京时间)；修复租期管理带宽恢复格式转换缺失；调整备份时间避免冲突 (by Eric86777)
 # v1.5.0 更新: 新增流量数据备份管理系统(自动备份、手动备份、历史查看、一键恢复) (by Eric86777)
-# v1.4.3 更新: 修复租期管理导致流量数据清零的严重Bug (by Eric86777)
-# v1.4.2 更新: 修复已过期端口续费Bug，确保续费后至少获得完整计费周期 (by Eric86777)
-# v1.4.1 更新: 修复端口组过期封锁失效Bug；修复删除规则死循环Bug；修复所有菜单"0返回"失效Bug (by Eric86777)
-# v1.4.0 更新: 新增租户管理系统(端口到期自动停机、续费管理、3天到期预警邮件通知) (by Eric86777)
-# v1.3.0 更新: 重构邮件系统支持分端口独立通知(去中心化)；优化列表显示逻辑；自动隐藏租户邮件备注 (by Eric86777)
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.5.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -323,6 +319,62 @@ format_bytes() {
 
 get_beijing_time() {
     TZ='Asia/Shanghai' date "$@"
+}
+
+# 将北京时间转换为系统本地时间（用于 cron 任务）
+# 参数: $1=小时(00-23), $2=分钟(00-59)
+# 返回: "本地小时 本地分钟"
+convert_beijing_to_local_time() {
+    local beijing_hour=$1
+    local beijing_minute=$2
+    
+    # 获取当前北京时间的完整日期时间
+    local beijing_now=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+    local beijing_date=$(echo "$beijing_now" | cut -d' ' -f1)
+    
+    # 构建目标北京时间字符串
+    local beijing_datetime="${beijing_date} ${beijing_hour}:${beijing_minute}:00"
+    
+    # 转换为时间戳（关闭set -e的影响）
+    local beijing_timestamp
+    set +e
+    beijing_timestamp=$(TZ='Asia/Shanghai' date -d "$beijing_datetime" +%s 2>/dev/null)
+    local date_result=$?
+    set -e
+    
+    # 如果转换失败，返回原始时间（不转换）
+    if [ $date_result -ne 0 ] || [ -z "$beijing_timestamp" ]; then
+        echo "$beijing_hour $beijing_minute"
+        return 0
+    fi
+    
+    # 转换为系统本地时间
+    local local_hour local_minute
+    set +e
+    local_hour=$(date -d "@${beijing_timestamp}" +%H 2>/dev/null)
+    local_minute=$(date -d "@${beijing_timestamp}" +%M 2>/dev/null)
+    set -e
+    
+    # 验证结果
+    if [ -z "$local_hour" ] || [ -z "$local_minute" ]; then
+        echo "$beijing_hour $beijing_minute"
+        return 0
+    fi
+    
+    echo "${local_hour} ${local_minute}"
+}
+
+# 获取系统时区信息（用于显示）
+get_system_timezone() {
+    if command -v timedatectl &>/dev/null; then
+        timedatectl | grep "Time zone" | awk '{print $3}' | sed 's/[()]//g'
+    elif [ -f /etc/timezone ]; then
+        cat /etc/timezone
+    elif [ -n "$TZ" ]; then
+        echo "$TZ"
+    else
+        date +%Z
+    fi
 }
 
 update_config() {
@@ -3432,6 +3484,18 @@ setup_telegram_notification_cron() {
     local telegram_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
     if [ "$telegram_enabled" = "true" ]; then
         local status_interval=$(jq -r '.notifications.telegram.status_notifications.interval' "$CONFIG_FILE")
+        
+        # 对于需要指定时间的间隔，转换北京时间 00:00 为系统本地时间
+        local local_time=($(convert_beijing_to_local_time "00" "00"))
+        local local_hour=${local_time[0]:-0}
+        local local_minute=${local_time[1]:-0}
+        
+        # 验证转换结果
+        if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
+            local_hour=0
+            local_minute=0
+        fi
+        
         case "$status_interval" in
             "1m")  echo "* * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "15m") echo "*/15 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
@@ -3440,10 +3504,10 @@ setup_telegram_notification_cron() {
             "2h")  echo "0 */2 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "6h")  echo "0 */6 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "12h") echo "0 */12 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
-            "24h"|"1d") echo "0 0 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
-            "3d")  echo "0 0 */3 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
-            "7d")  echo "0 0 * * 1 $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
-            "15d") echo "0 0 1,15 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "24h"|"1d") echo "$local_minute $local_hour * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "3d")  echo "$local_minute $local_hour */3 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "7d")  echo "$local_minute $local_hour * * 1 $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "15d") echo "$local_minute $local_hour 1,15 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -3460,6 +3524,18 @@ setup_wecom_notification_cron() {
     local wecom_enabled=$(jq -r '.notifications.wecom.status_notifications.enabled // false' "$CONFIG_FILE")
     if [ "$wecom_enabled" = "true" ]; then
         local wecom_interval=$(jq -r '.notifications.wecom.status_notifications.interval' "$CONFIG_FILE")
+        
+        # 对于需要指定时间的间隔，转换北京时间 00:00 为系统本地时间
+        local local_time=($(convert_beijing_to_local_time "00" "00"))
+        local local_hour=${local_time[0]:-0}
+        local local_minute=${local_time[1]:-0}
+        
+        # 验证转换结果
+        if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
+            local_hour=0
+            local_minute=0
+        fi
+        
         case "$wecom_interval" in
             "1m")  echo "* * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "15m") echo "*/15 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
@@ -3468,10 +3544,10 @@ setup_wecom_notification_cron() {
             "2h")  echo "0 */2 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "6h")  echo "0 */6 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "24h"|"1d") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "3d")  echo "0 0 */3 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "7d")  echo "0 0 * * 1 $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "15d") echo "0 0 1,15 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "24h"|"1d") echo "$local_minute $local_hour * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "3d")  echo "$local_minute $local_hour */3 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "7d")  echo "$local_minute $local_hour * * 1 $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "15d") echo "$local_minute $local_hour 1,15 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -3487,8 +3563,19 @@ setup_daily_check_cron() {
     # 过滤掉旧的检查任务
     crontab -l 2>/dev/null | grep -v "# 端口流量狗每日检查" > "$temp_cron" || true
     
-    # 添加新任务: 每天 00:30 运行
-    echo "30 0 * * * $script_path --daily-check >/dev/null 2>&1  # 端口流量狗每日检查" >> "$temp_cron"
+    # 将北京时间 00:30 转换为系统本地时间
+    local local_time=($(convert_beijing_to_local_time "00" "30"))
+    local local_hour=${local_time[0]:-0}
+    local local_minute=${local_time[1]:-30}
+    
+    # 验证转换结果
+    if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
+        local_hour=0
+        local_minute=30
+    fi
+    
+    # 添加新任务: 每天北京时间 00:30 运行
+    echo "$local_minute $local_hour * * * $script_path --daily-check >/dev/null 2>&1  # 端口流量狗每日检查" >> "$temp_cron"
     
     crontab "$temp_cron"
     rm -f "$temp_cron"
@@ -3503,6 +3590,18 @@ setup_email_notification_cron() {
     local email_enabled=$(jq -r '.notifications.email.status_notifications.enabled // false' "$CONFIG_FILE")
     if [ "$email_enabled" = "true" ]; then
         local email_interval=$(jq -r '.notifications.email.status_notifications.interval' "$CONFIG_FILE")
+        
+        # 对于需要指定时间的间隔，转换北京时间 00:00 为系统本地时间
+        local local_time=($(convert_beijing_to_local_time "00" "00"))
+        local local_hour=${local_time[0]:-0}
+        local local_minute=${local_time[1]:-0}
+        
+        # 验证转换结果
+        if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
+            local_hour=0
+            local_minute=0
+        fi
+        
         case "$email_interval" in
             "1m")  echo "* * * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "15m") echo "*/15 * * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
@@ -3511,10 +3610,10 @@ setup_email_notification_cron() {
             "2h")  echo "0 */2 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "6h")  echo "0 */6 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "12h") echo "0 */12 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
-            "24h"|"1d") echo "0 0 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
-            "3d")  echo "0 0 */3 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
-            "7d")  echo "0 0 * * 1 $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
-            "15d") echo "0 0 1,15 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "24h"|"1d") echo "$local_minute $local_hour * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "3d")  echo "$local_minute $local_hour */3 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "7d")  echo "$local_minute $local_hour * * 1 $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "15d") echo "$local_minute $local_hour 1,15 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -3599,7 +3698,19 @@ setup_port_auto_reset_cron() {
     # 只有quota启用、monthly_limit不是unlimited、且reset_day存在时才添加cron任务
     if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ] && [ "$reset_day_raw" != "null" ]; then
         local reset_day="${reset_day_raw:-1}"
-        echo "5 0 $reset_day * * $script_path --reset-port '$port' >/dev/null 2>&1  # 端口流量狗自动重置ID_$port_id" >> "$temp_cron"
+        
+        # 将北京时间 00:05 转换为系统本地时间
+        local local_time=($(convert_beijing_to_local_time "00" "05"))
+        local local_hour=${local_time[0]:-0}
+        local local_minute=${local_time[1]:-5}
+        
+        # 验证转换结果
+        if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
+            local_hour=0
+            local_minute=5
+        fi
+        
+        echo "$local_minute $local_hour $reset_day * * $script_path --reset-port '$port' >/dev/null 2>&1  # 端口流量狗自动重置ID_$port_id" >> "$temp_cron"
     fi
 
     crontab "$temp_cron"
@@ -4743,7 +4854,16 @@ toggle_auto_backup() {
     local enabled=$(jq -r '.auto_backup_enabled' "$BACKUP_CONFIG_FILE")
     local backup_time="00:10"  # 固定为北京时间凌晨00:10（与流量重置00:05错开）
     
+    # 获取系统时区信息
+    local system_tz=$(get_system_timezone)
+    local local_time=($(convert_beijing_to_local_time "00" "10"))
+    local local_hour=${local_time[0]}
+    local local_minute=${local_time[1]}
+    
     echo -e "${BLUE}=== 自动备份设置 ===${NC}"
+    echo
+    echo -e "${GRAY}系统时区: $system_tz${NC}"
+    echo -e "${GRAY}北京时间 00:10 对应系统本地时间 ${local_hour}:${local_minute}${NC}"
     echo
     
     if [ "$enabled" = "true" ]; then
@@ -4770,7 +4890,8 @@ toggle_auto_backup() {
             jq ".auto_backup_enabled = true | .backup_time = \"$backup_time\"" "$BACKUP_CONFIG_FILE" > "${BACKUP_CONFIG_FILE}.tmp" && \
                 mv "${BACKUP_CONFIG_FILE}.tmp" "$BACKUP_CONFIG_FILE"
             setup_backup_cron "$backup_time"
-            echo -e "${GREEN}✓ 已开启自动备份，每天 $backup_time 执行${NC}"
+            echo -e "${GREEN}✓ 已开启自动备份，每天北京时间 $backup_time 执行${NC}"
+            echo -e "${GRAY}  (系统本地时间: ${local_hour}:${local_minute})${NC}"
         fi
     fi
     
@@ -4783,17 +4904,29 @@ setup_backup_cron() {
     local hour=$(echo "$time" | cut -d':' -f1)
     local minute=$(echo "$time" | cut -d':' -f2)
     
+    # 将北京时间转换为系统本地时间
+    local local_time=($(convert_beijing_to_local_time "$hour" "$minute"))
+    local local_hour=${local_time[0]:-$hour}
+    local local_minute=${local_time[1]:-$minute}
+    
+    # 验证转换结果
+    if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}错误：时区转换失败，使用原始时间${NC}" >&2
+        local_hour=$hour
+        local_minute=$minute
+    fi
+    
     # 删除旧的定时任务
     remove_backup_cron
     
-    # 添加新的定时任务
-    (crontab -l 2>/dev/null | grep -v "port-traffic-dog.*backup"; \
-     echo "$minute $hour * * * $0 --auto-backup >> $LOG_FILE 2>&1") | crontab -
+    # 添加新的定时任务（使用转换后的本地时间）
+    (crontab -l 2>/dev/null | grep -v -- "--auto-backup"; \
+     echo "$local_minute $local_hour * * * $0 --auto-backup >> $LOG_FILE 2>&1") | crontab -
 }
 
 # 删除备份定时任务
 remove_backup_cron() {
-    crontab -l 2>/dev/null | grep -v "port-traffic-dog.*backup" | crontab - 2>/dev/null || true
+    crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH.*--auto-backup\|/dog.*--auto-backup" | crontab - 2>/dev/null || true
 }
 
 # 备份管理主菜单
