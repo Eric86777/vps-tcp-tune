@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.4.2 更新: 修复已过期端口续费Bug，确保续费后至少获得完整计费周期 (by Eric86777)
 # v1.4.1 更新: 修复端口组过期封锁失效Bug；修复删除规则死循环Bug；修复所有菜单"0返回"失效Bug (by Eric86777)
 # v1.4.0 更新: 新增租户管理系统(端口到期自动停机、续费管理、3天到期预警邮件通知) (by Eric86777)
 # v1.3.0 更新: 重构邮件系统支持分端口独立通知(去中心化)；优化列表显示逻辑；自动隐藏租户邮件备注 (by Eric86777)
@@ -6,7 +7,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.4.1"
+readonly SCRIPT_VERSION="1.4.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -2031,31 +2032,16 @@ set_port_update_expiration() {
         local is_renewal=false
         
         if [ -n "$current_expire" ] && [ "$current_expire" != "null" ] && [[ "$current_expire" > "$today" ]]; then
-            # 续费模式：在现有日期上叠加
+            # 续费模式：端口未过期，在现有到期日基础上叠加
             base_date="$current_expire"
             is_renewal=true
             echo -e "将在现有到期日 ($base_date) 基础上续费"
         else
-            # 初始化模式：根据重置日判断起点
-            # 逻辑：如果今天还未到本月重置日，则以此周期结束（即本月重置日）为目标。
-            # 为了让 calculate_next_expiration(+1) 算出本月重置日，基准需设为上个月。
-            
-            local current_year=$(get_beijing_time +%Y)
-            local current_month=$(get_beijing_time +%m)
-            # 构造本月重置日用于比较 (注意：reset_day可能是30，而2月只有28，这里只做粗略比较)
-            # 为安全起见，我们用 calculate_next_expiration 反推本月重置日
-            # 本月重置日 = (上个月 + 1个月) 的修正结果
-            local last_month_date=$(get_beijing_time -d "$today - 1 month" +%Y-%m-%d 2>/dev/null || date -d "$today - 1 month" +%Y-%m-%d)
-            local this_month_reset_date=$(calculate_next_expiration "$last_month_date" 1 "$reset_day")
-            
-            if [[ "$today" < "$this_month_reset_date" ]]; then
-                base_date="$last_month_date"
-                echo -e "当前周期未结束，设定基准为上个周期 (目标: $this_month_reset_date)"
-            else
-                base_date="$today"
-                echo -e "当前周期已过，设定基准为本周期"
-            fi
+            # 初始化/过期续费模式：从今天开始计算
+            # 修复BUG：已过期端口续费时，应始终从今天开始，确保至少续费整月
+            base_date="$today"
             is_renewal=false
+            echo -e "端口已过期或首次设置，从今天 ($today) 开始计算租期"
         fi
 
         case $duration_choice in
