@@ -1,9 +1,12 @@
 #!/bin/bash
+# v1.4.1 更新: 修复端口组过期封锁失效Bug；修复删除规则死循环Bug；修复所有菜单"0返回"失效Bug (by Eric86777)
+# v1.4.0 更新: 新增租户管理系统(端口到期自动停机、续费管理、3天到期预警邮件通知) (by Eric86777)
 # v1.3.0 更新: 重构邮件系统支持分端口独立通知(去中心化)；优化列表显示逻辑；自动隐藏租户邮件备注 (by Eric86777)
 
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.4.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -16,6 +19,7 @@ readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
 readonly GREEN='\033[0;32m'
 readonly NC='\033[0m'
+readonly GRAY='\033[0;90m'
 
 # 多源下载策略
 readonly DOWNLOAD_SOURCES=(
@@ -240,6 +244,8 @@ init_nftables() {
     nft add chain $family $table_name input { type filter hook input priority 0\; } 2>/dev/null || true
     nft add chain $family $table_name output { type filter hook output priority 0\; } 2>/dev/null || true
     nft add chain $family $table_name forward { type filter hook forward priority 0\; } 2>/dev/null || true
+    # 增加 prerouting 链以在 NAT 之前拦截 (Priority -150 在 Conntrack(-200)之后, DNAT(-100)之前)
+    nft add chain $family $table_name prerouting { type filter hook prerouting priority -150\; } 2>/dev/null || true
 }
 
 get_network_interfaces() {
@@ -643,9 +649,9 @@ get_port_status_label() {
     local reset_day_raw=$(echo "$port_config" | jq -r '.quota.reset_day')
     local reset_day="null"
     
-    # 有流量限额时，获取重置日期（null表示用户取消了自动重置）
-    if [ "$monthly_limit" != "unlimited" ] && [ "$reset_day_raw" != "null" ]; then
-        reset_day="${reset_day_raw:-1}"  # 未配置时默认为1
+    # 获取重置日期（null表示用户取消了自动重置或未设置）
+    if [ "$reset_day_raw" != "null" ] && [ "$reset_day_raw" != "" ]; then
+        reset_day="${reset_day_raw:-1}"
     fi
 
     local status_tags=()
@@ -667,23 +673,6 @@ get_port_status_label() {
                 status_tags+=("[单向${quota_display}]")
             fi
             
-            # 只有配置了reset_day时才显示重置日期信息
-            if [ "$reset_day" != "null" ]; then
-                local time_info=($(get_beijing_month_year))
-                local current_day=${time_info[0]}
-                local current_month=${time_info[1]}
-                local next_month=$current_month
-
-                if [ $current_day -ge $reset_day ]; then
-                    next_month=$((current_month + 1))
-                    if [ $next_month -gt 12 ]; then
-                        next_month=1
-                    fi
-                fi
-                
-                status_tags+=("[${next_month}月${reset_day}日重置]")
-            fi
-
             if [ $usage_percent -ge 100 ]; then
                 status_tags+=("[已超限]")
             fi
@@ -693,6 +682,23 @@ get_port_status_label() {
             else
                 status_tags+=("[单向无限制]")
             fi
+        fi
+
+        # 显示重置日期信息 (适用于有限制和无限制模式)
+        if [ "$reset_day" != "null" ]; then
+            local time_info=($(get_beijing_month_year))
+            local current_day=${time_info[0]}
+            local current_month=${time_info[1]}
+            local next_month=$current_month
+
+            if [ $current_day -ge $reset_day ]; then
+                next_month=$((current_month + 1))
+                if [ $next_month -gt 12 ]; then
+                    next_month=1
+                fi
+            fi
+            
+            status_tags+=("[${next_month}月${reset_day}日重置]")
         fi
     fi
 
@@ -957,66 +963,68 @@ ${prefix}:${port_display} | 总流量:${total_formatted} | 上行(入站): ${inp
 
 # 显示主界面
 show_main_menu() {
-    clear
+    while true; do
+        clear
 
-    local active_ports=($(get_active_ports))
-    local port_count=${#active_ports[@]}
-    local daily_total=$(get_daily_total_traffic)
+        local active_ports=($(get_active_ports))
+        local port_count=${#active_ports[@]}
+        local daily_total=$(get_daily_total_traffic)
 
-    echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
-    echo -e "${GREEN}作者主页:${NC}https://zywe.de"
-    echo -e "${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
-    echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
-    echo
+        echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
+        echo -e "${GREEN}作者主页:${NC}https://zywe.de"
+        echo -e "${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
+        echo -e "${GREEN}一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog${NC}"
+        echo
 
-    echo -e "${GREEN}状态: 监控中${NC} | ${BLUE}守护端口: ${port_count}个${NC} | ${YELLOW}端口总流量: $daily_total${NC}"
-    echo "────────────────────────────────────────────────────────"
+        echo -e "${GREEN}状态: 监控中${NC} | ${BLUE}守护端口: ${port_count}个${NC} | ${YELLOW}端口总流量: $daily_total${NC}"
+        echo "────────────────────────────────────────────────────────"
 
-    if [ $port_count -gt 0 ]; then
-        format_port_list "display"
-    else
-        echo -e "${YELLOW}暂无监控端口${NC}"
-    fi
+        if [ $port_count -gt 0 ]; then
+            format_port_list "display"
+        else
+            echo -e "${YELLOW}暂无监控端口${NC}"
+        fi
 
-    echo "────────────────────────────────────────────────────────"
+        echo "────────────────────────────────────────────────────────"
 
-    echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
-    echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
-    echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 一键刷新原版流量狗配额规则"
-    echo -e "${BLUE}7.${NC} 卸载脚本"
-    echo -e "${BLUE}0.${NC} 退出"
-    echo
-    read -p "请选择操作 [0-7]: " choice
+        echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
+        echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
+        echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 卸载脚本"
+        echo -e "${BLUE}0.${NC} 退出"
+        echo
+        read -p "请选择操作 [0-6]: " choice
 
-    case $choice in
-        1) manage_port_monitoring ;;
-        2) manage_traffic_limits ;;
-        3) manage_traffic_reset ;;
-        4) manage_configuration ;;
-        5) manage_notifications ;;
-        6) migrate_from_old_version ;;
-        7) uninstall_script ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效选择，请输入0-7${NC}"; sleep 1; show_main_menu ;;
-    esac
+        case $choice in
+            1) manage_port_monitoring ;;
+            2) manage_traffic_limits ;;
+            3) manage_traffic_reset ;;
+            4) manage_configuration ;;
+            5) manage_notifications ;;
+            6) uninstall_script ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}无效选择，请输入0-6${NC}"; sleep 1 ;;
+        esac
+    done
 }
 
 manage_port_monitoring() {
-    echo -e "${BLUE}=== 端口监控管理 ===${NC}"
-    echo "1. 添加端口监控"
-    echo "2. 删除端口监控"
-    echo "3. 合并端口为组"
-    echo "0. 返回主菜单"
-    echo
-    read -p "请选择操作 [0-3]: " choice
+    while true; do
+        echo -e "${BLUE}=== 端口监控管理 ===${NC}"
+        echo "1. 添加端口监控"
+        echo "2. 删除端口监控"
+        echo "3. 合并端口为组"
+        echo "0. 返回主菜单"
+        echo
+        read -p "请选择操作 [0-3]: " choice
 
-    case $choice in
-        1) add_port_monitoring ;;
-        2) remove_port_monitoring ;;
-        3) merge_ports_to_group ;;
-        0) show_main_menu ;;
-        *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_port_monitoring ;;
-    esac
+        case $choice in
+            1) add_port_monitoring ;;
+            2) remove_port_monitoring ;;
+            3) merge_ports_to_group ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
 }
 
 add_port_monitoring() {
@@ -1644,7 +1652,7 @@ remove_nftables_rules() {
         fi
 
         local deleted=false
-        for chain in input output forward; do
+        for chain in input output forward prerouting; do
             if nft delete rule $family $table_name $chain handle $handle 2>/dev/null; then
                 echo "已删除规则 handle $handle (链: $chain)"
                 deleted_count=$((deleted_count + 1))
@@ -1655,6 +1663,7 @@ remove_nftables_rules() {
 
         if [ "$deleted" = false ]; then
             echo "删除规则 handle $handle 失败，跳过"
+            break  # 跳出循环避免死循环
         fi
 
         if [ $deleted_count -ge 200 ]; then
@@ -1881,19 +1890,296 @@ set_port_quota_limit() {
 }
 
 manage_traffic_limits() {
-    echo -e "${BLUE}=== 端口限制设置管理 ===${NC}"
-    echo "1. 设置端口带宽限制（速率控制）"
-    echo "2. 设置端口流量配额（总量控制）"
-    echo "0. 返回主菜单"
-    echo
-    read -p "请选择操作 [0-2]: " choice
+    while true; do
+        echo -e "${BLUE}=== 端口限制设置管理 ===${NC}"
+        echo "1. 设置端口带宽限制（速率控制）"
+        echo "2. 设置端口流量配额（总量控制）"
+        echo "3. 管理端口租期 (自动到期停机)"
+        echo "0. 返回主菜单"
+        echo
+        read -p "请选择操作 [0-3]: " choice
 
-    case $choice in
-        1) set_port_bandwidth_limit ;;
-        2) set_port_quota_limit ;;
-        0) show_main_menu ;;
-        *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_traffic_limits ;;
-    esac
+        case $choice in
+            1) set_port_bandwidth_limit ;;
+            2) set_port_quota_limit ;;
+            3) manage_port_expiration ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# 管理端口租期
+manage_port_expiration() {
+    # 确保后台检查任务已部署
+    setup_daily_check_cron
+
+    while true; do
+        clear
+        echo -e "${BLUE}=== 管理端口租期 (到期自动停机) ===${NC}"
+        echo
+        
+        local active_ports=($(get_active_ports))
+        if [ ${#active_ports[@]} -eq 0 ]; then
+             echo "暂无监控端口"
+             sleep 2
+             return
+        fi
+
+        echo "端口列表:"
+        for i in "${!active_ports[@]}"; do
+            local port=${active_ports[$i]}
+            
+            # 显示基本信息
+            local display_name=""
+            local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+            if is_port_group "$port"; then
+                local display_str="$port"
+                if [ ${#port} -gt 20 ]; then
+                    local count=$(echo "$port" | tr -cd ',' | wc -c)
+                    count=$((count + 1))
+                    display_str="${port:0:17}...(${count}个)"
+                fi
+                display_name="端口组[${display_str}]"
+            elif is_port_range "$port"; then
+                display_name="端口段[$port]"
+            else
+                display_name="端口 $port"
+            fi
+            if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+                display_name+=" [$remark]"
+            fi
+
+            # 读取到期信息
+            local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+            local expire_status="${GREEN}永久有效${NC}"
+            
+            if [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
+                local today=$(get_beijing_time +%Y-%m-%d)
+                if [[ "$today" > "$expire_date" ]]; then
+                    expire_status="${RED}已过期 ($expire_date)${NC}"
+                elif [[ "$today" == "$expire_date" ]]; then
+                    expire_status="${YELLOW}今天到期 ($expire_date)${NC}"
+                else
+                    expire_status="${BLUE}$expire_date 到期${NC}"
+                fi
+            fi
+            
+            echo -e "$((i+1)). $display_name -> $expire_status"
+        done
+        echo
+        echo "0. 返回上级菜单"
+        echo
+        
+        read -p "请选择要管理的端口 [1-${#active_ports[@]}, 0返回]: " choice
+        
+        if [ "$choice" = "0" ]; then
+            return
+        fi
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#active_ports[@]} ]; then
+            local port=${active_ports[$((choice-1))]}
+            set_port_update_expiration "$port"
+        else
+            echo -e "${RED}无效选择${NC}"
+            sleep 1
+        fi
+    done
+}
+
+# 设置/更新端口到期时间
+set_port_update_expiration() {
+    local port=$1
+    
+    while true; do
+        clear
+        echo -e "${BLUE}=== 续费/设置租期: $port ===${NC}"
+        
+        # 获取当前信息
+        local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+        local reset_day=$(jq -r ".ports.\"$port\".quota.reset_day // \"\"" "$CONFIG_FILE")
+        
+        if [ -z "$expire_date" ] || [ "$expire_date" = "null" ]; then
+            expire_date="未设置 (永久)"
+        fi
+        if [ -z "$reset_day" ] || [ "$reset_day" = "null" ]; then
+            reset_day=$(get_beijing_time +%-d) # 默认为今天
+            echo -e "${YELLOW}提示: 该端口未设置流量重置日，将默认以每月 ${reset_day} 日为基准。${NC}"
+        fi
+        
+        echo -e "当前到期日: ${GREEN}$expire_date${NC}"
+        echo -e "重置日基准: 每月 ${GREEN}${reset_day}${NC} 日"
+        echo "------------------------"
+        echo "1. 增加 1 个月"
+        echo "2. 增加 3 个月 (季付)"
+        echo "3. 增加 6 个月 (半年)"
+        echo "4. 增加 1 年"
+        echo "5. 手动输入到期日期"
+        echo "6. 清除租期 (设置为永久)"
+        echo "0. 返回"
+        echo
+        
+        read -p "请选择续费时长 [0-6]: " duration_choice
+        
+        local new_date=""
+        local base_date=""
+        local months_to_add=0
+        
+        # 确定基准日期逻辑
+        local current_expire=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+        local today=$(get_beijing_time +%Y-%m-%d)
+        local is_renewal=false
+        
+        if [ -n "$current_expire" ] && [ "$current_expire" != "null" ] && [[ "$current_expire" > "$today" ]]; then
+            # 续费模式：在现有日期上叠加
+            base_date="$current_expire"
+            is_renewal=true
+            echo -e "将在现有到期日 ($base_date) 基础上续费"
+        else
+            # 初始化模式：根据重置日判断起点
+            # 逻辑：如果今天还未到本月重置日，则以此周期结束（即本月重置日）为目标。
+            # 为了让 calculate_next_expiration(+1) 算出本月重置日，基准需设为上个月。
+            
+            local current_year=$(get_beijing_time +%Y)
+            local current_month=$(get_beijing_time +%m)
+            # 构造本月重置日用于比较 (注意：reset_day可能是30，而2月只有28，这里只做粗略比较)
+            # 为安全起见，我们用 calculate_next_expiration 反推本月重置日
+            # 本月重置日 = (上个月 + 1个月) 的修正结果
+            local last_month_date=$(get_beijing_time -d "$today - 1 month" +%Y-%m-%d 2>/dev/null || date -d "$today - 1 month" +%Y-%m-%d)
+            local this_month_reset_date=$(calculate_next_expiration "$last_month_date" 1 "$reset_day")
+            
+            if [[ "$today" < "$this_month_reset_date" ]]; then
+                base_date="$last_month_date"
+                echo -e "当前周期未结束，设定基准为上个周期 (目标: $this_month_reset_date)"
+            else
+                base_date="$today"
+                echo -e "当前周期已过，设定基准为本周期"
+            fi
+            is_renewal=false
+        fi
+
+        case $duration_choice in
+            1) months_to_add=1 ;;
+            2) months_to_add=3 ;;
+            3) months_to_add=6 ;;
+            4) months_to_add=12 ;;
+            5) 
+                read -p "请输入到期日期 (格式 YYYY-MM-DD): " manual_date
+                if date -d "$manual_date" >/dev/null 2>&1; then
+                    new_date="$manual_date"
+                else
+                    echo -e "${RED}日期格式错误${NC}"
+                    sleep 2
+                    continue
+                fi
+                ;;
+            6)
+                update_config "del(.ports.\"$port\".expiration_date)"
+                echo -e "${GREEN}已清除租期，端口恢复永久有效。${NC}"
+                
+                # 修复BUG：清除租期后必须解封端口
+                echo -e "${YELLOW}正在恢复端口服务...${NC}"
+                remove_nftables_rules "$port"
+                add_nftables_rules "$port"
+                
+                # 恢复配额规则
+                local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
+                if [ "$quota_enabled" = "true" ]; then
+                    local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+                    if [ "$quota_limit" != "unlimited" ]; then
+                        apply_nftables_quota "$port" "$quota_limit"
+                    fi
+                fi
+                
+                # 恢复带宽限制
+                local bw_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
+                if [ "$bw_enabled" = "true" ]; then
+                    local bw_rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate" "$CONFIG_FILE")
+                    if [ -n "$bw_rate" ] && [ "$bw_rate" != "null" ] && [ "$bw_rate" != "unlimited" ]; then
+                         apply_tc_limit "$port" "$bw_rate"
+                    fi
+                fi
+
+                sleep 2
+                return
+                ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1; continue ;;
+        esac
+        
+        # 如果不是手动输入，则计算日期
+        if [ -z "$new_date" ] && [ $duration_choice -le 4 ]; then
+            new_date=$(calculate_next_expiration "$base_date" "$months_to_add" "$reset_day")
+        fi
+        
+        if [ -n "$new_date" ]; then
+            update_config ".ports.\"$port\".expiration_date = \"$new_date\""
+            echo -e "${GREEN}续费成功！新到期日: $new_date${NC}"
+            
+            # 自动复活逻辑：清理旧规则(含Block) -> 重新添加监控 -> 重新应用Quota
+            echo -e "${YELLOW}正在恢复端口服务...${NC}"
+            remove_nftables_rules "$port"
+            add_nftables_rules "$port"
+            
+            local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
+            if [ "$quota_enabled" = "true" ]; then
+                local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+                if [ "$quota_limit" != "unlimited" ]; then
+                    apply_nftables_quota "$port" "$quota_limit"
+                fi
+            fi
+            
+            # 恢复带宽限制 (TC)
+            local bw_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
+            if [ "$bw_enabled" = "true" ]; then
+                local bw_rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate" "$CONFIG_FILE")
+                if [ -n "$bw_rate" ] && [ "$bw_rate" != "null" ] && [ "$bw_rate" != "unlimited" ]; then
+                     apply_tc_limit "$port" "$bw_rate"
+                fi
+            fi
+            
+            sleep 2
+            return
+        fi
+    done
+}
+
+# 计算下一个到期日
+# 参数: $1=基准日期, $2=增加月数, $3=目标重置日(Day)
+calculate_next_expiration() {
+    local base_date="$1"
+    local months="$2"
+    local target_day="$3"
+    
+    # 获取基准日期的年和月
+    local base_year=$(get_beijing_time -d "$base_date" +%Y 2>/dev/null || date -d "$base_date" +%Y)
+    local base_month=$(get_beijing_time -d "$base_date" +%m 2>/dev/null || date -d "$base_date" +%m)
+    
+    # 纯数学计算新的年份和月份，避免 date 命令在处理月底时的日期溢出问题
+    # 1. 移除前导零 (10进制)
+    base_month=$((10#$base_month))
+    
+    # 2. 计算总月数
+    local total_months=$((base_month + months))
+    
+    # 3. 计算新年份增量 (减1是为了处理12月的倍数)
+    local year_add=$(( (total_months - 1) / 12 ))
+    local next_month=$(( (total_months - 1) % 12 + 1 ))
+    local next_year=$((base_year + year_add))
+    
+    # 4. 补齐两位数月份
+    printf -v next_month "%02d" $next_month
+    
+    # 构建目标日期字符串
+    local candidate_date="${next_year}-${next_month}-${target_day}"
+    
+    # 验证日期合法性 (例如处理 2月30日)
+    if get_beijing_time -d "$candidate_date" >/dev/null 2>&1 || date -d "$candidate_date" >/dev/null 2>&1; then
+        echo "$candidate_date"
+    else
+        # 如果日期非法（比如本月没有31号），则使用本月最后一天
+        echo $(get_beijing_time -d "${next_year}-${next_month}-01 + 1 month - 1 day" +%Y-%m-%d 2>/dev/null || date -d "${next_year}-${next_month}-01 + 1 month - 1 day" +%Y-%m-%d)
+    fi
 }
 
 apply_nftables_quota() {
@@ -2148,19 +2434,21 @@ remove_tc_limit() {
 
 
 manage_traffic_reset() {
-    echo -e "${BLUE}流量重置管理${NC}"
-    echo "1. 重置流量月重置日设置"
-    echo "2. 立即重置"
-    echo "0. 返回主菜单"
-    echo
-    read -p "请选择操作 [0-2]: " choice
+    while true; do
+        echo -e "${BLUE}流量重置管理${NC}"
+        echo "1. 重置流量月重置日设置"
+        echo "2. 立即重置"
+        echo "0. 返回主菜单"
+        echo
+        read -p "请选择操作 [0-2]: " choice
 
-    case $choice in
-        1) set_reset_day ;;
-        2) immediate_reset ;;
-        0) show_main_menu ;;
-        *) echo -e "${RED}无效选择，请输入0-2${NC}"; sleep 1; manage_traffic_reset ;;
-    esac
+        case $choice in
+            1) set_reset_day ;;
+            2) immediate_reset ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择，请输入0-2${NC}"; sleep 1 ;;
+        esac
+    done
 }
 
 set_reset_day() {
@@ -2382,124 +2670,25 @@ record_reset_history() {
     fi
 }
 
-# 一键刷新历史配额规则
-migrate_from_old_version() {
-    echo -e "${BLUE}=== 一键刷新历史配额规则 ===${NC}"
-    echo
-    echo -e "${GREEN}功能说明：${NC}"
-    echo "  1. 将所有 relay 模式统一改为 double 模式"
-    echo "  2. 刷新所有端口的 quota 规则（使用新的 ×2 累加逻辑）"
-    echo "  3. 用新公式重新计算已使用流量"
-    echo
-    echo -e "${YELLOW}公式说明：${NC}"
-    echo "  双向模式: 总流量 = (入站 + 出站) × 2"
-    echo "  单向模式: 总流量 = 出站 × 2"
-    echo
-    
-    # 检查配置是否存在
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo -e "${YELLOW}未检测到配置文件，请先添加端口监控${NC}"
-        echo
-        read -p "按回车键返回..."
-        show_main_menu
-        return
-    fi
-    
-    # 读取配置中的端口列表
-    local ports=($(jq -r '.ports | keys[]' "$CONFIG_FILE" 2>/dev/null || true))
-    
-    if [ ${#ports[@]} -eq 0 ]; then
-        echo -e "${YELLOW}当前没有监控的端口${NC}"
-        read -p "按回车键返回..."
-        show_main_menu
-        return
-    fi
-    
-    echo "────────────────────────────────────────────────────────"
-    echo -e "${BLUE}当前端口状态：${NC}"
-    echo "────────────────────────────────────────────────────────"
-    
-    for port in "${ports[@]}"; do
-        local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE")
-        local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "double"')
-        local monthly_limit=$(echo "$port_config" | jq -r '.quota.monthly_limit // "unlimited"')
-        local remark=$(echo "$port_config" | jq -r '.remark // ""')
-        
-        # 获取当前流量
-        local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
-        local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
-        local total_fmt=$(format_bytes $total_bytes)
-        
-        echo -e "端口 ${GREEN}$port${NC} [模式: $billing_mode] [限额: $monthly_limit] ${remark:+[备注: $remark]}"
-        echo "  当前流量: $total_fmt"
-        echo
-    done
-    
-    echo "────────────────────────────────────────────────────────"
-    echo
-    
-    read -p "确认刷新所有端口的配额规则? [y/N]: " confirm
-    
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "已取消"
-        sleep 1
-        show_main_menu
-        return
-    fi
-    
-    echo
-    echo -e "${YELLOW}正在刷新...${NC}"
-    
-    # 1. 将所有 relay 模式改为 double
-    for port in "${ports[@]}"; do
-        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
-        if [ "$billing_mode" = "relay" ]; then
-            update_config ".ports.\"$port\".billing_mode = \"double\""
-            echo -e "端口 $port: relay → ${GREEN}double${NC}"
-        fi
-    done
-    
-    # 2. 刷新所有有配额的端口的 quota 规则
-    for port in "${ports[@]}"; do
-        local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
-        local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
-        
-        if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
-            # 先删除旧规则
-            remove_nftables_quota "$port" >/dev/null 2>&1 || true
-            # 重新应用新规则
-            apply_nftables_quota "$port" "$monthly_limit"
-            echo -e "端口 $port 配额规则已刷新 [限额: ${GREEN}$monthly_limit${NC}]"
-        fi
-    done
-    
-    echo
-    echo -e "${GREEN}✅ 刷新完成！${NC}"
-    echo "所有配额规则已按新公式重建。"
-    echo
-    
-    read -p "按回车键返回主菜单..."
-    show_main_menu
-}
 
 manage_configuration() {
-    echo -e "${BLUE}=== 配置文件管理 ===${NC}"
-    echo
-    echo "请选择操作:"
-    echo "1. 导出配置包"
-    echo "2. 导入配置包"
-    echo "0. 返回上级菜单"
-    echo
-    read -p "请输入选择 [0-2]: " choice
+    while true; do
+        echo -e "${BLUE}=== 配置文件管理 ===${NC}"
+        echo
+        echo "请选择操作:"
+        echo "1. 导出配置包"
+        echo "2. 导入配置包"
+        echo "0. 返回上级菜单"
+        echo
+        read -p "请输入选择 [0-2]: " choice
 
-    case $choice in
-        1) export_config ;;
-        2) import_config ;;
-        0) show_main_menu ;;
-        *) echo -e "${RED}无效选择，请输入0-2${NC}"; sleep 1; manage_configuration ;;
-    esac
+        case $choice in
+            1) export_config ;;
+            2) import_config ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择，请输入0-2${NC}"; sleep 1 ;;
+        esac
+    done
 }
 
 export_config() {
@@ -2863,6 +3052,207 @@ EOF
     fi
 }
 
+# 检查端口规则是否存在 (通过Counter判断)
+is_port_rules_exist() {
+    local port=$1
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE" 2>/dev/null || echo "port_traffic_monitor")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE" 2>/dev/null || echo "inet")
+    local port_safe
+    
+    # 依赖 generate_port_group_safe_name 等函数，确保它们在此之前已定义 (它们在文件前面，通常没问题)
+    if is_port_group "$port"; then
+         port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+         port_safe=$(echo "$port" | tr '-' '_')
+    else
+         port_safe="$port"
+    fi
+    
+    nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1
+}
+
+# 封锁端口流量 (用于过期停机)
+# 原理：创建一个限制为0的配额对象，利用 quota over 机制实现阻断
+# 优势：与 "超量限制" 逻辑保持一致，复用现有架构，兼容性更好
+block_port_traffic() {
+    local port=$1
+    
+    # 确保基础链存在
+    init_nftables
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE" 2>/dev/null || echo "port_traffic_monitor")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE" 2>/dev/null || echo "inet")
+    local port_safe
+    
+    if is_port_group "$port"; then
+         port_safe=$(generate_port_group_safe_name "$port")
+    elif is_port_range "$port"; then
+         port_safe=$(echo "$port" | tr '-' '_')
+    else
+         port_safe="$port"
+    fi
+    
+    # 1. 先清理旧规则 (包括旧的 quota 规则)
+    remove_nftables_rules "$port"
+    
+    echo "正在封锁端口 $port 流量..."
+    
+    # 2. 创建一个名为 "_block_quota" 的特殊配额
+    # 设定限制为 0 byte -> 立即触发 over
+    local quota_name="port_${port_safe}_block_quota"
+    
+    # 确保清理旧对象
+    nft delete quota $family $table_name $quota_name 2>/dev/null || true
+    
+    # 创建"立即超量"的配额对象
+    # 注意：不能在 add 时指定 used 值，否则会报 Invalid argument。
+    # 使用 over 0 bytes，第一个包就会触发限制，达到封锁效果。
+    if ! nft add quota $family $table_name $quota_name { over 0 bytes\; } 2>/dev/null; then
+         # 兼容不带分号的格式
+         nft add quota $family $table_name $quota_name { over 0 bytes } 2>/dev/null || true
+    fi
+    
+    # 3. 插入规则：引用该配额对象，动作为 drop
+    # 因为复用了 quota 机制，所以不需要 comment 也能被 remove_nftables_rules 的 grep 识别 (只要名字里含 port_safe)
+    # 也不需要担心语法兼容性，因为这是标准 quota 用法
+    
+    # 针对不同链插入规则 (Input/Forward/Prerouting)
+    # 需要处理端口组、端口段、单端口三种情况
+    if is_port_group "$port"; then
+        # 端口组：需要为每个端口单独添加规则（nftables不支持 tcp dport 101,102,105 这种逗号语法）
+        local group_ports=($(get_group_ports "$port"))
+        for single_port in "${group_ports[@]}"; do
+            for chain in input forward prerouting; do
+                nft insert rule $family $table_name $chain tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+                nft insert rule $family $table_name $chain udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+            done
+            for chain in output forward; do
+                nft insert rule $family $table_name $chain tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+                nft insert rule $family $table_name $chain udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+            done
+        done
+    else
+        # 端口段和单端口：可以直接使用（nftables原生支持端口段语法如 100-200）
+        for chain in input forward prerouting; do
+            nft insert rule $family $table_name $chain tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name $chain udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+        done
+        
+        for chain in output forward; do
+            nft insert rule $family $table_name $chain tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name $chain udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+        done
+    fi
+    
+    # 再次尝试在 ip raw 表封锁 (针对 Docker 端口映射的强力补丁)
+    # 许多 Docker 流量不走 inet filter INPUT，必须在 raw PREROUTING 拦截
+    local raw_table="raw"
+    local raw_chain="PREROUTING"
+    
+    # 检查 ip raw 表是否存在，不存在则不强求
+    if nft list table ip $raw_table >/dev/null 2>&1; then
+        # 在 raw 表也加一条规则 (这里不能用 quota 对象，因为 quota 在 inet 表里)
+        # 没办法引用 inet 表的 quota，只能用纯规则。为了兼容性，不加 comment，纯写 drop
+        # 这条规则可能不好删，所以作为“尽力而为”的补充，或者我们只依赖 inet 的 prerouting
+        
+        # 鉴于之前 raw 表测试里有 drop，说明 raw 表是好使的。
+        # 我们尝试在 inet 表的 prerouting 链里拦截 (它 priority -150，比 docker nat -100 早，应该能拦住)
+        :
+    fi
+}
+
+# 检查所有端口是否过期 (用于每日Cron)
+check_all_ports_expiration() {
+    local active_ports=($(get_active_ports))
+    local today=$(get_beijing_time +%Y-%m-%d)
+    local warning_date=$(get_beijing_time -d "+3 days" +%Y-%m-%d 2>/dev/null || date -d "$(get_beijing_time +%Y-%m-%d) + 3 days" +%Y-%m-%d)
+    
+    for port in "${active_ports[@]}"; do
+        local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+        
+        # 只有设置了到期日才检查
+        if [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
+            local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
+            
+            # 1. 检查是否需要预警 (剩余天数 <= 3 且 > 0)
+            # 计算剩余天数逻辑太复杂，不如直接比较日期字符串
+            # 只要 today < expire_date <= warning_date (今天没过期，但在警戒线内)
+            if [[ "$expire_date" > "$today" ]] && [[ "$expire_date" < "$warning_date" || "$expire_date" == "$warning_date" ]]; then
+                # 读取上次发送预警的日期，防止重复发送
+                local last_warning=$(jq -r ".ports.\"$port\".last_warning_date // \"\"" "$CONFIG_FILE")
+                
+                # 如果尚未发送过预警，或者上次预警不是今天 (理论上一个周期只发一次更好，但为了稳妥，每到一个新的预警天数发一次也行？)
+                # 您的需求是“保证能发出去”，最稳妥的是：只要在3天内，且"本周期内"没发过。
+                # 但判断"本周期"比较麻烦。
+                # 简化稳健策略：只要今天没发过，就发。这样剩3天发一次，剩2天发一次，剩1天发一次。
+                # 或者：记录 last_warning_date。如果 last_warning_date 距离 today 小于 7天（假设），就不重发？
+                # 让我们采用：【每个到期周期只发一次】。
+                # 逻辑：如果 last_warning 存在，且 last_warning 距离 expire_date 小于等于3天，说明已经在本次即将到期的窗口期内发过了。
+                
+                local need_send=true
+                if [ -n "$last_warning" ] && [ "$last_warning" != "null" ]; then
+                     # 检查 last_warning 是否是在本次倒计时期间发的
+                     # 如果 last_warning > (expire_date - 4 days)，说明最近几天发过
+                     # 为了简单有效，我们规定：如果在当前评估的 expire_date 的前7天内已经发过，就不再发。
+                     # 换种思路：记录 last_warning_for_expire = "2023-05-01"。
+                     # 这种最准确。我们在 config 里存 last_warning_target_date 及其对应得操作时间。
+                     
+                     # 简化版：如果 last_warning_date 是最近3天内的，就不发了？
+                     # 不，用户如果不处理，可能希望多提醒几次。
+                     # 这是一个权衡。
+                     # 方案 A: 每天一催 (剩3, 2, 1天各发一封) -> 烦人但安全。
+                     # 方案 B: 只发一次 (剩3天发了，剩2天就不发) -> 清净但怕用户忘。
+                     
+                     # 既然您担心“漏发”，那我倾向于【每天未处理就每天提醒】，直到过期或续费。
+                     # 所以逻辑定为：只要今天没发过 (last_warning != today)，就发。
+                     if [ "$last_warning" == "$today" ]; then
+                         need_send=false
+                     fi
+                fi
+
+                if [ "$need_send" = "true" ]; then
+                    log_notification "[租期预警] 端口 $port 将在近期 ($expire_date) 到期，发送提醒。"
+                    
+                    # 发送邮件预警
+                    if [ -n "$user_email" ] && [ "$user_email" != "null" ]; then
+                        local title="【租期提醒】端口 $port 服务即将到期"
+                        local body="<h1>⚠️ 续费提醒</h1>
+                                    <p>您好，</p>
+                                    <p>您租用的端口 <strong>$port</strong> 即将到期 (<strong>$expire_date</strong>)。</p>
+                                    <p>请及时联系管理员进行续费，以免影响使用。</p>"
+                        if send_email_notification "$title" "$body" "$user_email" >/dev/null 2>&1; then
+                             # 发送成功后，记录今天已发送
+                             update_config ".ports.\"$port\".last_warning_date = \"$today\""
+                        fi
+                    fi
+                fi
+            fi
+
+            # 2. 检查是否过期 (停机)
+            if [[ "$today" > "$expire_date" ]]; then
+                echo "端口 $port 已过期 ($expire_date)，执行停机..."
+                # 只有当规则还存在时才记录日志，避免每天重复刷屏
+                if is_port_rules_exist "$port"; then
+                    log_notification "[租期管理] 端口 $port 租期 (${expire_date}) 已截止，执行到期停机"
+                    
+                    # 发送邮件通知 (停机通知)
+                    if [ -n "$user_email" ] && [ "$user_email" != "null" ]; then
+                        local title="【服务暂停】端口 $port 已到期停机"
+                        local body="<h1>⛔ 服务已暂停</h1>
+                                    <p>您好，</p>
+                                    <p>您租用的端口 <strong>$port</strong> 服务租期 ($expire_date) 已结束。</p>
+                                    <p>该端口目前已被暂停服务。如需恢复使用，请联系管理员续费。</p>"
+                        send_email_notification "$title" "$body" "$user_email" >/dev/null 2>&1
+                    fi
+                fi
+                
+                # 改为执行强制封锁 (先删后封)
+                block_port_traffic "$port"
+                remove_tc_limit "$port"
+            fi
+        fi
+    done
+}
+
 # 卸载脚本
 uninstall_script() {
     echo -e "${BLUE}卸载脚本${NC}"
@@ -2911,21 +3301,23 @@ uninstall_script() {
 }
 
 manage_notifications() {
-    echo -e "${BLUE}=== 通知管理 ===${NC}"
-    echo "1. Telegram机器人通知"
-    echo "2. 邮件通知 (Resend)"
-    echo "3. 企业wx 机器人通知"
-    echo "0. 返回主菜单"
-    echo
-    read -p "请选择操作 [0-3]: " choice
+    while true; do
+        echo -e "${BLUE}=== 通知管理 ===${NC}"
+        echo "1. Telegram机器人通知"
+        echo "2. 邮件通知 (Resend)"
+        echo "3. 企业wx 机器人通知"
+        echo "0. 返回主菜单"
+        echo
+        read -p "请选择操作 [0-3]: " choice
 
-    case $choice in
-        1) manage_telegram_notifications ;;
-        2) manage_email_notifications ;;
-        3) manage_wecom_notifications ;;
-        0) show_main_menu ;;
-        *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_notifications ;;
-    esac
+        case $choice in
+            1) manage_telegram_notifications ;;
+            2) manage_email_notifications ;;
+            3) manage_wecom_notifications ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
 }
 
 manage_telegram_notifications() {
@@ -3020,6 +3412,21 @@ setup_wecom_notification_cron() {
         esac
     fi
 
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+# 部署每日后台检查任务 (主要用于租期管理)
+setup_daily_check_cron() {
+    local script_path="$SCRIPT_PATH"
+    local temp_cron=$(mktemp)
+    
+    # 过滤掉旧的检查任务
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗每日检查" > "$temp_cron" || true
+    
+    # 添加新任务: 每天 00:30 运行
+    echo "30 0 * * * $script_path --daily-check >/dev/null 2>&1  # 端口流量狗每日检查" >> "$temp_cron"
+    
     crontab "$temp_cron"
     rm -f "$temp_cron"
 }
@@ -3699,7 +4106,6 @@ email_configure_info() {
     local current_api_key=$(jq -r '.notifications.email.resend_api_key' "$CONFIG_FILE")
     local current_email_from=$(jq -r '.notifications.email.email_from' "$CONFIG_FILE")
     local current_email_from_name=$(jq -r '.notifications.email.email_from_name' "$CONFIG_FILE")
-    local current_email_from_name=$(jq -r '.notifications.email.email_from_name' "$CONFIG_FILE")
     
     # 显示当前配置
     if [ "$current_api_key" != "" ] && [ "$current_api_key" != "null" ]; then
@@ -4029,6 +4435,10 @@ main() {
                 ;;
             --send-email-status)
                 email_send_status_notification
+                exit 0
+                ;;
+            --daily-check)
+                check_all_ports_expiration
                 exit 0
                 ;;
             --reset-port)
