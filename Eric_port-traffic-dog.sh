@@ -2063,12 +2063,25 @@ set_port_update_expiration() {
                 update_config "del(.ports.\"$port\".expiration_date)"
                 echo -e "${GREEN}已清除租期，端口恢复永久有效。${NC}"
                 
-                # 修复BUG：清除租期后必须解封端口
+                # 【修复BUG】清除租期后必须解封端口，但要保留历史流量数据
                 echo -e "${YELLOW}正在恢复端口服务...${NC}"
+                
+                # 1. 先保存当前流量数据
+                local traffic_data=($(get_port_traffic "$port"))
+                local saved_input=${traffic_data[0]}
+                local saved_output=${traffic_data[1]}
+                echo "保存当前流量: 上行=$(format_bytes $saved_input) 下行=$(format_bytes $saved_output)"
+                
+                # 2. 删除旧规则（包括可能的封锁规则）
                 remove_nftables_rules "$port"
+                
+                # 3. 恢复流量计数器（创建带历史数据的计数器）
+                restore_counter_value "$port" "$saved_input" "$saved_output"
+                
+                # 4. 重新添加监控规则（计数器已存在，不会重新创建）
                 add_nftables_rules "$port"
                 
-                # 恢复配额规则
+                # 5. 恢复配额规则
                 local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
                 if [ "$quota_enabled" = "true" ]; then
                     local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
@@ -2077,7 +2090,7 @@ set_port_update_expiration() {
                     fi
                 fi
                 
-                # 恢复带宽限制
+                # 6. 恢复带宽限制
                 local bw_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
                 if [ "$bw_enabled" = "true" ]; then
                     local bw_rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate" "$CONFIG_FILE")
@@ -2086,6 +2099,7 @@ set_port_update_expiration() {
                     fi
                 fi
 
+                echo -e "${GREEN}端口服务已恢复，历史流量数据已保留${NC}"
                 sleep 2
                 return
                 ;;
@@ -2102,11 +2116,25 @@ set_port_update_expiration() {
             update_config ".ports.\"$port\".expiration_date = \"$new_date\""
             echo -e "${GREEN}续费成功！新到期日: $new_date${NC}"
             
-            # 自动复活逻辑：清理旧规则(含Block) -> 重新添加监控 -> 重新应用Quota
+            # 【修复BUG】自动复活逻辑：必须先保存流量数据，避免续费时清空历史流量！
             echo -e "${YELLOW}正在恢复端口服务...${NC}"
+            
+            # 1. 先保存当前流量数据
+            local traffic_data=($(get_port_traffic "$port"))
+            local saved_input=${traffic_data[0]}
+            local saved_output=${traffic_data[1]}
+            echo "保存当前流量: 上行=$(format_bytes $saved_input) 下行=$(format_bytes $saved_output)"
+            
+            # 2. 删除旧规则（包括可能的封锁规则）
             remove_nftables_rules "$port"
+            
+            # 3. 恢复流量计数器（创建带历史数据的计数器）
+            restore_counter_value "$port" "$saved_input" "$saved_output"
+            
+            # 4. 重新添加监控规则（计数器已存在，不会重新创建）
             add_nftables_rules "$port"
             
+            # 5. 恢复配额限制
             local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
             if [ "$quota_enabled" = "true" ]; then
                 local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
@@ -2115,7 +2143,7 @@ set_port_update_expiration() {
                 fi
             fi
             
-            # 恢复带宽限制 (TC)
+            # 6. 恢复带宽限制 (TC)
             local bw_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
             if [ "$bw_enabled" = "true" ]; then
                 local bw_rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate" "$CONFIG_FILE")
@@ -2124,6 +2152,7 @@ set_port_update_expiration() {
                 fi
             fi
             
+            echo -e "${GREEN}端口服务已恢复，历史流量数据已保留${NC}"
             sleep 2
             return
         fi
