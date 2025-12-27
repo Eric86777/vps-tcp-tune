@@ -4719,7 +4719,7 @@ toggle_auto_backup() {
     else
         echo -e "当前状态: ${YELLOW}已关闭${NC}"
         echo
-        echo "开启后将在每天北京时间 ${GREEN}$backup_time${NC} 自动备份流量数据"
+        echo -e "开启后将在每天北京时间 ${GREEN}$backup_time${NC} 自动备份流量数据"
         echo "自动保留最近7天的备份（循环覆盖）"
         echo
         read -p "是否开启自动备份? [y/N]: " confirm
