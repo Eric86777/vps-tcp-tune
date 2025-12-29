@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.5.3 更新: 修复时区问题(删除TZ设置、重写时区转换、修复所有定时任务，确保按北京时间准确执行) (by Eric86777)
 # v1.5.2 更新: 修复Cron时区自动转换(检测系统时区并自动转换北京时间为本地时间)；修复备份任务清理函数失效Bug (by Eric86777)
 # v1.5.1 更新: 修复Cron时区问题(所有定时任务强制使用北京时间)；修复租期管理带宽恢复格式转换缺失；调整备份时间避免冲突 (by Eric86777)
 # v1.5.0 更新: 新增流量数据备份管理系统(自动备份、手动备份、历史查看、一键恢复) (by Eric86777)
@@ -6,7 +7,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.2"
+readonly SCRIPT_VERSION="1.5.3"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -162,19 +163,13 @@ setup_script_permissions() {
 }
 
 setup_cron_environment() {
-    # cron环境配置：设置PATH和时区，确保所有任务按北京时间执行
+    # cron环境配置：设置PATH，所有任务按系统时区(UTC)执行
     local current_cron=$(crontab -l 2>/dev/null || true)
     local needs_update=false
     local temp_cron=$(mktemp)
     
-    # 设置时区为北京时间（不影响系统时区，仅影响cron任务）
-    echo "TZ=Asia/Shanghai" > "$temp_cron"
-    if ! echo "$current_cron" | grep -q "^TZ="; then
-        needs_update=true
-    fi
-    
     # 设置完整PATH
-    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "$temp_cron"
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > "$temp_cron"
     if ! echo "$current_cron" | grep -q "^PATH=.*sbin"; then
         needs_update=true
     fi
@@ -182,8 +177,8 @@ setup_cron_environment() {
     # 保留现有任务（排除旧的TZ和PATH设置）
     echo "$current_cron" | grep -v "^TZ=" | grep -v "^PATH=" >> "$temp_cron" || true
     
-    # 只有在需要更新时才应用
-    if [ "$needs_update" = true ] || ! echo "$current_cron" | grep -q "^TZ="; then
+    # 如果需要更新，或者存在旧的TZ设置，就应用新配置
+    if [ "$needs_update" = true ] || echo "$current_cron" | grep -q "^TZ="; then
         crontab "$temp_cron" 2>/dev/null || true
     fi
     
@@ -321,47 +316,46 @@ get_beijing_time() {
     TZ='Asia/Shanghai' date "$@"
 }
 
-# 将北京时间转换为系统本地时间（用于 cron 任务）
-# 参数: $1=小时(00-23), $2=分钟(00-59)
-# 返回: "本地小时 本地分钟"
+# 将北京时间转换为UTC时间（用于 cron 任务）
+# 参数: $1=小时(0-23), $2=分钟(0-59), $3=星期(0-6,可选,0=周日)
+# 返回: "UTC小时 UTC分钟 [UTC星期]"
+# 示例: convert_beijing_to_local_time 12 30      → "04 30"
+#       convert_beijing_to_local_time 00 00 1    → "16 00 0" (北京周一00:00 = UTC周日16:00)
 convert_beijing_to_local_time() {
     local beijing_hour=$1
     local beijing_minute=$2
+    local beijing_weekday=$3  # 可选参数
     
-    # 获取当前北京时间的完整日期时间
-    local beijing_now=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
-    local beijing_date=$(echo "$beijing_now" | cut -d' ' -f1)
+    # 北京时间 = UTC+8，转换为UTC需要减8小时
+    local utc_hour=$((beijing_hour - 8))
+    local utc_minute=$beijing_minute
+    local utc_weekday=$beijing_weekday
     
-    # 构建目标北京时间字符串
-    local beijing_datetime="${beijing_date} ${beijing_hour}:${beijing_minute}:00"
-    
-    # 转换为时间戳（关闭set -e的影响）
-    local beijing_timestamp
-    set +e
-    beijing_timestamp=$(TZ='Asia/Shanghai' date -d "$beijing_datetime" +%s 2>/dev/null)
-    local date_result=$?
-    set -e
-    
-    # 如果转换失败，返回原始时间（不转换）
-    if [ $date_result -ne 0 ] || [ -z "$beijing_timestamp" ]; then
-        echo "$beijing_hour $beijing_minute"
-        return 0
+    # 处理跨天情况
+    if [ $utc_hour -lt 0 ]; then
+        # 小时<0，说明跨到了前一天
+        utc_hour=$((utc_hour + 24))
+        
+        # 如果传入了星期参数，需要调整星期（往前推一天）
+        if [ -n "$beijing_weekday" ]; then
+            utc_weekday=$((beijing_weekday - 1))
+            # 周日(0)减1变成-1，应该是周六(6)
+            if [ $utc_weekday -lt 0 ]; then
+                utc_weekday=6
+            fi
+        fi
     fi
     
-    # 转换为系统本地时间
-    local local_hour local_minute
-    set +e
-    local_hour=$(date -d "@${beijing_timestamp}" +%H 2>/dev/null)
-    local_minute=$(date -d "@${beijing_timestamp}" +%M 2>/dev/null)
-    set -e
+    # 格式化输出（补齐前导零，确保两位数）
+    local formatted_hour=$(printf "%02d" $utc_hour)
+    local formatted_minute=$(printf "%02d" $utc_minute)
     
-    # 验证结果
-    if [ -z "$local_hour" ] || [ -z "$local_minute" ]; then
-        echo "$beijing_hour $beijing_minute"
-        return 0
+    # 根据是否有星期参数返回不同格式
+    if [ -n "$utc_weekday" ]; then
+        echo "$formatted_hour $formatted_minute $utc_weekday"
+    else
+        echo "$formatted_hour $formatted_minute"
     fi
-    
-    echo "${local_hour} ${local_minute}"
 }
 
 # 获取系统时区信息（用于显示）
@@ -2430,7 +2424,11 @@ remove_nftables_quota() {
             sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
 
         if [ -z "$handle" ]; then
-            echo "没有更多匹配的配额规则，共删除 $deleted_count 条规则"
+            if [ $deleted_count -eq 0 ]; then
+                echo "该端口未设置配额限制，无需删除配额规则"
+            else
+                echo "没有更多匹配的配额规则，共删除 $deleted_count 条规则"
+            fi
             break
         fi
 
@@ -3485,10 +3483,21 @@ setup_telegram_notification_cron() {
     if [ "$telegram_enabled" = "true" ]; then
         local status_interval=$(jq -r '.notifications.telegram.status_notifications.interval' "$CONFIG_FILE")
         
-        # 对于需要指定时间的间隔，转换北京时间 00:00 为系统本地时间
-        local local_time=($(convert_beijing_to_local_time "00" "00"))
-        local local_hour=${local_time[0]:-0}
-        local local_minute=${local_time[1]:-0}
+        # 对于需要指定时间的间隔，转换北京时间 00:00 为UTC时间
+        local local_hour local_minute local_weekday
+        
+        # 7天间隔需要特殊处理：转换北京周一00:00 → UTC时间+星期
+        if [ "$status_interval" == "7d" ]; then
+            local result=($(convert_beijing_to_local_time "00" "00" "1"))  # 北京周一
+            local_hour=${result[0]:-0}
+            local_minute=${result[1]:-0}
+            local_weekday=${result[2]:-1}  # UTC星期
+        else
+            # 其他间隔：仅转换时间
+            local result=($(convert_beijing_to_local_time "00" "00"))
+            local_hour=${result[0]:-0}
+            local_minute=${result[1]:-0}
+        fi
         
         # 验证转换结果
         if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
@@ -3506,7 +3515,7 @@ setup_telegram_notification_cron() {
             "12h") echo "0 */12 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "24h"|"1d") echo "$local_minute $local_hour * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "3d")  echo "$local_minute $local_hour */3 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
-            "7d")  echo "$local_minute $local_hour * * 1 $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "7d")  echo "$local_minute $local_hour * * $local_weekday $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
             "15d") echo "$local_minute $local_hour 1,15 * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
         esac
     fi
@@ -3525,10 +3534,21 @@ setup_wecom_notification_cron() {
     if [ "$wecom_enabled" = "true" ]; then
         local wecom_interval=$(jq -r '.notifications.wecom.status_notifications.interval' "$CONFIG_FILE")
         
-        # 对于需要指定时间的间隔，转换北京时间 00:00 为系统本地时间
-        local local_time=($(convert_beijing_to_local_time "00" "00"))
-        local local_hour=${local_time[0]:-0}
-        local local_minute=${local_time[1]:-0}
+        # 对于需要指定时间的间隔，转换北京时间 00:00 为UTC时间
+        local local_hour local_minute local_weekday
+        
+        # 7天间隔需要特殊处理：转换北京周一00:00 → UTC时间+星期
+        if [ "$wecom_interval" == "7d" ]; then
+            local result=($(convert_beijing_to_local_time "00" "00" "1"))  # 北京周一
+            local_hour=${result[0]:-0}
+            local_minute=${result[1]:-0}
+            local_weekday=${result[2]:-1}  # UTC星期
+        else
+            # 其他间隔：仅转换时间
+            local result=($(convert_beijing_to_local_time "00" "00"))
+            local_hour=${result[0]:-0}
+            local_minute=${result[1]:-0}
+        fi
         
         # 验证转换结果
         if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
@@ -3546,7 +3566,7 @@ setup_wecom_notification_cron() {
             "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "24h"|"1d") echo "$local_minute $local_hour * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "3d")  echo "$local_minute $local_hour */3 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "7d")  echo "$local_minute $local_hour * * 1 $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "7d")  echo "$local_minute $local_hour * * $local_weekday $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
             "15d") echo "$local_minute $local_hour 1,15 * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
         esac
     fi
@@ -3591,10 +3611,21 @@ setup_email_notification_cron() {
     if [ "$email_enabled" = "true" ]; then
         local email_interval=$(jq -r '.notifications.email.status_notifications.interval' "$CONFIG_FILE")
         
-        # 对于需要指定时间的间隔，转换北京时间 00:00 为系统本地时间
-        local local_time=($(convert_beijing_to_local_time "00" "00"))
-        local local_hour=${local_time[0]:-0}
-        local local_minute=${local_time[1]:-0}
+        # 对于需要指定时间的间隔，转换北京时间 00:00 为UTC时间
+        local local_hour local_minute local_weekday
+        
+        # 7天间隔需要特殊处理：转换北京周一00:00 → UTC时间+星期
+        if [ "$email_interval" == "7d" ]; then
+            local result=($(convert_beijing_to_local_time "00" "00" "1"))  # 北京周一
+            local_hour=${result[0]:-0}
+            local_minute=${result[1]:-0}
+            local_weekday=${result[2]:-1}  # UTC星期
+        else
+            # 其他间隔：仅转换时间
+            local result=($(convert_beijing_to_local_time "00" "00"))
+            local_hour=${result[0]:-0}
+            local_minute=${result[1]:-0}
+        fi
         
         # 验证转换结果
         if ! [[ "$local_hour" =~ ^[0-9]+$ ]] || ! [[ "$local_minute" =~ ^[0-9]+$ ]]; then
@@ -3612,7 +3643,7 @@ setup_email_notification_cron() {
             "12h") echo "0 */12 * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "24h"|"1d") echo "$local_minute $local_hour * * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "3d")  echo "$local_minute $local_hour */3 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
-            "7d")  echo "$local_minute $local_hour * * 1 $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
+            "7d")  echo "$local_minute $local_hour * * $local_weekday $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
             "15d") echo "$local_minute $local_hour 1,15 * * $script_path --send-email-status >/dev/null 2>&1  # 端口流量狗邮件通知" >> "$temp_cron" ;;
         esac
     fi
@@ -3675,6 +3706,23 @@ export_notification_functions() {
     export -f select_notification_interval
 }
 
+# 判断今天是否应该执行每月任务
+# 参数: $1=目标日期(1-31)
+# 返回: 0=应该执行, 1=不应该执行
+should_run_monthly_task() {
+    local target_day=$1
+    
+    # 获取北京时间的今天日期（去掉前导零）
+    local beijing_today=$(TZ='Asia/Shanghai' date +%-d)
+    
+    # 判断是否匹配
+    if [ "$beijing_today" == "$target_day" ]; then
+        return 0  # 应该执行
+    else
+        return 1  # 跳过
+    fi
+}
+
 setup_port_auto_reset_cron() {
     local port="$1"
     local script_path="$SCRIPT_PATH"
@@ -3710,7 +3758,8 @@ setup_port_auto_reset_cron() {
             local_minute=5
         fi
         
-        echo "$local_minute $local_hour $reset_day * * $script_path --reset-port '$port' >/dev/null 2>&1  # 端口流量狗自动重置ID_$port_id" >> "$temp_cron"
+        # 改为每天执行，脚本内部判断日期
+        echo "$local_minute $local_hour * * * $script_path --reset-port-if-match '$port' '$reset_day' >/dev/null 2>&1  # 端口流量狗自动重置ID_$port_id" >> "$temp_cron"
     fi
 
     crontab "$temp_cron"
@@ -5050,6 +5099,26 @@ main() {
                     exit 1
                 fi
                 auto_reset_port "$2"
+                exit 0
+                ;;
+            --reset-port-if-match)
+                if [ $# -lt 3 ]; then
+                    echo -e "${RED}错误：--reset-port-if-match 需要指定端口号和日期${NC}"
+                    exit 1
+                fi
+                local port_to_reset="$2"
+                local target_day="$3"
+                
+                # 判断今天是否是目标日期
+                if should_run_monthly_task "$target_day"; then
+                    # 是目标日期，执行重置
+                    auto_reset_port "$port_to_reset"
+                    log_action "端口 $port_to_reset 流量已重置（北京时间${target_day}号）"
+                else
+                    # 不是目标日期，跳过
+                    local beijing_today=$(TZ='Asia/Shanghai' date +%-d)
+                    log_action "今天是北京时间${beijing_today}号，跳过端口 $port_to_reset 的重置（目标日期:${target_day}号）"
+                fi
                 exit 0
                 ;;
             *)
