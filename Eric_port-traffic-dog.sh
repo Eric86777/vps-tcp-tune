@@ -324,7 +324,7 @@ get_beijing_time() {
 convert_beijing_to_local_time() {
     local beijing_hour=$1
     local beijing_minute=$2
-    local beijing_weekday=$3  # 可选参数
+    local beijing_weekday=${3:-}  # 可选参数，使用默认值避免unbound variable
     
     # 北京时间 = UTC+8，转换为UTC需要减8小时
     local utc_hour=$((beijing_hour - 8))
