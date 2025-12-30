@@ -279,4 +279,6 @@ dog
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Eric86777/vps-tcp-tune&type=Date)](https://star-history.com/#Eric86777/vps-tcp-tune&Date)
+<a href="https://star-history.com/#Eric86777/vps-tcp-tune&Date">
+  <img src="https://api.star-history.com/svg?repos=Eric86777/vps-tcp-tune&type=Date" alt="Star History Chart" width="600">
+</a>
