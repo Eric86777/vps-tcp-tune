@@ -127,7 +127,7 @@ install_alias() {
 # 使用时间戳参数确保每次都获取最新版本，避免缓存
 # ========================================
 alias bbr="bash <(curl -fsSL \"https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/net-tcp-tune.sh?\$(date +%s)\")"
-alias dog="bash <(curl -fsSL \"https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/Eric_port-traffic-dog.sh?\$(date +%s)\") --shortcut"
+alias dog="bash <(curl -fsSL \"https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/Eric_port-traffic-dog.sh?\$(date +%s)\")"
 '
     
     # 检查别名是否已存在
