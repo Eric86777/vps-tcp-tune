@@ -132,13 +132,24 @@ alias dog="bash <(curl -fsSL \"https://raw.githubusercontent.com/Eric86777/vps-t
     
     # 检查别名是否已存在
     if grep -q "net-tcp-tune 快捷别名" "$RC_FILE" 2>/dev/null; then
-        echo -e "${YELLOW}别名已存在，正在更新配置...${NC}"
-        # 先删除旧的
+        echo -e "${YELLOW}配置已存在，正在更新...${NC}"
+        
+        # 备份文件
+        cp "$RC_FILE" "${RC_FILE}.bak"
+        
+        # 方案：读取文件，过滤掉原来的 alias dog= 行，然后再追加新的
+        # 1. 如果有旧的块结构，尝试整体替换（兼容旧版）
         if grep -q "^# ================" "$RC_FILE" 2>/dev/null; then
-             sed -i.bak '/^# ================/,/^alias dog=/d' "$RC_FILE" 2>/dev/null || sed -i.bak '/^# ================/,/^alias bbr=/d' "$RC_FILE"
+             sed -i '/^# ================/,/^alias dog=/d' "$RC_FILE" 2>/dev/null || sed -i '/^# ================/,/^alias bbr=/d' "$RC_FILE"
         else
-             sed -i.bak '/net-tcp-tune 快捷别名/,/^alias bbr=/d' "$RC_FILE"
+             sed -i '/net-tcp-tune 快捷别名/,/^alias bbr=/d' "$RC_FILE"
         fi
+
+        # 2. ⚡️暴力清理：确保没有残留的 alias dog= 行 (这是为了修复之前 sed 没删干净的情况)
+        if grep -q "alias dog=" "$RC_FILE"; then
+            grep -v "alias dog=" "$RC_FILE" > "${RC_FILE}.tmp" && mv "${RC_FILE}.tmp" "$RC_FILE"
+        fi
+        
         # 再添加新的
         echo "$ALIAS_CONTENT" >> "$RC_FILE"
         echo -e "${GREEN}✅ 别名已更新到 ${RC_FILE}${NC}"
