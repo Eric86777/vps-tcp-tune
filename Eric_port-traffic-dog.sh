@@ -2528,6 +2528,93 @@ remove_nftables_quota() {
     echo "端口 $port 的配额限制删除完成"
 }
 
+# ==============================================================================
+# 备用方案（v1.6.3逻辑）：高级带宽限制实现
+# 功能特性：
+# 1. 自动检测并强制将网卡根队列切换为 HTB（解决 Debian12/13 下 BBR+FQ 导致的带宽限制失效问题）
+# 2. 创建默认直通分类（Class 1:30），确保未限速端口继续跑满带宽，不丢失性能
+# 3. 提供详细的错误捕捉和报告
+#
+# 如果未来需要启用此逻辑，请替换下方的 apply_tc_limit 函数
+#
+# apply_tc_limit_advanced() {
+#     local port=$1
+#     local total_limit=$2
+#     local interface=$(get_default_interface)
+#
+#     # 尝试加载sch_htb模块
+#     modprobe sch_htb 2>/dev/null || true
+#
+#     # 检查并初始化根队列为HTB
+#     if ! tc qdisc show dev $interface | grep -q "qdisc htb 1: root"; then
+#         # 如果根队列不是HTB，尝试替换为HTB
+#         # 注意：这会移除原有的根队列（如fq），但为了带宽限制是必须的
+#         if ! tc qdisc replace dev $interface root handle 1: htb default 30 2>/dev/null; then
+#              # 如果替换失败，尝试显示详细错误
+#              echo -e "${RED}设置根队列失败，尝试强制替换...${NC}"
+#              local err_out
+#              if ! err_out=$(tc qdisc replace dev $interface root handle 1: htb default 30 2>&1); then
+#                  echo -e "${RED}无法初始化HTB队列: $err_out${NC}" >&2
+#                  return 1
+#              fi
+#         fi
+#         # 初始化总带宽类 (1:1)
+#         tc class add dev $interface parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
+#         # 初始化默认全速类 (1:30) - 承载所有未被限制的流量
+#         tc class add dev $interface parent 1:1 classid 1:30 htb rate 1000mbit ceil 1000mbit prio 0 2>/dev/null || true
+#         tc qdisc add dev $interface parent 1:30 handle 30: sfq perturb 10 2>/dev/null || true
+#     else
+#         # 已经是HTB，确保基础类存在
+#         tc class add dev $interface parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
+#         tc class add dev $interface parent 1:1 classid 1:30 htb rate 1000mbit ceil 1000mbit prio 0 2>/dev/null || true
+#         tc qdisc add dev $interface parent 1:30 handle 30: sfq perturb 10 2>/dev/null || true
+#     fi
+#
+#     local class_id=$(generate_tc_class_id "$port")
+#     tc class del dev $interface classid $class_id 2>/dev/null || true
+#
+#     # 计算burst参数以优化性能
+#     local base_rate=$(parse_tc_rate_to_kbps "$total_limit")
+#     local burst_bytes=$(calculate_tc_burst "$base_rate")
+#     local burst_size=$(format_tc_burst "$burst_bytes")
+#
+#     local out
+#     if ! out=$(tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>&1); then
+#         echo -e "${RED}设置带宽限制失败: $out${NC}" >&2
+#         return 1
+#     fi
+#     # 为限制类添加sfq公平队列
+#     tc qdisc add dev $interface parent $class_id handle $class_id: sfq perturb 10 2>/dev/null || true
+#
+#     if is_port_group "$port"; then
+#         # 端口组：使用fw分类器根据共享标记分类
+#         local mark_id=$(generate_port_group_mark "$port")
+#         tc filter add dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
+#
+#     elif is_port_range "$port"; then
+#         # 端口段：使用fw分类器根据标记分类
+#         local mark_id=$(generate_port_range_mark "$port")
+#         tc filter add dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
+#
+#     else
+#         # 单端口：使用u32精确匹配，避免优先级冲突
+#         local filter_prio=$((port % 1000 + 1))
+#
+#         # TCP协议过滤器
+#         tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+#             match ip protocol 6 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+#         tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+#             match ip protocol 6 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+#
+#         # UDP协议过滤器
+#         tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+#             match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+#         tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+#             match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+#     fi
+# }
+# ==============================================================================
+
 apply_tc_limit() {
     local port=$1
     local total_limit=$2
