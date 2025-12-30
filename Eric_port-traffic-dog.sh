@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.5.9 更新: 主菜单端口列表增加运行状态显示(🟢运行中/🔴超额封锁/🔴过期封锁/🟡限速) (by Eric86777)
 # v1.5.8 更新: 修复菜单递归调用导致需要多次按0才能返回的Bug (by Eric86777)
 # v1.5.7 更新: 修复检测功能在set -e模式下异常退出的Bug (by Eric86777)
 # v1.5.6 更新: 修复检测功能配额显示Bug、修复检测完成后未返回主菜单 (by Eric86777)
@@ -11,7 +12,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.8"
+readonly SCRIPT_VERSION="1.5.9"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -710,6 +711,68 @@ calculate_total_traffic() {
     esac
 }
 
+# 获取端口运行状态（准确检测 nftables/tc 规则）
+# 返回: running / blocked_quota / blocked_expired / rate_limited
+get_port_running_status() {
+    local port=$1
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE" 2>/dev/null || echo "port_traffic_monitor")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE" 2>/dev/null || echo "inet")
+    local port_safe=$(echo "$port" | tr ',' '_' | tr '-' '_')
+    
+    # 1. 检查是否被租期过期封锁（存在 _block_quota 对象）
+    if nft list quota $family $table_name "port_${port_safe}_block_quota" &>/dev/null; then
+        echo "blocked_expired"
+        return
+    fi
+    
+    # 2. 检查是否配额超限封锁
+    local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+    if [ "$quota_limit" != "unlimited" ]; then
+        local current_usage=$(get_port_monthly_usage "$port" 2>/dev/null || echo "0")
+        local limit_bytes=$(parse_size_to_bytes "$quota_limit" 2>/dev/null || echo "0")
+        if [ "$current_usage" -ge "$limit_bytes" ] && [ "$limit_bytes" -gt 0 ]; then
+            echo "blocked_quota"
+            return
+        fi
+    fi
+    
+    # 3. 检查是否有带宽限制
+    local bandwidth_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
+    if [ "$bandwidth_enabled" = "true" ]; then
+        local rate=$(jq -r ".ports.\"$port\".bandwidth_limit.rate // \"unlimited\"" "$CONFIG_FILE")
+        if [ "$rate" != "unlimited" ]; then
+            echo "rate_limited:$rate"
+            return
+        fi
+    fi
+    
+    # 4. 正常运行中
+    echo "running"
+}
+
+# 格式化端口运行状态为显示标签
+format_running_status() {
+    local status=$1
+    case "$status" in
+        "running")
+            echo "🟢"
+            ;;
+        "blocked_expired")
+            echo "🔴过期封锁"
+            ;;
+        "blocked_quota")
+            echo "🔴超额封锁"
+            ;;
+        rate_limited:*)
+            local rate="${status#rate_limited:}"
+            echo "🟡限速${rate}"
+            ;;
+        *)
+            echo "⚪"
+            ;;
+    esac
+}
+
 get_port_status_label() {
     local port=$1
     local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE" 2>/dev/null)
@@ -999,6 +1062,10 @@ format_port_list() {
         local output_formatted=$(format_bytes $output_bytes)
         local status_label=$(get_port_status_label "$port")
         local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+        
+        # 获取运行状态
+        local running_status=$(get_port_running_status "$port")
+        local running_label=$(format_running_status "$running_status")
 
         # 所有模式都×2显示，反映真实网卡消耗
         local input_formatted=$(format_bytes $((input_bytes * 2)))
@@ -1020,13 +1087,13 @@ format_port_list() {
         fi
 
         if [ "$format_type" = "display" ]; then
-            echo -e "${prefix}:${GREEN}$port_display${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
+            echo -e "${running_label} ${prefix}:${GREEN}$port_display${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行: ${GREEN}$input_formatted${NC} | 下行:${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
         elif [ "$format_type" = "markdown" ]; then
-            result+="> ${prefix}:**${port_display}** | 总流量:**${total_formatted}** | 上行:**${input_formatted}** | 下行:**${output_formatted}** | ${status_label}
+            result+="$running_label ${prefix}:**${port_display}** | 总流量:**${total_formatted}** | 上行:**${input_formatted}** | 下行:**${output_formatted}** | ${status_label}
 "
         else
             result+="
-${prefix}:${port_display} | 总流量:${total_formatted} | 上行(入站): ${input_formatted} | 下行(出站):${output_formatted} | ${status_label}"
+$running_label ${prefix}:${port_display} | 总流量:${total_formatted} | 上行: ${input_formatted} | 下行:${output_formatted} | ${status_label}"
         fi
     done
 
