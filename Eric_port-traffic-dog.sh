@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.5.7 更新: 修复检测功能在set -e模式下异常退出的Bug (by Eric86777)
 # v1.5.6 更新: 修复检测功能配额显示Bug、修复检测完成后未返回主菜单 (by Eric86777)
 # v1.5.5 更新: 配置检测功能升级为完整详细版(逐端口检测计数器、counter规则数、quota规则数、总规则数) (by Eric86777)
 # v1.5.4 更新: 新增配置检测功能(诊断和修复端口规则异常)、优化稳定性 (by Eric86777)
@@ -9,7 +10,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.6"
+readonly SCRIPT_VERSION="1.5.7"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -3524,7 +3525,7 @@ diagnose_port_config() {
         if [ "$counter_ok" = false ] || [ "$quota_ok" = false ]; then
             problem_ports+=("$port")
         else
-            ((ok_count++))
+            ok_count=$((ok_count + 1))
         fi
         
         echo
