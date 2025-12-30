@@ -6788,8 +6788,6 @@ show_main_menu() {
     echo "4. MTU检测与MSS优化（消除重传）⭐ 推荐"
     echo "5. NS论坛-DNS净化（抗污染/驯服DHCP）"
     echo "6. Realm转发timeout修复 ⭐ 推荐"
-    # echo "7. NS论坛CAKE调优"      # [已注销]
-    # echo "8. 科技lion高性能模式"   # [已注销]
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[网络设置]${gl_bai}"
@@ -6843,6 +6841,11 @@ show_main_menu() {
     echo "35. 科技lion脚本"
     echo "36. 酷雪云脚本"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━ 原注销脚本恢复 ━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
+    echo "37. NS论坛CAKE调优"
+    echo "38. 科技lion高性能模式"
+    echo ""
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -6882,8 +6885,6 @@ show_main_menu() {
             realm_fix_timeout
             break_end
             ;;
-        # [已注销] 7) startbbrcake ;;
-        # [已注销] 8) Kernel_optimize ;;
         7)
             manage_ip_priority
             ;;
@@ -6973,6 +6974,12 @@ show_main_menu() {
             ;;
         36)
             run_kxy_script
+            ;;
+        37)
+            startbbrcake
+            ;;
+        38)
+            Kernel_optimize
             ;;
         99)
             uninstall_all
