@@ -1,4 +1,4 @@
-# VPS TCP 优化 & 端口流量狗工具箱
+# VPS TCP Tune & Traffic Dog
 > **项目地址**: https://github.com/Eric86777/vps-tcp-tune
 
 🚀 **一站式 VPS 优化与管理解决方案**  
