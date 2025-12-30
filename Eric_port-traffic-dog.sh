@@ -3467,7 +3467,10 @@ diagnose_port_config() {
         local quota_ok=true
         if [ "$quota_limit" != "unlimited" ]; then
             if nft list quota $family $table_name "port_${port_safe}_quota" &>/dev/null; then
-                local quota_used=$(nft list quota $family $table_name "port_${port_safe}_quota" 2>/dev/null | grep used | awk '{print $6}')
+                # 解析 quota 输出，格式类似: quota port_xxx_quota { over 100 gbytes used 9254064685 bytes }
+                local quota_output=$(nft list quota $family $table_name "port_${port_safe}_quota" 2>/dev/null)
+                local quota_used=$(echo "$quota_output" | sed -n 's/.*used \([0-9]*\) bytes.*/\1/p' | head -1)
+                [ -z "$quota_used" ] && quota_used="0"
                 echo -e "  ${GREEN}✅ 配额对象存在 (已使用: $quota_used bytes)${NC}"
             else
                 echo -e "  ${RED}❌ 配额对象缺失!${NC}"
@@ -3569,6 +3572,7 @@ diagnose_port_config() {
     
     echo
     read -p "按回车键返回..." 
+    show_main_menu
 }
 
 # 卸载脚本
