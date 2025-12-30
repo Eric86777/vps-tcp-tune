@@ -271,6 +271,8 @@ dog
 
 ---
 
-## Star History
+## ⭐ 支持项目
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Eric86777/vps-tcp-tune&type=Date)](https://www.star-history.com/#Eric86777/vps-tcp-tune&Date)
+如果这个脚本对你有帮助，欢迎 Star！
+
+[![GitHub stars](https://img.shields.io/github/stars/Eric86777/vps-tcp-tune?style=social)](https://github.com/Eric86777/vps-tcp-tune)
