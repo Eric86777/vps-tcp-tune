@@ -218,7 +218,9 @@ A: 是的，首次安装内核后必须重启服务器。后续修改参数（�
 
 一款轻量级、高性能的端口流量统计与限制工具，专为合租/通过流量计费的场景设计。
 
-**安装脚本（安装后只需输入 `dog` 即可运行）：**
+### 📦 全新安装
+
+**如果是第一次安装，直接执行：**
 
 ```bash
 # 安装别名
@@ -231,7 +233,37 @@ source ~/.bashrc  # 或 source ~/.zshrc
 dog
 ```
 
-**✨ 优势**：
+### 🔄 从旧版本迁移（重要！）
+
+**如果你之前使用过原版流量狗或手动安装过脚本，请先执行清理：**
+
+> ⚠️ **放心**：以下操作只删除脚本文件，**不会删除你的流量数据和配置**！  
+> 所有数据都保存在 `/etc/port-traffic-dog/` 目录中，完全不受影响。
+
+```bash
+# 1. 清理旧的脚本文件和软链接（数据不受影响）
+rm -f /usr/local/bin/dog /usr/local/bin/port-traffic-dog.sh
+
+# 2. 安装新的别名（从 GitHub 拉取最新版）
+bash <(curl -fsSL "https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh?$(date +%s)")
+
+# 3. 重新加载配置
+source ~/.bashrc
+
+# 4. 验证安装（应该显示 "dog is aliased to ..."）
+type dog
+
+# 5. 运行新版本
+dog
+```
+
+**迁移后的优势**：
+- ✅ 每次运行 `dog` 自动获取 GitHub 上的最新版本
+- ✅ 无需手动更新脚本
+- ✅ 所有历史数据、端口配置、通知设置完整保留
+
+### ✨ 功能亮点
+
 - ✅ 计费级精度 (nftables)
 - ✅ 自动阻断与恢复
 - ✅ 流量自动备份
