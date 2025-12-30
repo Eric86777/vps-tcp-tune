@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.6.0 更新: 修复带宽限制设置时tc命令失败导致脚本退出的Bug (by Eric86777)
 # v1.5.9 更新: 主菜单端口列表增加运行状态显示(🟢运行中/🔴超额封锁/🔴过期封锁/🟡限速) (by Eric86777)
 # v1.5.8 更新: 修复菜单递归调用导致需要多次按0才能返回的Bug (by Eric86777)
 # v1.5.7 更新: 修复检测功能在set -e模式下异常退出的Bug (by Eric86777)
@@ -12,7 +13,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.9"
+readonly SCRIPT_VERSION="1.6.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1901,7 +1902,10 @@ set_port_bandwidth_limit() {
             tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
         fi
 
-        apply_tc_limit "$port" "$tc_limit"
+        if ! apply_tc_limit "$port" "$tc_limit"; then
+            echo -e "${RED}端口 $port 带宽限制设置失败${NC}"
+            continue
+        fi
 
         update_config ".ports.\"$port\".bandwidth_limit.enabled = true |
             .ports.\"$port\".bandwidth_limit.rate = \"$limit\""
@@ -2538,7 +2542,10 @@ apply_tc_limit() {
     local burst_bytes=$(calculate_tc_burst "$base_rate")
     local burst_size=$(format_tc_burst "$burst_bytes")
 
-    tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size
+    if ! tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
+        echo -e "${RED}设置带宽限制失败，请检查网络设备${NC}" >&2
+        return 1
+    fi
 
     if is_port_group "$port"; then
         # 端口组：使用fw分类器根据共享标记分类
