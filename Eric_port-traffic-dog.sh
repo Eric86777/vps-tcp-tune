@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.5.5 更新: 配置检测功能升级为完整详细版(逐端口检测计数器、counter规则数、quota规则数、总规则数) (by Eric86777)
 # v1.5.4 更新: 新增配置检测功能(诊断和修复端口规则异常)、优化稳定性 (by Eric86777)
 # v1.5.2 更新: 修复Cron时区自动转换(检测系统时区并自动转换北京时间为本地时间)；修复备份任务清理函数失效Bug (by Eric86777)
 # v1.5.1 更新: 修复Cron时区问题(所有定时任务强制使用北京时间)；修复租期管理带宽恢复格式转换缺失；调整备份时间避免冲突 (by Eric86777)
@@ -7,7 +8,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.4"
+readonly SCRIPT_VERSION="1.5.5"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -3368,17 +3369,18 @@ check_all_ports_expiration() {
     done
 }
 
-# 当前流量狗配置检测
+# 当前流量狗配置检测 (完整详细版)
 diagnose_port_config() {
     clear
-    echo -e "${BLUE}=== 当前流量狗配置检测 ===${NC}"
-    echo "────────────────────────────────────────────────────────"
-    echo "正在检测所有端口的规则完整性..."
+    echo -e "${BLUE}==================== 开始完整检测 ====================${NC}"
     echo
     
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local active_ports=($(get_active_ports))
+    
+    echo -e "表名: ${GREEN}$table_name${NC} | 协议族: ${GREEN}$family${NC}"
+    echo
     
     if [ ${#active_ports[@]} -eq 0 ]; then
         echo -e "${YELLOW}暂无监控端口${NC}"
@@ -3390,94 +3392,159 @@ diagnose_port_config() {
     local problem_ports=()
     local ok_count=0
     
-    # 性能优化: 预先获取一次所有规则，避免循环中反复调用 nft list 导致卡死
+    # 性能优化: 预先获取一次所有规则
     local all_rules=$(nft -a list table $family $table_name 2>/dev/null)
     
     for port in "${active_ports[@]}"; do
+        echo -e "${BLUE}==========================================${NC}"
+        echo -e "${BLUE}检测端口/端口组: ${GREEN}$port${NC}"
+        echo -e "${BLUE}==========================================${NC}"
+        
+        # 1. 基本信息
         local port_safe=$(echo "$port" | tr ',' '_' | tr '-' '_')
+        local remark=$(jq -r ".ports.\"$port\".remark // \"无备注\"" "$CONFIG_FILE")
         local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+        local bandwidth_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
         
-        # 检查计数器
+        echo "备注: $remark"
+        echo "配额限制: $quota_limit"
+        echo "带宽限制: $bandwidth_enabled"
+        echo
+        
+        # 2. 检查计数器
+        echo -e "${YELLOW}[计数器检查]${NC}"
         local counter_ok=true
-        if ! nft list counter $family $table_name "port_${port_safe}_in" &>/dev/null; then
-            counter_ok=false
-        fi
-        if ! nft list counter $family $table_name "port_${port_safe}_out" &>/dev/null; then
+        if nft list counter $family $table_name "port_${port_safe}_in" &>/dev/null; then
+            local counter_in=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | grep bytes | awk '{print $4}')
+            echo -e "  ${GREEN}✅ 入站计数器存在: $counter_in bytes${NC}"
+        else
+            echo -e "  ${RED}❌ 入站计数器缺失!${NC}"
             counter_ok=false
         fi
         
-        # 检查quota规则(如果设置了配额限制)
+        if nft list counter $family $table_name "port_${port_safe}_out" &>/dev/null; then
+            local counter_out=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | grep bytes | awk '{print $4}')
+            echo -e "  ${GREEN}✅ 出站计数器存在: $counter_out bytes${NC}"
+        else
+            echo -e "  ${RED}❌ 出站计数器缺失!${NC}"
+            counter_ok=false
+        fi
+        echo
+        
+        # 3. 检查流量统计规则（counter规则）
+        echo -e "${YELLOW}[流量统计规则检查]${NC}"
+        local counter_rules=$(echo "$all_rules" | grep "counter name \"port_${port_safe}_" | wc -l)
+        echo "  counter规则总数: $counter_rules"
+        
+        # 判断端口类型并计算预期规则数
+        local expected_counter_rules=0
+        if is_port_group "$port"; then
+            local port_type="端口组"
+            local group_ports=($(get_group_ports "$port"))
+            local port_count=${#group_ports[@]}
+            expected_counter_rules=$((port_count * 8))  # 每个端口8条counter规则
+            echo "  端口类型: $port_type (包含 $port_count 个端口)"
+        elif is_port_range "$port"; then
+            local port_type="端口段"
+            expected_counter_rules=8
+            echo "  端口类型: $port_type"
+        else
+            local port_type="单端口"
+            expected_counter_rules=8
+            echo "  端口类型: $port_type"
+        fi
+        echo "  预期counter规则: $expected_counter_rules 条"
+        
+        if [ $counter_rules -eq $expected_counter_rules ]; then
+            echo -e "  ${GREEN}✅ counter规则完整${NC}"
+        else
+            echo -e "  ${YELLOW}⚠️  counter规则数量异常 (实际: $counter_rules, 预期: $expected_counter_rules)${NC}"
+        fi
+        echo
+        
+        # 4. 检查配额规则
+        echo -e "${YELLOW}[配额限制规则检查]${NC}"
         local quota_ok=true
         if [ "$quota_limit" != "unlimited" ]; then
-            # 这里的匹配需要更严谨，确保是在 all_rules 中匹配
-            if ! echo "$all_rules" | grep -q "quota name \"port_${port_safe}_quota\" drop"; then
+            if nft list quota $family $table_name "port_${port_safe}_quota" &>/dev/null; then
+                local quota_used=$(nft list quota $family $table_name "port_${port_safe}_quota" 2>/dev/null | grep used | awk '{print $6}')
+                echo -e "  ${GREEN}✅ 配额对象存在 (已使用: $quota_used bytes)${NC}"
+            else
+                echo -e "  ${RED}❌ 配额对象缺失!${NC}"
                 quota_ok=false
             fi
+            
+            local quota_drop_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
+            
+            local expected_quota_rules=0
+            if is_port_group "$port"; then
+                expected_quota_rules=$((port_count * 16))
+            else
+                expected_quota_rules=16
+            fi
+            
+            echo "  quota drop规则数量: $quota_drop_rules (预期: $expected_quota_rules)"
+            
+            if [ $quota_drop_rules -eq $expected_quota_rules ]; then
+                echo -e "  ${GREEN}✅ quota规则完整${NC}"
+            else
+                echo -e "  ${YELLOW}⚠️  quota规则数量异常${NC}"
+                quota_ok=false
+            fi
+        else
+            echo -e "  ${CYAN}⏭️  无配额限制，跳过检查${NC}"
+        fi
+        echo
+        
+        # 5. 总规则数统计
+        echo -e "${YELLOW}[总规则数统计]${NC}"
+        local total_rules=$(echo "$all_rules" | grep -c "$port_safe" || echo "0")
+        echo "  包含 '$port_safe' 的总规则数: $total_rules"
+        
+        # 计算预期总规则数
+        local expected_total=3  # counter定义(2个) + quota定义(1个，如果有)
+        expected_total=$((expected_total + counter_rules))
+        if [ "$quota_limit" != "unlimited" ]; then
+            expected_total=$((expected_total + quota_drop_rules))
         fi
         
-        # 判断状态
-        if [ "$counter_ok" = false ]; then
-            problem_ports+=("$port")
-        elif [ "$quota_ok" = false ]; then
+        echo "  理论最小规则数: $expected_total"
+        
+        if [ $total_rules -ge $expected_total ]; then
+            echo -e "  ${GREEN}✅ 规则数量正常${NC}"
+        else
+            echo -e "  ${YELLOW}⚠️  规则数量可能不足${NC}"
+        fi
+        
+        # 判断整体状态
+        if [ "$counter_ok" = false ] || [ "$quota_ok" = false ]; then
             problem_ports+=("$port")
         else
             ((ok_count++))
         fi
+        
+        echo
     done
     
-    # 显示检测结果
-    echo "==================== 检测结果 ===================="
+    # 显示汇总结果
+    echo -e "${BLUE}==================== 检测汇总 ====================${NC}"
     echo
+    echo "检测端口数: ${#active_ports[@]}"
+    echo -e "正常端口数: ${GREEN}$ok_count${NC}"
     
-    if [ ${#problem_ports[@]} -eq 0 ]; then
-        echo -e "${GREEN}✅ 所有端口配置完全正常！${NC}"
-        echo
-        echo "检测端口数: ${#active_ports[@]}"
-        echo "正常端口数: $ok_count"
-    else
-        echo -e "${RED}⚠️  发现 ${#problem_ports[@]} 个端口有问题：${NC}"
-        echo
-        
-        for port in "${problem_ports[@]}"; do
-            local port_safe=$(echo "$port" | tr ',' '_' | tr '-' '_')
-            local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
-            local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
-            
-            echo "────────────────────────────────────────"
-            if [ -n "$remark" ] && [ "$remark" != "null" ]; then
-                echo -e "${YELLOW}端口: $port [$remark]${NC}"
-            else
-                echo -e "${YELLOW}端口: $port${NC}"
-            fi
-            
-            # 检查计数器
-            if ! nft list counter $family $table_name "port_${port_safe}_in" &>/dev/null; then
-                echo -e "  ${RED}❌ 入站计数器缺失 - 流量统计失效${NC}"
-            fi
-            if ! nft list counter $family $table_name "port_${port_safe}_out" &>/dev/null; then
-                echo -e "  ${RED}❌ 出站计数器缺失 - 流量统计失效${NC}"
-            fi
-            
-            # 检查quota规则
-            if [ "$quota_limit" != "unlimited" ]; then
-                if ! echo "$all_rules" | grep -q "quota name \"port_${port_safe}_quota\" drop"; then
-                    echo -e "  ${RED}❌ 配额限制规则缺失 - 超额后不会断开${NC}"
-                    echo -e "  ${GREEN}   修复方法: 重新设置配额限制即可${NC}"
-                fi
-            fi
-        done
-        
-        echo "────────────────────────────────────────"
-        echo
-        echo -e "${GREEN}正常端口数: $ok_count / ${#active_ports[@]}${NC}"
+    if [ ${#problem_ports[@]} -gt 0 ]; then
+        echo -e "异常端口数: ${RED}${#problem_ports[@]}${NC}"
+        echo -e "异常端口: ${RED}${problem_ports[*]}${NC}"
         echo
         echo -e "${BLUE}修复建议:${NC}"
         echo "1. 对于配额规则缺失: 进入\"端口限制设置管理\" -> \"设置端口流量配额\" -> 重新设置配额"
         echo "2. 对于计数器缺失: 需要删除端口后重新添加"
+    else
+        echo -e "${GREEN}✅ 所有端口配置完全正常！${NC}"
     fi
     
     echo
-    echo "=================================================="
+    echo -e "${BLUE}==================== 检测完成 ====================${NC}"
     read -p "按回车键返回..." 
 }
 
