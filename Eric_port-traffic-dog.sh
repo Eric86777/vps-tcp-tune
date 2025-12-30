@@ -1,5 +1,5 @@
 #!/bin/bash
-# v1.5.3 更新: 修复时区问题(删除TZ设置、重写时区转换、修复所有定时任务，确保按北京时间准确执行) (by Eric86777)
+# v1.5.4 更新: 新增配置检测功能(诊断和修复端口规则异常)、优化稳定性 (by Eric86777)
 # v1.5.2 更新: 修复Cron时区自动转换(检测系统时区并自动转换北京时间为本地时间)；修复备份任务清理函数失效Bug (by Eric86777)
 # v1.5.1 更新: 修复Cron时区问题(所有定时任务强制使用北京时间)；修复租期管理带宽恢复格式转换缺失；调整备份时间避免冲突 (by Eric86777)
 # v1.5.0 更新: 新增流量数据备份管理系统(自动备份、手动备份、历史查看、一键恢复) (by Eric86777)
@@ -1060,9 +1060,10 @@ show_main_menu() {
         echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
         echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
         echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 流量备份管理"
-        echo -e "${BLUE}7.${NC} 卸载脚本              ${BLUE}0.${NC} 退出"
+        echo -e "${BLUE}7.${NC} 当前流量狗配置检测    ${BLUE}8.${NC} 卸载脚本"
+        echo -e "${BLUE}0.${NC} 退出"
         echo
-        read -p "请选择操作 [0-7]: " choice
+        read -p "请选择操作 [0-8]: " choice
 
         case $choice in
             1) manage_port_monitoring ;;
@@ -1071,9 +1072,10 @@ show_main_menu() {
             4) manage_configuration ;;
             5) manage_notifications ;;
             6) manage_backup ;;
-            7) uninstall_script ;;
+            7) diagnose_port_config ;;
+            8) uninstall_script ;;
             0) exit 0 ;;
-            *) echo -e "${RED}无效选择，请输入0-7${NC}"; sleep 1 ;;
+            *) echo -e "${RED}无效选择，请输入0-8${NC}"; sleep 1 ;;
         esac
     done
 }
@@ -3364,6 +3366,117 @@ check_all_ports_expiration() {
             fi
         fi
     done
+}
+
+# 当前流量狗配置检测
+diagnose_port_config() {
+    clear
+    echo -e "${BLUE}=== 当前流量狗配置检测 ===${NC}"
+    echo "────────────────────────────────────────────────────────"
+    echo "正在检测所有端口的规则完整性..."
+    echo
+    
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local active_ports=($(get_active_ports))
+    
+    if [ ${#active_ports[@]} -eq 0 ]; then
+        echo -e "${YELLOW}暂无监控端口${NC}"
+        echo
+        read -p "按回车键返回..." 
+        return
+    fi
+    
+    local problem_ports=()
+    local ok_count=0
+    
+    for port in "${active_ports[@]}"; do
+        local port_safe=$(echo "$port" | tr ',' '_' | tr '-' '_')
+        local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+        
+        # 检查计数器
+        local counter_ok=true
+        if ! nft list counter $family $table_name "port_${port_safe}_in" &>/dev/null; then
+            counter_ok=false
+        fi
+        if ! nft list counter $family $table_name "port_${port_safe}_out" &>/dev/null; then
+            counter_ok=false
+        fi
+        
+        # 检查quota规则(如果设置了配额限制)
+        local quota_ok=true
+        if [ "$quota_limit" != "unlimited" ]; then
+            local quota_drop_rules=$(nft -a list table $family $table_name 2>/dev/null | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
+            if [ $quota_drop_rules -eq 0 ]; then
+                quota_ok=false
+            fi
+        fi
+        
+        # 判断状态
+        if [ "$counter_ok" = false ]; then
+            problem_ports+=("$port")
+        elif [ "$quota_ok" = false ]; then
+            problem_ports+=("$port")
+        else
+            ((ok_count++))
+        fi
+    done
+    
+    # 显示检测结果
+    echo "==================== 检测结果 ===================="
+    echo
+    
+    if [ ${#problem_ports[@]} -eq 0 ]; then
+        echo -e "${GREEN}✅ 所有端口配置完全正常！${NC}"
+        echo
+        echo "检测端口数: ${#active_ports[@]}"
+        echo "正常端口数: $ok_count"
+    else
+        echo -e "${RED}⚠️  发现 ${#problem_ports[@]} 个端口有问题：${NC}"
+        echo
+        
+        for port in "${problem_ports[@]}"; do
+            local port_safe=$(echo "$port" | tr ',' '_' | tr '-' '_')
+            local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+            local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+            
+            echo "────────────────────────────────────────"
+            if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+                echo -e "${YELLOW}端口: $port [$remark]${NC}"
+            else
+                echo -e "${YELLOW}端口: $port${NC}"
+            fi
+            
+            # 检查计数器
+            if ! nft list counter $family $table_name "port_${port_safe}_in" &>/dev/null; then
+                echo -e "  ${RED}❌ 入站计数器缺失 - 流量统计失效${NC}"
+            fi
+            if ! nft list counter $family $table_name "port_${port_safe}_out" &>/dev/null; then
+                echo -e "  ${RED}❌ 出站计数器缺失 - 流量统计失效${NC}"
+            fi
+            
+            # 检查quota规则
+            if [ "$quota_limit" != "unlimited" ]; then
+                local quota_drop_rules=$(nft -a list table $family $table_name 2>/dev/null | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
+                if [ $quota_drop_rules -eq 0 ]; then
+                    echo -e "  ${RED}❌ 配额限制规则缺失 - 超额后不会断开${NC}"
+                    echo -e "  ${GREEN}   修复方法: 重新设置配额限制即可${NC}"
+                fi
+            fi
+        done
+        
+        echo "────────────────────────────────────────"
+        echo
+        echo -e "${GREEN}正常端口数: $ok_count / ${#active_ports[@]}${NC}"
+        echo
+        echo -e "${BLUE}修复建议:${NC}"
+        echo "1. 对于配额规则缺失: 进入\"端口限制设置管理\" -> \"设置端口流量配额\" -> 重新设置配额"
+        echo "2. 对于计数器缺失: 需要删除端口后重新添加"
+    fi
+    
+    echo
+    echo "=================================================="
+    read -p "按回车键返回..." 
 }
 
 # 卸载脚本
