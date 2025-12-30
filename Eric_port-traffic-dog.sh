@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.5.8 更新: 修复菜单递归调用导致需要多次按0才能返回的Bug (by Eric86777)
 # v1.5.7 更新: 修复检测功能在set -e模式下异常退出的Bug (by Eric86777)
 # v1.5.6 更新: 修复检测功能配额显示Bug、修复检测完成后未返回主菜单 (by Eric86777)
 # v1.5.5 更新: 配置检测功能升级为完整详细版(逐端口检测计数器、counter规则数、quota规则数、总规则数) (by Eric86777)
@@ -10,7 +11,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.5.7"
+readonly SCRIPT_VERSION="1.5.8"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1763,7 +1764,6 @@ set_port_bandwidth_limit() {
 
     if ! show_port_list; then
         sleep 2
-        manage_traffic_limits
         return
     fi
     echo
@@ -1782,7 +1782,6 @@ set_port_bandwidth_limit() {
     if [ ${#ports_to_limit[@]} -eq 0 ]; then
         echo -e "${RED}没有有效的端口可设置限制${NC}"
         sleep 2
-        set_port_bandwidth_limit
         return
     fi
 
@@ -1800,7 +1799,6 @@ set_port_bandwidth_limit() {
     if [ ${#LIMITS[@]} -ne ${#ports_to_limit[@]} ]; then
         echo -e "${RED}限制值数量与端口数量不匹配${NC}"
         sleep 2
-        set_port_bandwidth_limit
         return
     fi
 
@@ -1847,8 +1845,6 @@ set_port_bandwidth_limit() {
 
     echo
     echo -e "${GREEN}成功设置 $success_count 个端口的带宽限制${NC}"
-    sleep 3
-    manage_traffic_limits
 }
 
 set_port_quota_limit() {
@@ -1858,7 +1854,6 @@ set_port_quota_limit() {
     local active_ports=($(get_active_ports))
     if ! show_port_list; then
         sleep 2
-        manage_traffic_limits
         return
     fi
     echo
@@ -1877,7 +1872,6 @@ set_port_quota_limit() {
     if [ ${#ports_to_quota[@]} -eq 0 ]; then
         echo -e "${RED}没有有效的端口可设置配额${NC}"
         sleep 2
-        set_port_quota_limit
         return
     fi
 
@@ -1961,8 +1955,6 @@ set_port_quota_limit() {
 
     echo
     echo -e "${GREEN}成功设置 $success_count 个端口的流量配额${NC}"
-    sleep 3
-    manage_traffic_limits
 }
 
 manage_traffic_limits() {
