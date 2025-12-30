@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.6.1 更新: 修复检测功能中CYAN变量未定义导致脚本退出的Bug (by Eric86777)
 # v1.6.0 更新: 修复带宽限制设置时tc命令失败导致脚本退出的Bug (by Eric86777)
 # v1.5.9 更新: 主菜单端口列表增加运行状态显示(🟢运行中/🔴超额封锁/🔴过期封锁/🟡限速) (by Eric86777)
 # v1.5.8 更新: 修复菜单递归调用导致需要多次按0才能返回的Bug (by Eric86777)
@@ -13,7 +14,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.6.0"
+readonly SCRIPT_VERSION="1.6.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -28,6 +29,7 @@ readonly RED='\033[0;31m'
 readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
 readonly GREEN='\033[0;32m'
+readonly CYAN='\033[0;36m'
 readonly NC='\033[0m'
 readonly GRAY='\033[0;90m'
 
