@@ -3390,6 +3390,9 @@ diagnose_port_config() {
     local problem_ports=()
     local ok_count=0
     
+    # 性能优化: 预先获取一次所有规则，避免循环中反复调用 nft list 导致卡死
+    local all_rules=$(nft -a list table $family $table_name 2>/dev/null)
+    
     for port in "${active_ports[@]}"; do
         local port_safe=$(echo "$port" | tr ',' '_' | tr '-' '_')
         local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
@@ -3406,8 +3409,8 @@ diagnose_port_config() {
         # 检查quota规则(如果设置了配额限制)
         local quota_ok=true
         if [ "$quota_limit" != "unlimited" ]; then
-            local quota_drop_rules=$(nft -a list table $family $table_name 2>/dev/null | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
-            if [ $quota_drop_rules -eq 0 ]; then
+            # 这里的匹配需要更严谨，确保是在 all_rules 中匹配
+            if ! echo "$all_rules" | grep -q "quota name \"port_${port_safe}_quota\" drop"; then
                 quota_ok=false
             fi
         fi
@@ -3457,8 +3460,7 @@ diagnose_port_config() {
             
             # 检查quota规则
             if [ "$quota_limit" != "unlimited" ]; then
-                local quota_drop_rules=$(nft -a list table $family $table_name 2>/dev/null | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
-                if [ $quota_drop_rules -eq 0 ]; then
+                if ! echo "$all_rules" | grep -q "quota name \"port_${port_safe}_quota\" drop"; then
                     echo -e "  ${RED}❌ 配额限制规则缺失 - 超额后不会断开${NC}"
                     echo -e "  ${GREEN}   修复方法: 重新设置配额限制即可${NC}"
                 fi
