@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.7.0 更新: 新增 Private Network 配置功能(绿云内网互通一键配置) (by Eric86777)
 # v1.6.1 更新: 修复检测功能中CYAN变量未定义导致脚本退出的Bug (by Eric86777)
 # v1.6.0 更新: 修复带宽限制设置时tc命令失败导致脚本退出的Bug (by Eric86777)
 # v1.5.9 更新: 主菜单端口列表增加运行状态显示(🟢运行中/🔴超额封锁/🔴过期封锁/🟡限速) (by Eric86777)
@@ -14,7 +15,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.6.1"
+readonly SCRIPT_VERSION="1.7.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1135,9 +1136,10 @@ show_main_menu() {
         echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
         echo -e "${BLUE}5.${NC} 通知管理              ${BLUE}6.${NC} 流量备份管理"
         echo -e "${BLUE}7.${NC} 当前流量狗配置检测    ${BLUE}8.${NC} 卸载脚本"
+        echo -e "${BLUE}9.${NC} Private Network 配置"
         echo -e "${BLUE}0.${NC} 退出"
         echo
-        read -p "请选择操作 [0-8]: " choice
+        read -p "请选择操作 [0-9]: " choice
 
         case $choice in
             1) manage_port_monitoring ;;
@@ -1148,8 +1150,9 @@ show_main_menu() {
             6) manage_backup ;;
             7) diagnose_port_config ;;
             8) uninstall_script ;;
+            9) manage_private_network ;;
             0) exit 0 ;;
-            *) echo -e "${RED}无效选择，请输入0-8${NC}"; sleep 1 ;;
+            *) echo -e "${RED}无效选择，请输入0-9${NC}"; sleep 1 ;;
         esac
     done
 }
@@ -5389,6 +5392,399 @@ manage_backup() {
             3) view_latest_backup; read -p "按回车继续..." ;;
             4) view_backup_history; read -p "按回车继续..." ;;
             5) restore_from_backup ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+# ============================================================================
+# Private Network 配置模块 (绿云内网互通)
+# ============================================================================
+
+# 常量定义
+readonly PRIVATE_NET_INTERFACE="eth1"
+readonly PRIVATE_NET_CONFIG_FILE="/etc/network/interfaces.d/eth1.cfg"
+readonly PRIVATE_NET_DEFAULT_NETMASK="255.255.0.0"
+readonly PRIVATE_NET_DEFAULT_PREFIX="16"
+
+# 检查是否支持当前系统
+check_private_net_support() {
+    # 只支持 Debian 12/13
+    if [ -f /etc/os-release ]; then
+        local os_id=$(grep "^ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        local os_version=$(grep "^VERSION_ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        
+        if [ "$os_id" = "debian" ]; then
+            if [[ "$os_version" =~ ^(12|13) ]]; then
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+# 检查 eth1 接口是否存在
+check_eth1_exists() {
+    ip link show "$PRIVATE_NET_INTERFACE" &>/dev/null
+}
+
+# 获取 eth1 当前 IP
+get_eth1_ip() {
+    ip addr show "$PRIVATE_NET_INTERFACE" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -n1
+}
+
+# 获取 eth1 状态
+get_eth1_status() {
+    local state=$(ip link show "$PRIVATE_NET_INTERFACE" 2>/dev/null | grep -oP 'state \K\w+')
+    echo "${state:-UNKNOWN}"
+}
+
+# 验证 IP 地址格式
+validate_ip_address() {
+    local ip=$1
+    if [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        local IFS='.'
+        read -ra octets <<< "$ip"
+        for octet in "${octets[@]}"; do
+            if [ "$octet" -gt 255 ]; then
+                return 1
+            fi
+        done
+        return 0
+    fi
+    return 1
+}
+
+# 显示 Private Network 状态
+show_private_net_status() {
+    echo -e "${BLUE}=== Private Network 状态 ===${NC}"
+    echo
+    
+    # 检查系统支持
+    if ! check_private_net_support; then
+        echo -e "${YELLOW}⚠️  当前系统不是 Debian 12/13，功能可能不完全兼容${NC}"
+        echo
+    fi
+    
+    # 检查 eth1 是否存在
+    if ! check_eth1_exists; then
+        echo -e "${RED}❌ eth1 接口不存在${NC}"
+        echo
+        echo "说明: 绿云 VPS 需要先开通内网功能才会有 eth1 接口"
+        echo "请联系绿云客服开通 Private Network 功能"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ eth1 接口存在${NC}"
+    echo
+    
+    # 获取当前状态
+    local current_ip=$(get_eth1_ip)
+    local current_status=$(get_eth1_status)
+    
+    echo "────────────────────────────────────────────────────────"
+    echo -e "接口状态: $([ "$current_status" = "UP" ] && echo -e "${GREEN}$current_status${NC}" || echo -e "${YELLOW}$current_status${NC}")"
+    
+    if [ -n "$current_ip" ]; then
+        echo -e "内网 IP:  ${GREEN}$current_ip${NC}"
+    else
+        echo -e "内网 IP:  ${YELLOW}未配置${NC}"
+    fi
+    
+    # 显示配置文件状态
+    if [ -f "$PRIVATE_NET_CONFIG_FILE" ]; then
+        echo -e "配置文件: ${GREEN}已存在${NC}"
+        echo
+        echo "配置内容:"
+        echo "────────────────────────────────────────────────────────"
+        cat "$PRIVATE_NET_CONFIG_FILE" | sed 's/^/  /'
+        echo "────────────────────────────────────────────────────────"
+    else
+        echo -e "配置文件: ${YELLOW}未创建${NC}"
+    fi
+    echo
+    
+    return 0
+}
+
+# 配置内网 IP
+configure_private_net_ip() {
+    echo -e "${BLUE}=== 配置内网 IP ===${NC}"
+    echo
+    
+    # 检查系统支持
+    if ! check_private_net_support; then
+        echo -e "${RED}❌ 仅支持 Debian 12/13 系统${NC}"
+        echo "其他系统请参考绿云官方文档手动配置"
+        sleep 2
+        return 1
+    fi
+    
+    # 检查 eth1 是否存在
+    if ! check_eth1_exists; then
+        echo -e "${RED}❌ eth1 接口不存在${NC}"
+        echo
+        echo "说明: 绿云 VPS 需要先开通内网功能才会有 eth1 接口"
+        echo "请联系绿云客服开通 Private Network 功能"
+        sleep 2
+        return 1
+    fi
+    
+    # 检查是否已配置
+    local current_ip=$(get_eth1_ip)
+    if [ -n "$current_ip" ]; then
+        echo -e "${YELLOW}⚠️  eth1 已配置 IP: $current_ip${NC}"
+        echo
+        read -p "是否覆盖现有配置? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "已取消"
+            sleep 1
+            return 0
+        fi
+        echo
+    fi
+    
+    # 提示输入 IP
+    echo "请在 VirtFusion 面板 → Network 页面查看分配的 Private IP"
+    echo
+    read -p "请输入本机的内网 IP (如 10.22.1.98): " input_ip
+    
+    # 验证 IP 格式
+    if [ -z "$input_ip" ]; then
+        echo -e "${RED}错误: IP 不能为空${NC}"
+        sleep 2
+        return 1
+    fi
+    
+    if ! validate_ip_address "$input_ip"; then
+        echo -e "${RED}错误: IP 格式无效${NC}"
+        sleep 2
+        return 1
+    fi
+    
+    # 显示配置预览
+    echo
+    echo -e "${BLUE}配置预览:${NC}"
+    echo "────────────────────────────────────────────────────────"
+    echo "  文件: $PRIVATE_NET_CONFIG_FILE"
+    echo "  ┌────────────────────────────────────┐"
+    echo "  │ auto $PRIVATE_NET_INTERFACE"
+    echo "  │ iface $PRIVATE_NET_INTERFACE inet static"
+    echo "  │     address $input_ip"
+    echo "  │     netmask $PRIVATE_NET_DEFAULT_NETMASK"
+    echo "  └────────────────────────────────────┘"
+    echo "────────────────────────────────────────────────────────"
+    echo
+    
+    read -p "确认配置并立即生效? [Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo "已取消"
+        sleep 1
+        return 0
+    fi
+    
+    # 如果已有配置，先关闭接口
+    if [ -f "$PRIVATE_NET_CONFIG_FILE" ]; then
+        echo "正在关闭现有配置..."
+        ifdown "$PRIVATE_NET_INTERFACE" 2>/dev/null || true
+    fi
+    
+    # 写入配置文件
+    echo "正在写入配置..."
+    cat > "$PRIVATE_NET_CONFIG_FILE" << EOF
+auto $PRIVATE_NET_INTERFACE
+iface $PRIVATE_NET_INTERFACE inet static
+    address $input_ip
+    netmask $PRIVATE_NET_DEFAULT_NETMASK
+EOF
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ 写入配置文件失败${NC}"
+        sleep 2
+        return 1
+    fi
+    
+    # 激活接口
+    echo "正在激活 eth1..."
+    if ifup "$PRIVATE_NET_INTERFACE" 2>/dev/null; then
+        echo
+        echo -e "${GREEN}✅ 配置成功！${NC}"
+        echo
+        echo "当前状态:"
+        ip addr show "$PRIVATE_NET_INTERFACE" | grep -E "state|inet " | sed 's/^/  /'
+        echo
+        echo -e "${YELLOW}💡 提示: 请在另一台 VPS 上也配置内网 IP 后测试连通性${NC}"
+    else
+        # ifup 失败，尝试使用 ip 命令
+        echo -e "${YELLOW}ifup 命令执行异常，尝试使用 ip 命令...${NC}"
+        ip addr add "$input_ip/$PRIVATE_NET_DEFAULT_PREFIX" dev "$PRIVATE_NET_INTERFACE" 2>/dev/null || true
+        ip link set "$PRIVATE_NET_INTERFACE" up 2>/dev/null || true
+        
+        local new_ip=$(get_eth1_ip)
+        if [ -n "$new_ip" ]; then
+            echo
+            echo -e "${GREEN}✅ 配置成功！${NC}"
+            echo
+            echo "当前状态:"
+            ip addr show "$PRIVATE_NET_INTERFACE" | grep -E "state|inet " | sed 's/^/  /'
+        else
+            echo -e "${RED}❌ 激活接口失败${NC}"
+            sleep 2
+            return 1
+        fi
+    fi
+    
+    sleep 2
+    return 0
+}
+
+# 删除内网配置
+remove_private_net_config() {
+    echo -e "${BLUE}=== 删除内网配置 ===${NC}"
+    echo
+    
+    local current_ip=$(get_eth1_ip)
+    
+    if [ -z "$current_ip" ] && [ ! -f "$PRIVATE_NET_CONFIG_FILE" ]; then
+        echo -e "${YELLOW}暂无内网配置${NC}"
+        sleep 2
+        return 0
+    fi
+    
+    echo "当前配置:"
+    [ -n "$current_ip" ] && echo "  内网 IP: $current_ip"
+    [ -f "$PRIVATE_NET_CONFIG_FILE" ] && echo "  配置文件: $PRIVATE_NET_CONFIG_FILE"
+    echo
+    
+    echo -e "${RED}警告: 删除后内网将无法通信，需要重新配置${NC}"
+    read -p "确认删除? [y/N]: " confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        sleep 1
+        return 0
+    fi
+    
+    echo
+    echo "正在删除配置..."
+    
+    # 关闭接口
+    ifdown "$PRIVATE_NET_INTERFACE" 2>/dev/null || true
+    
+    # 清除 IP
+    if [ -n "$current_ip" ]; then
+        ip addr del "$current_ip/$PRIVATE_NET_DEFAULT_PREFIX" dev "$PRIVATE_NET_INTERFACE" 2>/dev/null || true
+    fi
+    
+    # 关闭接口
+    ip link set "$PRIVATE_NET_INTERFACE" down 2>/dev/null || true
+    
+    # 删除配置文件
+    if [ -f "$PRIVATE_NET_CONFIG_FILE" ]; then
+        rm -f "$PRIVATE_NET_CONFIG_FILE"
+    fi
+    
+    echo -e "${GREEN}✅ 内网配置已删除${NC}"
+    sleep 2
+    return 0
+}
+
+# 测试内网连通性
+test_private_net_connectivity() {
+    echo -e "${BLUE}=== 测试内网连通性 ===${NC}"
+    echo
+    
+    local current_ip=$(get_eth1_ip)
+    
+    if [ -z "$current_ip" ]; then
+        echo -e "${YELLOW}本机内网未配置，请先配置内网 IP${NC}"
+        sleep 2
+        return 1
+    fi
+    
+    echo "本机内网 IP: $current_ip"
+    echo
+    read -p "请输入对端 VPS 的内网 IP: " target_ip
+    
+    if [ -z "$target_ip" ]; then
+        echo -e "${RED}错误: IP 不能为空${NC}"
+        sleep 2
+        return 1
+    fi
+    
+    if ! validate_ip_address "$target_ip"; then
+        echo -e "${RED}错误: IP 格式无效${NC}"
+        sleep 2
+        return 1
+    fi
+    
+    echo
+    echo "正在测试到 $target_ip 的连通性..."
+    echo "────────────────────────────────────────────────────────"
+    
+    if ping -c 4 -W 3 "$target_ip"; then
+        echo "────────────────────────────────────────────────────────"
+        echo
+        echo -e "${GREEN}✅ 连通性测试成功！内网互通正常${NC}"
+    else
+        echo "────────────────────────────────────────────────────────"
+        echo
+        echo -e "${RED}❌ 连通性测试失败${NC}"
+        echo
+        echo "可能原因:"
+        echo "  1. 对端 VPS 未配置内网 IP"
+        echo "  2. 两台 VPS 不在同一机房/内网 VLAN"
+        echo "  3. 需要联系绿云客服确认内网配置"
+    fi
+    
+    echo
+    read -p "按回车键返回..." _
+    return 0
+}
+
+# Private Network 管理主菜单
+manage_private_network() {
+    while true; do
+        clear
+        echo -e "${BLUE}=== Private Network 配置 ===${NC}"
+        echo -e "${GRAY}绿云 VPS 内网互通配置${NC}"
+        echo
+        
+        # 显示当前状态
+        local eth1_exists="否"
+        local current_ip="未配置"
+        local current_status="--"
+        
+        if check_eth1_exists; then
+            eth1_exists="是"
+            local ip=$(get_eth1_ip)
+            [ -n "$ip" ] && current_ip="$ip"
+            current_status=$(get_eth1_status)
+        fi
+        
+        echo "当前状态:"
+        echo "  eth1 接口: $eth1_exists"
+        if [ "$eth1_exists" = "是" ]; then
+            echo -e "  内网 IP:  $([ "$current_ip" = "未配置" ] && echo -e "${YELLOW}$current_ip${NC}" || echo -e "${GREEN}$current_ip${NC}")"
+            echo -e "  接口状态: $([ "$current_status" = "UP" ] && echo -e "${GREEN}$current_status${NC}" || echo -e "${YELLOW}$current_status${NC}")"
+        fi
+        
+        echo
+        echo "────────────────────────────────────────────────────────"
+        echo -e "${BLUE}1.${NC} 配置内网 IP"
+        echo -e "${BLUE}2.${NC} 查看详细状态"
+        echo -e "${BLUE}3.${NC} 删除内网配置"
+        echo -e "${BLUE}4.${NC} 测试内网连通性"
+        echo -e "${BLUE}0.${NC} 返回主菜单"
+        echo
+        read -p "请选择操作 [0-4]: " choice
+        
+        case $choice in
+            1) configure_private_net_ip ;;
+            2) show_private_net_status; read -p "按回车继续..." _ ;;
+            3) remove_private_net_config ;;
+            4) test_private_net_connectivity ;;
             0) return ;;
             *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
         esac
