@@ -5542,7 +5542,7 @@ configure_private_net_ip() {
     # 提示输入 IP
     echo "请在 VirtFusion 面板 → Network 页面查看分配的 Private IP"
     echo
-    read -p "请输入本机的内网 IP (如 10.22.1.98): " input_ip
+    read -p "请输入本机的内网 IP (如 10.0.1.5): " input_ip
     
     # 验证 IP 格式
     if [ -z "$input_ip" ]; then
