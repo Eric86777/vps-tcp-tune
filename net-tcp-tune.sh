@@ -13866,14 +13866,39 @@ configure_cf_tunnel() {
                 ;;
             2)
                 echo ""
+                # 先停止可能正在运行的 cloudflared 服务
+                local service_name="cloudflared-sub-store-$instance_num"
+                if systemctl is-active --quiet "$service_name" 2>/dev/null; then
+                    echo "正在停止旧的 cloudflared 服务..."
+                    systemctl stop "$service_name" 2>/dev/null
+                    systemctl disable "$service_name" 2>/dev/null
+                    rm -f "/etc/systemd/system/$service_name.service" 2>/dev/null
+                    systemctl daemon-reload 2>/dev/null
+                    sleep 2
+                fi
+                
+                # 清理旧的凭证文件
+                if [ -n "$existing_tunnel_id" ]; then
+                    echo "正在清理旧的隧道凭证..."
+                    rm -f "/root/.cloudflared/$existing_tunnel_id.json" 2>/dev/null
+                fi
+                
                 echo "正在删除旧隧道..."
+                cloudflared tunnel cleanup "$tunnel_name" 2>/dev/null
                 cloudflared tunnel delete "$tunnel_name" 2>/dev/null
+                
+                # 如果删除失败，尝试强制删除
+                if cloudflared tunnel list 2>/dev/null | grep -q "$tunnel_name"; then
+                    echo -e "${gl_huang}尝试强制删除隧道...${gl_bai}"
+                    cloudflared tunnel delete -f "$tunnel_name" 2>/dev/null
+                fi
                 
                 echo "正在创建新隧道..."
                 cloudflared tunnel create "$tunnel_name"
                 
                 if [ $? -ne 0 ]; then
                     echo -e "${gl_hong}❌ 创建隧道失败${gl_bai}"
+                    echo -e "${gl_huang}提示：可能是隧道名称冲突，请尝试更换实例编号${gl_bai}"
                     break_end
                     return 1
                 fi
@@ -13890,13 +13915,38 @@ configure_cf_tunnel() {
         esac
     else
         # 隧道不存在，创建新隧道
-        cloudflared tunnel create "$tunnel_name"
+        local create_output
+        create_output=$(cloudflared tunnel create "$tunnel_name" 2>&1)
+        local create_result=$?
         
-        if [ $? -ne 0 ]; then
+        if [ $create_result -ne 0 ]; then
             echo -e "${gl_hong}❌ 创建隧道失败${gl_bai}"
+            echo ""
+            echo -e "${gl_huang}错误信息：${gl_bai}"
+            echo "$create_output"
+            echo ""
+            
+            # 检查是否是隧道名称已存在的错误
+            if echo "$create_output" | grep -qi "already exists"; then
+                echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo -e "${gl_huang}可能的原因：${gl_bai}"
+                echo "  1. 隧道名称已在 Cloudflare 账户中存在（可能是其他机器创建的）"
+                echo "  2. 之前使用不同账户创建过同名隧道"
+                echo ""
+                echo -e "${gl_huang}解决方案：${gl_bai}"
+                echo "  方案1: 登录 Cloudflare Dashboard -> Zero Trust -> Networks -> Tunnels"
+                echo "         手动删除名为 '$tunnel_name' 的隧道，然后重试"
+                echo ""
+                echo "  方案2: 使用不同的实例编号（如改用 2, 3...）"
+                echo "         这会创建 sub-store-2, sub-store-3 等不同名称的隧道"
+                echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+            fi
+            
             break_end
             return 1
         fi
+        
+        echo "$create_output"
         
         # 获取 tunnel ID
         tunnel_id=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
