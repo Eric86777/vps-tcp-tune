@@ -1,15 +1,15 @@
 #!/bin/bash
+# v1.8.0 更新: 新增 CN Premium 内网中转计费模式(入+出×1)；端口合并需计费模式一致 (by Eric86777)
 # v1.7.0 更新: 新增 Private Network 配置功能(绿云内网互通一键配置) (by Eric86777)
 # v1.6.1 更新: 修复检测功能中CYAN变量未定义导致脚本退出的Bug (by Eric86777)
 # v1.6.0 更新: 修复带宽限制设置时tc命令失败导致脚本退出的Bug (by Eric86777)
 # v1.5.9 更新: 主菜单端口列表增加运行状态显示 (by Eric86777)
-# v1.5.0 更新: 新增流量数据备份管理系统 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.7.0"
+readonly SCRIPT_VERSION="1.8.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -693,6 +693,63 @@ restore_all_monitoring_rules() {
     done
 }
 
+# ============================================================================
+# 流量计算核心函数 - 重要！必读！
+# ============================================================================
+#
+# 【背景】为什么需要 ×2？
+#
+# 本脚本使用 nftables 按端口统计流量。假设用户节点监听 40001 端口，
+# 通过 realm 转发到落地鸡 FX:443。
+#
+# 【流量流向示意】（用户看10G视频）
+#
+#   用户 ←→ CN:40001 ←→ CN:随机端口 ←→ FX:443 ←→ YouTube
+#           ↑                ↑
+#        监听端口         realm发起的新连接
+#        (40001)          (源端口是随机的，不是40001)
+#
+# 【nftables 规则匹配】
+#
+#   规则1: tcp dport 40001 → counter _in   (统计目标端口=40001的入站流量)
+#   规则2: tcp sport 40001 → counter _out  (统计源端口=40001的出站流量)
+#
+# 【实际匹配情况】
+#
+#   ┌─────────────────────────────────────────────────────────────────────┐
+#   │ 流向                        │ 端口      │ 是否匹配40001 │ 流量    │
+#   ├─────────────────────────────────────────────────────────────────────┤
+#   │ 用户 → CN:40001 (请求)     │ dport=40001 │ ✅ 匹配 _in  │ ~1M     │
+#   │ CN:40001 → 用户 (响应)     │ sport=40001 │ ✅ 匹配 _out │ ~10G    │
+#   │ CN:随机端口 → FX:443       │ dport=443   │ ❌ 不匹配    │ ~1M     │
+#   │ FX:443 → CN:随机端口       │ sport=443   │ ❌ 不匹配    │ ~10G    │
+#   └─────────────────────────────────────────────────────────────────────┘
+#
+# 【结论】
+#
+#   nftables 只统计了 用户↔CN:40001 这一侧的流量（约10G）
+#   没有统计 CN↔FX 这一侧的流量（也是约10G，因为源端口是随机的！）
+#
+#   但实际上，服务商（如绿云）计费的是 eth0 网卡的全部流量：
+#   - 入站：用户请求(1M) + FX返回数据(10G) = ~10G
+#   - 出站：转发给FX(1M) + 返回给用户(10G) = ~10G
+#   - 总计：~20G
+#
+# 【×2 的作用】
+#
+#   nftables 统计结果 ≈ 10G（只有用户侧）
+#   乘以 2 = 20G（补上FX侧）
+#   这样就和服务商面板的计费对上了！
+#
+# 【公式】
+#
+#   双向统计: (入站 + 出站) × 2 = (1M + 10G) × 2 ≈ 20G ✓
+#   仅出站统计: 出站 × 2 = 10G × 2 = 20G ✓
+#   CN Premium 内网中转: (入站 + 出站) × 1 = (1M + 10G) × 1 ≈ 10G ✓
+#     - 适用场景：CN → 软银(内网) → FX
+#     - 因为 CN↔软银 走内网，绿云不计费，所以不需要 ×2
+#
+# ============================================================================
 calculate_total_traffic() {
     local input_bytes=$1
     local output_bytes=$2
@@ -700,10 +757,18 @@ calculate_total_traffic() {
     case $billing_mode in
         "double"|"relay")
             # 双向统计：(入站 + 出站) × 2
+            # 适用场景：CN 直接转发到落地鸡 FX（全程走公网）
             echo $(( (input_bytes + output_bytes) * 2 ))
             ;;
+        "premium")
+            # CN Premium 内网中转：(入站 + 出站) × 1
+            # 适用场景：CN 通过内网转发到软银，软银再转发到 FX
+            # 因为 CN↔软银 走内网不计费，所以不需要 ×2
+            echo $(( input_bytes + output_bytes ))
+            ;;
         "single"|*)
-            # 单向统计：出站 × 2
+            # 仅出站统计：出站 × 2
+            # 适用场景：只关心出站流量的场景
             echo $(( output_bytes * 2 ))
             ;;
     esac
@@ -1286,18 +1351,24 @@ add_port_monitoring() {
     echo "1. 双向流量统计（推荐）："
     echo "   总流量 = (入站 + 出站) × 2"
     echo
-    echo "2. 单向流量统计："
+    echo "2. 仅出站统计："
     echo "   总流量 = 出站 × 2"
+    echo
+    echo "3. CN Premium 内网中转："
+    echo "   总流量 = (入站 + 出站) × 1"
+    echo "   适用：CN 内网转发到软银的场景"
     echo
     echo "请选择统计模式:"
     echo "1. 双向流量统计（推荐）"
-    echo "2. 单向流量统计"
-    read -p "请选择(回车默认1) [1-2]: " billing_choice
+    echo "2. 仅出站统计"
+    echo "3. CN Premium 内网中转"
+    read -p "请选择(回车默认1) [1-3]: " billing_choice
 
     local billing_mode="double"
     case $billing_choice in
         1|"") billing_mode="double" ;;
         2) billing_mode="single" ;;
+        3) billing_mode="premium" ;;
         *) billing_mode="double" ;;
     esac
 
@@ -1590,6 +1661,30 @@ merge_ports_to_group() {
         echo -e "${RED}至少需要选择2个端口才能合并${NC}"
         sleep 2
         merge_ports_to_group
+        return
+    fi
+
+    # 检查所有端口的计费模式是否一致
+    local first_billing_mode=$(jq -r ".ports.\"${ports_to_merge[0]}\".billing_mode // \"double\"" "$CONFIG_FILE")
+    local billing_mode_mismatch=false
+    local mismatched_info=""
+    for port in "${ports_to_merge[@]}"; do
+        local port_billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+        if [ "$port_billing_mode" != "$first_billing_mode" ]; then
+            billing_mode_mismatch=true
+            mismatched_info="$mismatched_info $port:$port_billing_mode"
+        fi
+    done
+    
+    if [ "$billing_mode_mismatch" = true ]; then
+        echo
+        echo -e "${RED}❌ 无法合并：端口计费模式不同${NC}"
+        echo "第一个端口 ${ports_to_merge[0]} 的计费模式: $first_billing_mode"
+        echo "计费模式不匹配的端口:$mismatched_info"
+        echo
+        echo "请确保所有端口使用相同的计费模式后再合并"
+        read -p "按回车返回..." _
+        manage_port_monitoring
         return
     fi
 
