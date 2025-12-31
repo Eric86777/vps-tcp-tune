@@ -13842,25 +13842,74 @@ configure_cf_tunnel() {
     local tunnel_name="sub-store-$instance_num"
     echo "隧道名称: $tunnel_name"
     
-    cloudflared tunnel create "$tunnel_name"
+    # 检查隧道是否已存在
+    local existing_tunnel_id=$(cloudflared tunnel list 2>/dev/null | grep "$tunnel_name" | awk '{print $1}')
     
-    if [ $? -ne 0 ]; then
-        echo -e "${gl_hong}❌ 创建隧道失败${gl_bai}"
-        break_end
-        return 1
+    if [ -n "$existing_tunnel_id" ]; then
+        echo ""
+        echo -e "${gl_lv}✅ 检测到同名隧道已存在${gl_bai}"
+        echo "Tunnel ID: $existing_tunnel_id"
+        echo ""
+        echo "请选择操作："
+        echo "1. 复用现有隧道（推荐）"
+        echo "2. 删除旧隧道并重新创建"
+        echo "3. 取消配置"
+        echo ""
+        
+        local tunnel_choice
+        read -e -p "请选择 [1-3]: " tunnel_choice
+        
+        case "$tunnel_choice" in
+            1)
+                echo -e "${gl_lv}✅ 将复用现有隧道${gl_bai}"
+                tunnel_id="$existing_tunnel_id"
+                ;;
+            2)
+                echo ""
+                echo "正在删除旧隧道..."
+                cloudflared tunnel delete "$tunnel_name" 2>/dev/null
+                
+                echo "正在创建新隧道..."
+                cloudflared tunnel create "$tunnel_name"
+                
+                if [ $? -ne 0 ]; then
+                    echo -e "${gl_hong}❌ 创建隧道失败${gl_bai}"
+                    break_end
+                    return 1
+                fi
+                
+                tunnel_id=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+                echo -e "${gl_lv}✅ 新隧道创建成功${gl_bai}"
+                echo "Tunnel ID: $tunnel_id"
+                ;;
+            *)
+                echo "已取消配置"
+                break_end
+                return 1
+                ;;
+        esac
+    else
+        # 隧道不存在，创建新隧道
+        cloudflared tunnel create "$tunnel_name"
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${gl_hong}❌ 创建隧道失败${gl_bai}"
+            break_end
+            return 1
+        fi
+        
+        # 获取 tunnel ID
+        tunnel_id=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+        
+        if [ -z "$tunnel_id" ]; then
+            echo -e "${gl_hong}❌ 无法获取 tunnel ID${gl_bai}"
+            break_end
+            return 1
+        fi
+        
+        echo -e "${gl_lv}✅ 隧道创建成功${gl_bai}"
+        echo "Tunnel ID: $tunnel_id"
     fi
-    
-    # 获取 tunnel ID
-    local tunnel_id=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
-    
-    if [ -z "$tunnel_id" ]; then
-        echo -e "${gl_hong}❌ 无法获取 tunnel ID${gl_bai}"
-        break_end
-        return 1
-    fi
-    
-    echo -e "${gl_lv}✅ 隧道创建成功${gl_bai}"
-    echo "Tunnel ID: $tunnel_id"
     
     echo ""
     echo -e "${gl_zi}[步骤 3/5] 输入域名${gl_bai}"
