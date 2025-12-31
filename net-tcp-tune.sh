@@ -13809,20 +13809,31 @@ configure_cf_tunnel() {
     echo ""
     echo -e "${gl_zi}[步骤 1/5] Cloudflare 账户登录${gl_bai}"
     echo ""
-    echo "即将打开浏览器进行 Cloudflare 登录..."
-    echo -e "${gl_huang}请在浏览器中完成授权${gl_bai}"
-    echo ""
-    read -e -p "按回车继续..."
     
-    cloudflared tunnel login
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${gl_hong}❌ 登录失败${gl_bai}"
-        break_end
-        return 1
+    # 检查是否已有有效的证书（之前已登录过）
+    if [ -f "/root/.cloudflared/cert.pem" ]; then
+        echo -e "${gl_lv}✅ 检测到已有 Cloudflare 认证证书${gl_bai}"
+        echo -e "${gl_huang}   将复用现有认证，跳过登录步骤${gl_bai}"
+        echo ""
+        echo "如需使用其他账户，请先删除证书后重试："
+        echo "  rm -f /root/.cloudflared/cert.pem"
+        echo ""
+    else
+        echo "即将打开浏览器进行 Cloudflare 登录..."
+        echo -e "${gl_huang}请在浏览器中完成授权${gl_bai}"
+        echo ""
+        read -e -p "按回车继续..."
+        
+        cloudflared tunnel login
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${gl_hong}❌ 登录失败${gl_bai}"
+            break_end
+            return 1
+        fi
+        
+        echo -e "${gl_lv}✅ 登录成功${gl_bai}"
     fi
-    
-    echo -e "${gl_lv}✅ 登录成功${gl_bai}"
     
     echo ""
     echo -e "${gl_zi}[步骤 2/5] 创建隧道${gl_bai}"
