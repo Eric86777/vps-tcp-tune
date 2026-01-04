@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.8.4 更新: 备份功能增强-保存完整端口信息(备注/计费模式)，历史备份显示更准确 (by Eric86777)
 # v1.8.3 更新: 状态标签区分三种计费模式(双向×2/CN Premium/单向×2)；增强检测功能 (by Eric86777)
 # v1.8.2 更新: 修复CN Premium模式配额规则(入+出各×1=8条)及检测逻辑 (by Eric86777)
 # v1.8.1 更新: 修复CN Premium模式流量显示bug(上行/下行不再错误×2) (by Eric86777)
@@ -12,7 +13,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.8.3"
+readonly SCRIPT_VERSION="1.8.4"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -5276,6 +5277,8 @@ perform_backup() {
         local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
+        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         
         if [ "$first" = true ]; then
             first=false
@@ -5283,9 +5286,14 @@ perform_backup() {
             backup_data+=","
         fi
         
+        # 转义备注中的特殊字符
+        local escaped_remark=$(echo "$remark" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        
         backup_data+="\"$port\":{"
         backup_data+="\"input\":$input_bytes,"
-        backup_data+="\"output\":$output_bytes"
+        backup_data+="\"output\":$output_bytes,"
+        backup_data+="\"remark\":\"$escaped_remark\","
+        backup_data+="\"billing_mode\":\"$billing_mode\""
         backup_data+="}"
     done
     
@@ -5349,18 +5357,32 @@ view_latest_backup() {
         local backup_input=$(jq -r ".ports.\"$port\".input" "$latest_backup")
         local backup_output=$(jq -r ".ports.\"$port\".output" "$latest_backup")
         
+        # 优先从备份文件读取备注和计费模式，如果没有再从当前配置读取
+        local backup_remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$latest_backup")
+        local backup_billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"\"" "$latest_backup")
+        
+        local remark="$backup_remark"
+        local billing_mode="$backup_billing_mode"
+        
+        # 如果备份中没有，尝试从当前配置读取
+        if [ -z "$remark" ]; then
+            remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE" 2>/dev/null)
+        fi
+        if [ -z "$billing_mode" ]; then
+            billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE" 2>/dev/null)
+        fi
+        [ -z "$billing_mode" ] && billing_mode="double"
+        
         # 获取当前值
         local current_data=($(get_nftables_counter_data "$port" 2>/dev/null || echo "0 0"))
         local current_input=${current_data[0]}
         local current_output=${current_data[1]}
         
         # 计算当前总流量和备份总流量
-        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local backup_total=$(calculate_total_traffic "$backup_input" "$backup_output" "$billing_mode")
         local current_total=$(calculate_total_traffic "$current_input" "$current_output" "$billing_mode")
         local diff=$((current_total - backup_total))
         
-        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
         local display_name="端口 $port"
         if [ -n "$remark" ]; then
             display_name+=" [$remark]"
