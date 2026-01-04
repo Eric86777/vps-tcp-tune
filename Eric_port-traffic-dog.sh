@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.8.6 更新: 新增快速开通端口功能-一次性配置计费模式/配额/重置日期/租期/邮箱 (by Eric86777)
 # v1.8.5 更新: 检测功能增强-新增邮箱/租期/封锁状态检测，全局配置检查及问题端口汇总 (by Eric86777)
 # v1.8.4 更新: 备份功能增强-保存完整端口信息(备注/计费模式)，历史备份显示更准确 (by Eric86777)
 # v1.8.3 更新: 状态标签区分三种计费模式(双向×2/CN Premium/单向×2)；增强检测功能 (by Eric86777)
@@ -14,7 +15,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.8.5"
+readonly SCRIPT_VERSION="1.8.6"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1248,18 +1249,209 @@ manage_port_monitoring() {
         echo "1. 添加端口监控"
         echo "2. 删除端口监控"
         echo "3. 合并端口为组"
+        echo "4. 快速开通端口"
         echo "0. 返回主菜单"
         echo
-        read -p "请选择操作 [0-3]: " choice
+        read -p "请选择操作 [0-4]: " choice
 
         case $choice in
             1) add_port_monitoring ;;
             2) remove_port_monitoring ;;
             3) merge_ports_to_group ;;
+            4) quick_setup_port ;;
             0) return ;;
             *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
         esac
     done
+}
+
+# 快速开通端口 - 一次性配置计费模式/配额/重置日期/租期/邮箱
+quick_setup_port() {
+    echo -e "${BLUE}=== 快速开通端口 ===${NC}"
+    echo
+    
+    # 显示当前系统端口使用情况
+    echo -e "${GREEN}当前系统端口使用情况:${NC}"
+    printf "%-15s %-9s\n" "程序名" "端口"
+    echo "────────────────────────────────────────────────────────"
+    
+    declare -A process_ports
+    while IFS= read -r line; do
+        local process=$(echo "$line" | awk '{print $NF}' | sed 's/.*"\(.*\)".*/\1/' | cut -d'/' -f2)
+        local port=$(echo "$line" | grep -oP ':\K[0-9]+(?=\s)')
+        [ -z "$process" ] && process="unknown"
+        [ -z "$port" ] && continue
+        if [ -n "${process_ports[$process]}" ]; then
+            process_ports[$process]="${process_ports[$process]},$port"
+        else
+            process_ports[$process]="$port"
+        fi
+    done < <(ss -tlnp 2>/dev/null | grep -v "Local Address" || true)
+    
+    for process in "${!process_ports[@]}"; do
+        printf "%-15s %s\n" "$process" "${process_ports[$process]}"
+    done
+    echo
+    
+    # 1. 输入端口
+    read -p "请输入端口: " port
+    
+    # 验证端口格式
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        echo -e "${RED}端口格式错误，请输入1-65535的数字${NC}"
+        sleep 2
+        return
+    fi
+    
+    # 检查端口是否已存在
+    local existing=$(jq -r ".ports.\"$port\" // \"\"" "$CONFIG_FILE")
+    if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+        echo -e "${RED}端口 $port 已存在于监控列表中${NC}"
+        sleep 2
+        return
+    fi
+    
+    # 2. 选择计费模式
+    echo
+    echo "计费模式: 1.双向×2  2.单向×2  3.CN Premium"
+    read -p "请选择 [1/2/3] (默认1): " billing_choice
+    local billing_mode="double"
+    case "$billing_choice" in
+        2) billing_mode="single" ;;
+        3) billing_mode="premium" ;;
+        *) billing_mode="double" ;;
+    esac
+    
+    # 3. 流量配额
+    read -p "流量配额 (如100GB，回车=不限): " quota_input
+    local monthly_limit="unlimited"
+    if [ -n "$quota_input" ]; then
+        if validate_quota "$quota_input"; then
+            monthly_limit="$quota_input"
+        else
+            echo -e "${YELLOW}配额格式错误，将设为不限${NC}"
+        fi
+    fi
+    
+    # 4. 重置日期
+    read -p "重置日期 (1-28，回车=跳过): " reset_day
+    if [ -n "$reset_day" ]; then
+        if ! [[ "$reset_day" =~ ^[1-9]$|^1[0-9]$|^2[0-8]$ ]]; then
+            echo -e "${YELLOW}重置日期无效，将跳过${NC}"
+            reset_day=""
+        fi
+    fi
+    
+    # 5. 租期
+    read -p "租期到期日 (如2026-03-24，回车=跳过): " expire_date
+    if [ -n "$expire_date" ]; then
+        if ! date -d "$expire_date" >/dev/null 2>&1; then
+            echo -e "${YELLOW}日期格式错误，将跳过${NC}"
+            expire_date=""
+        fi
+    fi
+    
+    # 6. 用户邮箱
+    read -p "用户邮箱 (回车=跳过): " user_email
+    if [ -n "$user_email" ]; then
+        if [[ ! "$user_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+            echo -e "${YELLOW}邮箱格式错误，将跳过${NC}"
+            user_email=""
+        fi
+    fi
+    
+    # 7. 执行开通
+    echo
+    echo "正在开通..."
+    
+    # 构建 quota 配置
+    local quota_config
+    if [ -n "$reset_day" ]; then
+        quota_config="{
+            \"enabled\": true,
+            \"monthly_limit\": \"$monthly_limit\",
+            \"reset_day\": $reset_day
+        }"
+    else
+        quota_config="{
+            \"enabled\": true,
+            \"monthly_limit\": \"$monthly_limit\"
+        }"
+    fi
+    
+    # 构建端口配置
+    local port_config="{
+        \"name\": \"端口$port\",
+        \"enabled\": true,
+        \"billing_mode\": \"$billing_mode\",
+        \"bandwidth_limit\": {
+            \"enabled\": false,
+            \"rate\": \"unlimited\"
+        },
+        \"quota\": $quota_config,
+        \"remark\": \"\",
+        \"created_at\": \"$(get_beijing_time -Iseconds)\"
+    }"
+    
+    # 写入配置
+    update_config ".ports.\"$port\" = $port_config"
+    
+    # 添加租期
+    if [ -n "$expire_date" ]; then
+        update_config ".ports.\"$port\".expiration_date = \"$expire_date\""
+    fi
+    
+    # 添加邮箱
+    if [ -n "$user_email" ]; then
+        update_config ".ports.\"$port\".email = \"$user_email\""
+    fi
+    
+    # 添加 nftables 规则
+    add_nftables_rules "$port"
+    echo -e "${GREEN}✓ 端口监控已添加${NC}"
+    
+    # 显示计费模式
+    local billing_display
+    case "$billing_mode" in
+        "double") billing_display="双向×2" ;;
+        "single") billing_display="单向×2" ;;
+        "premium") billing_display="CN Premium" ;;
+    esac
+    echo -e "${GREEN}✓ 计费模式: $billing_display${NC}"
+    
+    # 应用配额
+    if [ "$monthly_limit" != "unlimited" ]; then
+        apply_nftables_quota "$port" "$monthly_limit"
+        echo -e "${GREEN}✓ 流量配额: $monthly_limit${NC}"
+    else
+        echo -e "${CYAN}⏭️ 流量配额: 不限${NC}"
+    fi
+    
+    # 设置 cron
+    if [ -n "$reset_day" ]; then
+        setup_port_auto_reset_cron "$port"
+        echo -e "${GREEN}✓ 重置日期: 每月${reset_day}日${NC}"
+    else
+        echo -e "${CYAN}⏭️ 重置日期: 未设置${NC}"
+    fi
+    
+    # 显示租期状态
+    if [ -n "$expire_date" ]; then
+        echo -e "${GREEN}✓ 租期: $expire_date${NC}"
+    else
+        echo -e "${CYAN}⏭️ 租期: 未设置${NC}"
+    fi
+    
+    # 显示邮箱状态
+    if [ -n "$user_email" ]; then
+        echo -e "${GREEN}✓ 用户邮箱: $user_email${NC}"
+    else
+        echo -e "${CYAN}⏭️ 用户邮箱: 未设置 (可通过功能5补充)${NC}"
+    fi
+    
+    echo
+    echo -e "${GREEN}开通完成！${NC}"
+    read -p "按回车返回..."
 }
 
 add_port_monitoring() {
