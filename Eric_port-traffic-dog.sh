@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.8.7 更新: 快速开通端口流程优化-自动选择刚添加的端口，无需重复确认和选择 (by Eric86777)
 # v1.8.6 更新: 新增快速开通端口-串联调用添加端口/重置日期/租期/邮箱四个现有功能 (by Eric86777)
 # v1.8.5 更新: 检测功能增强-新增邮箱/租期/封锁状态检测，全局配置检查及问题端口汇总 (by Eric86777)
 # v1.8.4 更新: 备份功能增强-保存完整端口信息(备注/计费模式)，历史备份显示更准确 (by Eric86777)
@@ -15,7 +16,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.8.6"
+readonly SCRIPT_VERSION="1.8.7"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
