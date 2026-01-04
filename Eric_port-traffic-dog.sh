@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.8.3 更新: 状态标签区分三种计费模式(双向×2/CN Premium/单向×2)；增强检测功能 (by Eric86777)
 # v1.8.2 更新: 修复CN Premium模式配额规则(入+出各×1=8条)及检测逻辑 (by Eric86777)
 # v1.8.1 更新: 修复CN Premium模式流量显示bug(上行/下行不再错误×2) (by Eric86777)
 # v1.8.0 更新: 新增 CN Premium 内网中转计费模式(入+出×1)；端口合并需计费模式一致 (by Eric86777)
@@ -11,7 +12,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.8.2"
+readonly SCRIPT_VERSION="1.8.3"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
