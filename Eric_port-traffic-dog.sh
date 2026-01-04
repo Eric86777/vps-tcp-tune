@@ -1,4 +1,5 @@
 #!/bin/bash
+# v1.8.5 更新: 检测功能增强-新增邮箱/租期/封锁状态检测，全局配置检查及问题端口汇总 (by Eric86777)
 # v1.8.4 更新: 备份功能增强-保存完整端口信息(备注/计费模式)，历史备份显示更准确 (by Eric86777)
 # v1.8.3 更新: 状态标签区分三种计费模式(双向×2/CN Premium/单向×2)；增强检测功能 (by Eric86777)
 # v1.8.2 更新: 修复CN Premium模式配额规则(入+出各×1=8条)及检测逻辑 (by Eric86777)
@@ -13,7 +14,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.8.4"
+readonly SCRIPT_VERSION="1.8.5"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -3679,6 +3680,12 @@ diagnose_port_config() {
     local problem_ports=()
     local ok_count=0
     
+    # 问题端口分类统计
+    local ports_no_email=()
+    local ports_no_lease=()
+    local ports_expired=()
+    local ports_blocked=()
+    
     # 性能优化: 预先获取一次所有规则
     local all_rules=$(nft -a list table $family $table_name 2>/dev/null)
     
@@ -3707,6 +3714,75 @@ diagnose_port_config() {
         echo "计费模式: $billing_mode_display"
         echo "配额限制: $quota_limit"
         echo "带宽限制: $bandwidth_enabled"
+        echo
+        
+        # === 新增检测项 ===
+        
+        # 通知配置检查
+        echo -e "${YELLOW}[通知配置检查]${NC}"
+        local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
+        if [ -n "$user_email" ] && [ "$user_email" != "null" ]; then
+            echo -e "  用户邮箱: ${GREEN}$user_email ✅${NC}"
+        else
+            echo -e "  用户邮箱: ${YELLOW}⚠️ 未配置${NC} (到期/超限通知无法发送给用户)"
+            ports_no_email+=("$port")
+        fi
+        echo
+        
+        # 租期状态检查
+        echo -e "${YELLOW}[租期状态检查]${NC}"
+        local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+        if [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
+            local today=$(get_beijing_time +%Y-%m-%d)
+            # 计算剩余天数
+            local expire_epoch=$(date -d "$expire_date" +%s 2>/dev/null || echo "0")
+            local today_epoch=$(date -d "$today" +%s 2>/dev/null || echo "0")
+            if [ "$expire_epoch" -gt 0 ] && [ "$today_epoch" -gt 0 ]; then
+                local diff_days=$(( (expire_epoch - today_epoch) / 86400 ))
+                
+                if [ $diff_days -gt 3 ]; then
+                    echo -e "  到期日: ${GREEN}$expire_date (剩余${diff_days}天) ✅${NC}"
+                elif [ $diff_days -gt 0 ]; then
+                    echo -e "  到期日: ${YELLOW}$expire_date (剩余${diff_days}天) ⚠️${NC}"
+                elif [ $diff_days -eq 0 ]; then
+                    echo -e "  到期日: ${YELLOW}$expire_date (今天到期!) ⚠️${NC}"
+                else
+                    local overdue_days=$((-diff_days))
+                    echo -e "  到期日: ${RED}$expire_date (已过期${overdue_days}天!) 🔴${NC}"
+                    ports_expired+=("$port")
+                fi
+            else
+                echo -e "  到期日: ${YELLOW}$expire_date (日期格式异常) ⚠️${NC}"
+            fi
+        else
+            echo -e "  到期日: ${YELLOW}⚠️ 未设置租期${NC}"
+            ports_no_lease+=("$port")
+        fi
+        echo
+        
+        # 封锁状态检查
+        echo -e "${YELLOW}[封锁状态检查]${NC}"
+        local running_status=$(get_port_running_status "$port")
+        case "$running_status" in
+            "running")
+                echo -e "  运行状态: ${GREEN}🟢 正常运行${NC}"
+                ;;
+            "blocked_expired")
+                echo -e "  运行状态: ${RED}🔴 已封锁(租期过期)${NC}"
+                ports_blocked+=("$port")
+                ;;
+            "blocked_quota")
+                echo -e "  运行状态: ${RED}🔴 已封锁(配额超限)${NC}"
+                ports_blocked+=("$port")
+                ;;
+            "rate_limited:"*)
+                local rate=$(echo "$running_status" | cut -d':' -f2)
+                echo -e "  运行状态: ${YELLOW}🟡 限速中 ($rate)${NC}"
+                ;;
+            *)
+                echo -e "  运行状态: ${CYAN}$running_status${NC}"
+                ;;
+        esac
         echo
         
         # 2. 检查计数器
@@ -3958,6 +4034,66 @@ diagnose_port_config() {
         echo -e "${BLUE}修复建议:${NC}"
         echo "1. 对于配额规则缺失: 进入\"端口限制设置管理\" -> \"设置端口流量配额\" -> 重新设置配额"
         echo "2. 对于计数器缺失: 需要删除端口后重新添加"
+    fi
+    
+    echo
+    
+    # ========== 全局配置检查 ==========
+    echo -e "${BLUE}==================== 全局配置检查 ====================${NC}"
+    echo
+    
+    # 每日检查任务
+    if crontab -l 2>/dev/null | grep -q "端口流量狗每日检查"; then
+        echo -e "  每日租期检查任务: ${GREEN}✅ 已配置${NC}"
+    else
+        echo -e "  每日租期检查任务: ${RED}❌ 未配置${NC} (租期到期自动停机功能可能无法工作)"
+    fi
+    
+    # 自动备份
+    local backup_enabled=$(jq -r '.enabled // false' "$BACKUP_CONFIG_FILE" 2>/dev/null || echo "false")
+    if [ "$backup_enabled" = "true" ]; then
+        local last_backup=$(jq -r '.last_backup_time // ""' "$BACKUP_CONFIG_FILE" 2>/dev/null)
+        echo -e "  自动备份: ${GREEN}✅ 已开启${NC}"
+    else
+        echo -e "  自动备份: ${YELLOW}⚠️ 未开启${NC}"
+    fi
+    
+    # 邮件通知
+    local email_enabled=$(jq -r '.notifications.email.enabled // false' "$CONFIG_FILE")
+    local api_key=$(jq -r '.notifications.email.resend_api_key // ""' "$CONFIG_FILE")
+    if [ "$email_enabled" = "true" ] && [ -n "$api_key" ] && [ "$api_key" != "null" ]; then
+        echo -e "  邮件通知: ${GREEN}✅ 已配置${NC}"
+    else
+        echo -e "  邮件通知: ${YELLOW}⚠️ 未配置${NC}"
+    fi
+    
+    echo
+    
+    # ========== 问题端口汇总 ==========
+    echo -e "${BLUE}==================== 问题端口汇总 ====================${NC}"
+    echo
+    
+    local has_issues=false
+    
+    if [ ${#ports_no_email[@]} -gt 0 ]; then
+        echo -e "  未配置邮箱的端口: ${YELLOW}${#ports_no_email[@]}个${NC} - ${ports_no_email[*]}"
+        has_issues=true
+    fi
+    if [ ${#ports_no_lease[@]} -gt 0 ]; then
+        echo -e "  未设置租期的端口: ${YELLOW}${#ports_no_lease[@]}个${NC} - ${ports_no_lease[*]}"
+        has_issues=true
+    fi
+    if [ ${#ports_expired[@]} -gt 0 ]; then
+        echo -e "  已过期的端口: ${RED}${#ports_expired[@]}个${NC} - ${ports_expired[*]}"
+        has_issues=true
+    fi
+    if [ ${#ports_blocked[@]} -gt 0 ]; then
+        echo -e "  已封锁的端口: ${RED}${#ports_blocked[@]}个${NC} - ${ports_blocked[*]}"
+        has_issues=true
+    fi
+    
+    if [ "$has_issues" = false ]; then
+        echo -e "  ${GREEN}✅ 所有端口配置完整${NC}"
     fi
     
     echo
