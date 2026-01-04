@@ -3794,37 +3794,50 @@ diagnose_port_config() {
             # 5. 规则类型验证（入站/出站规则是否符合计费模式）
             echo
             echo -e "${YELLOW}[规则类型验证]${NC}"
-            local inbound_quota_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | grep -c "dport" || echo "0")
-            local outbound_quota_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | grep -c "sport" || echo "0")
+            local inbound_quota_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | grep -c "dport" 2>/dev/null || echo "0")
+            inbound_quota_rules=$(echo "$inbound_quota_rules" | tr -d '\n\r ')
+            local outbound_quota_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | grep -c "sport" 2>/dev/null || echo "0")
+            outbound_quota_rules=$(echo "$outbound_quota_rules" | tr -d '\n\r ')
             echo "  入站quota规则: $inbound_quota_rules 条"
             echo "  出站quota规则: $outbound_quota_rules 条"
+            
+            # 计算预期规则数（端口组需要乘以端口数量）
+            local multiplier=1
+            if is_port_group "$port"; then
+                multiplier=$port_count
+            fi
             
             local type_ok=true
             case "$billing_mode" in
                 "double"|"relay")
-                    # 应该有入站和出站规则，各8条
-                    if [ "$inbound_quota_rules" -eq 8 ] && [ "$outbound_quota_rules" -eq 8 ]; then
-                        echo -e "  ${GREEN}✅ 规则类型正确 (入站8+出站8)${NC}"
+                    # 每个端口应该有入站8条和出站8条
+                    local expected_in=$((8 * multiplier))
+                    local expected_out=$((8 * multiplier))
+                    if [ "$inbound_quota_rules" -eq "$expected_in" ] && [ "$outbound_quota_rules" -eq "$expected_out" ]; then
+                        echo -e "  ${GREEN}✅ 规则类型正确 (入站${expected_in}+出站${expected_out})${NC}"
                     else
-                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 入站8+出站8)${NC}"
+                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 入站${expected_in}+出站${expected_out})${NC}"
                         type_ok=false
                     fi
                     ;;
                 "premium")
-                    # 应该有入站和出站规则，各4条
-                    if [ "$inbound_quota_rules" -eq 4 ] && [ "$outbound_quota_rules" -eq 4 ]; then
-                        echo -e "  ${GREEN}✅ 规则类型正确 (入站4+出站4)${NC}"
+                    # 每个端口应该有入站4条和出站4条
+                    local expected_in=$((4 * multiplier))
+                    local expected_out=$((4 * multiplier))
+                    if [ "$inbound_quota_rules" -eq "$expected_in" ] && [ "$outbound_quota_rules" -eq "$expected_out" ]; then
+                        echo -e "  ${GREEN}✅ 规则类型正确 (入站${expected_in}+出站${expected_out})${NC}"
                     else
-                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 入站4+出站4)${NC}"
+                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 入站${expected_in}+出站${expected_out})${NC}"
                         type_ok=false
                     fi
                     ;;
                 "single")
-                    # 应该只有出站规则，8条
-                    if [ "$inbound_quota_rules" -eq 0 ] && [ "$outbound_quota_rules" -eq 8 ]; then
-                        echo -e "  ${GREEN}✅ 规则类型正确 (仅出站8)${NC}"
+                    # 每个端口应该只有出站8条
+                    local expected_out=$((8 * multiplier))
+                    if [ "$inbound_quota_rules" -eq 0 ] && [ "$outbound_quota_rules" -eq "$expected_out" ]; then
+                        echo -e "  ${GREEN}✅ 规则类型正确 (仅出站${expected_out})${NC}"
                     else
-                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 仅出站8)${NC}"
+                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 仅出站${expected_out})${NC}"
                         type_ok=false
                     fi
                     ;;

@@ -9994,73 +9994,7 @@ generate_self_signed_cert() {
     echo "key_path=${cert_dir}/tuic-${port}.key"
 }
 
-# 申请 Let's Encrypt 证书
-apply_letsencrypt_cert() {
-    local port="$1"
-    local domain="$2"
-    local email="${3:-}"
-    local cert_dir="${TUIC_CONF_DIR}/certs"
-    
-    mkdir -p "$cert_dir"
-    
-    # 检查域名解析
-    info "正在检查域名解析..."
-    local server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
-    local domain_ip=$(dig +short "$domain" A 2>/dev/null | head -1)
-    
-    if [[ "$server_ip" != "$domain_ip" ]]; then
-        error "域名解析不匹配"
-        echo "  本机 IP: $server_ip"
-        echo "  域名解析: $domain_ip"
-        return 1
-    fi
-    success "域名已正确解析到本机"
-    
-    # 检查 80 端口
-    if ss -tlnp 2>/dev/null | grep -q ":80 "; then
-        warning "80 端口被占用，正在尝试临时释放..."
-        local nginx_running=false
-        if systemctl is-active --quiet nginx 2>/dev/null; then
-            nginx_running=true
-            systemctl stop nginx
-        fi
-    fi
-    
-    # 安装 acme.sh
-    if [[ ! -f ~/.acme.sh/acme.sh ]]; then
-        info "正在安装 acme.sh..."
-        curl -fsSL https://get.acme.sh | sh -s email="${email:-admin@${domain}}" 2>/dev/null
-    fi
-    
-    # 申请证书
-    info "正在申请 Let's Encrypt 证书..."
-    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --keylength ec-256 --force 2>/dev/null
-    
-    if [[ $? -ne 0 ]]; then
-        # 恢复 nginx
-        [[ "$nginx_running" == "true" ]] && systemctl start nginx
-        error "证书申请失败"
-        return 1
-    fi
-    
-    # 安装证书
-    ~/.acme.sh/acme.sh --install-cert -d "$domain" --ecc \
-        --key-file "${cert_dir}/tuic-${port}.key" \
-        --fullchain-file "${cert_dir}/tuic-${port}.crt" \
-        --reloadcmd "systemctl reload tuic-${port} 2>/dev/null || true" 2>/dev/null
-    
-    chmod 600 "${cert_dir}/tuic-${port}.key"
-    chmod 644 "${cert_dir}/tuic-${port}.crt"
-    
-    # 恢复 nginx
-    [[ "$nginx_running" == "true" ]] && systemctl start nginx
-    
-    success "Let's Encrypt 证书申请成功"
-    echo "cert_type=letsencrypt"
-    echo "cert_path=${cert_dir}/tuic-${port}.crt"
-    echo "key_path=${cert_dir}/tuic-${port}.key"
-    echo "domain=${domain}"
-}
+
 
 # 生成 TUIC 分享链接
 generate_tuic_link() {
@@ -10141,46 +10075,19 @@ install_tuic() {
         server_ip=$(curl -6s --max-time 5 https://api64.ipify.org 2>/dev/null)
     fi
     
-    # 询问证书类型
-    echo ""
-    echo -e "${cyan}请选择证书类型:${none}"
-    echo "1. 自签名证书 (无需域名，客户端需持有证书)"
-    echo "2. Let's Encrypt 证书 (需要域名，客户端自动信任)"
-    read -p "请输入选项 [1-2，默认为 1]: " cert_choice || true
-    cert_choice=${cert_choice:-1}
-    
-    local cert_type cert_path key_path sni_domain
-    
-    if [[ "$cert_choice" == "2" ]]; then
-        # Let's Encrypt 证书
-        echo -e "${cyan}请输入你的域名 (例如: tuic.example.com):${none}"
-        read -p "域名: " user_domain || true
-        if [[ -z "$user_domain" ]]; then
-            error "域名不能为空"
-            return 1
-        fi
-        
-        echo -e "${cyan}请输入邮箱 (用于 Let's Encrypt 通知，可留空):${none}"
-        read -p "邮箱: " user_email || true
-        
-        local cert_result=$(apply_letsencrypt_cert "$tuic_port" "$user_domain" "$user_email")
-        if [[ $? -ne 0 ]]; then
-            return 1
-        fi
-        
-        cert_type="letsencrypt"
-        cert_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.crt"
-        key_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.key"
-        sni_domain="$user_domain"
-        server_ip="$user_domain"  # 使用域名作为连接地址
-    else
-        # 自签名证书
-        generate_self_signed_cert "$tuic_port" "$server_ip" >/dev/null
-        cert_type="self-signed"
-        cert_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.crt"
-        key_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.key"
-        sni_domain="$server_ip"
+    if [[ -z "$server_ip" ]]; then
+        error "无法获取服务器公网 IP"
+        return 1
     fi
+    
+    # 直接使用自签名证书（无需域名）
+    info "正在生成自签名证书..."
+    generate_self_signed_cert "$tuic_port" "$server_ip" >/dev/null
+    
+    local cert_type="self-signed"
+    local cert_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.crt"
+    local key_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.key"
+    local sni_domain="$server_ip"
     
     # 生成 UUID 和密码
     local uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -10275,16 +10182,9 @@ EOF
         echo -e "${green}${surge_config}${none}"
         echo ""
         
-        if [[ "$cert_type" == "self-signed" ]]; then
-            echo -e "${yellow}⚠️  重要提示：${none}"
-            echo -e "  客户端需要持有服务端证书才能连接！"
-            echo ""
-            echo -e "  方法1 - 使用 SCP 下载证书:"
-            echo -e "  ${cyan}scp root@${server_ip}:${cert_path} ./tuic-${tuic_port}.crt${none}"
-            echo ""
-            echo -e "  方法2 - 直接查看证书内容:"
-            echo -e "  ${cyan}cat ${cert_path}${none}"
-        fi
+        echo -e "${yellow}💡 提示：${none}"
+        echo -e "  使用自签名证书，客户端链接已自动添加 ${green}allow_insecure=1${none}"
+        echo -e "  无需下载证书，直接导入链接即可使用！"
     else
         error "TUIC 服务启动失败"
         echo "请检查日志: journalctl -u tuic-${tuic_port} -n 20"
