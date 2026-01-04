@@ -869,20 +869,20 @@ get_port_status_label() {
             local usage_percent=$((current_usage * 100 / limit_bytes))
 
             local quota_display="$monthly_limit"
-            if [ "$billing_mode" = "double" ] || [ "$billing_mode" = "relay" ]; then
-                status_tags+=("[双向${quota_display}]")
-            else
+            if [ "$billing_mode" = "single" ]; then
                 status_tags+=("[单向${quota_display}]")
+            else
+                status_tags+=("[双向${quota_display}]")
             fi
             
             if [ $usage_percent -ge 100 ]; then
                 status_tags+=("[已超限]")
             fi
         else
-            if [ "$billing_mode" = "double" ] || [ "$billing_mode" = "relay" ]; then
-                status_tags+=("[双向无限制]")
-            else
+            if [ "$billing_mode" = "single" ]; then
                 status_tags+=("[单向无限制]")
+            else
+                status_tags+=("[双向无限制]")
             fi
         fi
 
