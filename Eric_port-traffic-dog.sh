@@ -1,4 +1,6 @@
 #!/bin/bash
+# v1.8.2 更新: 修复CN Premium模式配额规则(入+出各×1=8条)及检测逻辑 (by Eric86777)
+# v1.8.1 更新: 修复CN Premium模式流量显示bug(上行/下行不再错误×2) (by Eric86777)
 # v1.8.0 更新: 新增 CN Premium 内网中转计费模式(入+出×1)；端口合并需计费模式一致 (by Eric86777)
 # v1.7.0 更新: 新增 Private Network 配置功能(绿云内网互通一键配置) (by Eric86777)
 # v1.6.1 更新: 修复检测功能中CYAN变量未定义导致脚本退出的Bug (by Eric86777)
@@ -9,7 +11,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.8.0"
+readonly SCRIPT_VERSION="1.8.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1130,9 +1132,18 @@ format_port_list() {
         local running_status=$(get_port_running_status "$port")
         local running_label=$(format_running_status "$running_status")
 
-        # 所有模式都×2显示，反映真实网卡消耗
-        local input_formatted=$(format_bytes $((input_bytes * 2)))
-        local output_formatted=$(format_bytes $((output_bytes * 2)))
+        # 根据计费模式决定上行/下行显示是否×2
+        # - double/relay/single: ×2 显示（反映真实网卡消耗，因为 CN↔FX 那侧也有等量流量）
+        # - premium: 不×2（内网中转场景，CN↔软银走内网不计费，只统计用户侧）
+        local input_formatted
+        local output_formatted
+        if [ "$billing_mode" = "premium" ]; then
+            input_formatted=$(format_bytes $input_bytes)
+            output_formatted=$(format_bytes $output_bytes)
+        else
+            input_formatted=$(format_bytes $((input_bytes * 2)))
+            output_formatted=$(format_bytes $((output_bytes * 2)))
+        fi
 
         # 端口显示逻辑优化
         local port_display="$port"
@@ -2524,18 +2535,9 @@ _apply_quota_rules_for_single_port() {
     local family=$4
     local table_name=$5
 
-    if [ "$billing_mode" = "relay" ] || [ "$billing_mode" = "double" ]; then
-        # 双向统计：(In + Out) × 2
-        # 入站 ×2
-        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
-        # 出站 ×2
+    if [ "$billing_mode" = "single" ]; then
+        # 仅出站统计：Out × 2
+        # 出站规则×2（8条）
         nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
@@ -2543,9 +2545,31 @@ _apply_quota_rules_for_single_port() {
         nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+    elif [ "$billing_mode" = "premium" ]; then
+        # CN Premium 内网中转：(入+出)×1
+        # 入站规则×1（4条）
+        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        # 出站规则×1（4条）
+        nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name forward udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
     else
-        # 单向统计：Out × 2
+        # double/relay: (入+出)×2
+        # 入站规则×2（8条）
+        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name input udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        nft insert rule $family $table_name forward udp dport $single_port quota name "$quota_name" drop 2>/dev/null || true
+        # 出站规则×2（8条）
         nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name output tcp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
         nft insert rule $family $table_name output udp sport $single_port quota name "$quota_name" drop 2>/dev/null || true
@@ -3654,8 +3678,19 @@ diagnose_port_config() {
         local remark=$(jq -r ".ports.\"$port\".remark // \"无备注\"" "$CONFIG_FILE")
         local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
         local bandwidth_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
+        local billing_mode_raw=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+        
+        # 计费模式友好显示
+        local billing_mode_display
+        case "$billing_mode_raw" in
+            "double"|"relay") billing_mode_display="双向统计 (入+出)×2" ;;
+            "single") billing_mode_display="仅出站 出站×2" ;;
+            "premium") billing_mode_display="CN Premium (入+出)×1" ;;
+            *) billing_mode_display="$billing_mode_raw" ;;
+        esac
         
         echo "备注: $remark"
+        echo "计费模式: $billing_mode_display"
         echo "配额限制: $quota_limit"
         echo "带宽限制: $bandwidth_enabled"
         echo
@@ -3728,11 +3763,23 @@ diagnose_port_config() {
             
             local quota_drop_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
             
+            # 获取计费模式以计算正确的预期规则数
+            local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+            
+            # 根据计费模式计算单个端口的预期 quota 规则数
+            # double/relay: (入+出)×2 = 16条规则
+            # premium: (入+出)×1 = 8条规则
+            # single: 出站×2 = 8条规则
+            local rules_per_port=16
+            if [ "$billing_mode" = "single" ] || [ "$billing_mode" = "premium" ]; then
+                rules_per_port=8
+            fi
+            
             local expected_quota_rules=0
             if is_port_group "$port"; then
-                expected_quota_rules=$((port_count * 16))
+                expected_quota_rules=$((port_count * rules_per_port))
             else
-                expected_quota_rules=16
+                expected_quota_rules=$rules_per_port
             fi
             
             echo "  quota drop规则数量: $quota_drop_rules (预期: $expected_quota_rules)"
@@ -3742,6 +3789,99 @@ diagnose_port_config() {
             else
                 echo -e "  ${YELLOW}⚠️  quota规则数量异常${NC}"
                 quota_ok=false
+            fi
+            
+            # 5. 规则类型验证（入站/出站规则是否符合计费模式）
+            echo
+            echo -e "${YELLOW}[规则类型验证]${NC}"
+            local inbound_quota_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | grep -c "dport" || echo "0")
+            local outbound_quota_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | grep -c "sport" || echo "0")
+            echo "  入站quota规则: $inbound_quota_rules 条"
+            echo "  出站quota规则: $outbound_quota_rules 条"
+            
+            local type_ok=true
+            case "$billing_mode" in
+                "double"|"relay")
+                    # 应该有入站和出站规则，各8条
+                    if [ "$inbound_quota_rules" -eq 8 ] && [ "$outbound_quota_rules" -eq 8 ]; then
+                        echo -e "  ${GREEN}✅ 规则类型正确 (入站8+出站8)${NC}"
+                    else
+                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 入站8+出站8)${NC}"
+                        type_ok=false
+                    fi
+                    ;;
+                "premium")
+                    # 应该有入站和出站规则，各4条
+                    if [ "$inbound_quota_rules" -eq 4 ] && [ "$outbound_quota_rules" -eq 4 ]; then
+                        echo -e "  ${GREEN}✅ 规则类型正确 (入站4+出站4)${NC}"
+                    else
+                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 入站4+出站4)${NC}"
+                        type_ok=false
+                    fi
+                    ;;
+                "single")
+                    # 应该只有出站规则，8条
+                    if [ "$inbound_quota_rules" -eq 0 ] && [ "$outbound_quota_rules" -eq 8 ]; then
+                        echo -e "  ${GREEN}✅ 规则类型正确 (仅出站8)${NC}"
+                    else
+                        echo -e "  ${YELLOW}⚠️  规则类型异常 (预期: 仅出站8)${NC}"
+                        type_ok=false
+                    fi
+                    ;;
+            esac
+            
+            if [ "$type_ok" = false ]; then
+                quota_ok=false
+            fi
+            
+            # 6. 流量一致性验证（counter计算值 vs quota used值）
+            echo
+            echo -e "${YELLOW}[流量一致性验证]${NC}"
+            if [ -n "$counter_in" ] && [ -n "$counter_out" ]; then
+                local calculated_total=$(calculate_total_traffic "$counter_in" "$counter_out" "$billing_mode")
+                local calculated_formatted=$(format_bytes $calculated_total)
+                local quota_used_formatted=$(format_bytes $quota_used)
+                echo "  counter计算总流量: $calculated_formatted"
+                echo "  quota已使用流量: $quota_used_formatted"
+                
+                # 允许一定误差（流量在不断增加，可能有微小差异）
+                local diff=$((calculated_total - quota_used))
+                [ $diff -lt 0 ] && diff=$((-diff))
+                local tolerance=$((calculated_total / 100))  # 1%误差容忍
+                [ $tolerance -lt 1048576 ] && tolerance=1048576  # 最小1MB误差容忍
+                
+                if [ $diff -le $tolerance ]; then
+                    echo -e "  ${GREEN}✅ 流量数据一致${NC}"
+                else
+                    local diff_formatted=$(format_bytes $diff)
+                    echo -e "  ${YELLOW}⚠️  流量数据差异: $diff_formatted (可能需要重新设置配额以同步)${NC}"
+                fi
+            fi
+            
+            # 7. 配额限制值验证
+            echo
+            echo -e "${YELLOW}[配额限制值验证]${NC}"
+            local quota_limit_from_nft=$(echo "$quota_output" | sed -n 's/.*over \([0-9]*\) \([a-z]*\)bytes.*/\1 \2/p' | head -1)
+            local config_limit_bytes=$(parse_size_to_bytes "$quota_limit")
+            echo "  配置限制: $quota_limit ($config_limit_bytes bytes)"
+            if [ -n "$quota_limit_from_nft" ]; then
+                local nft_number=$(echo "$quota_limit_from_nft" | awk '{print $1}')
+                local nft_unit=$(echo "$quota_limit_from_nft" | awk '{print $2}')
+                local nft_bytes=0
+                case "$nft_unit" in
+                    "") nft_bytes=$nft_number ;;
+                    "k") nft_bytes=$((nft_number * 1024)) ;;
+                    "m") nft_bytes=$((nft_number * 1048576)) ;;
+                    "g") nft_bytes=$((nft_number * 1073741824)) ;;
+                    "t") nft_bytes=$((nft_number * 1099511627776)) ;;
+                esac
+                echo "  nftables限制: ${nft_number}${nft_unit}bytes ($nft_bytes bytes)"
+                
+                if [ "$nft_bytes" -eq "$config_limit_bytes" ]; then
+                    echo -e "  ${GREEN}✅ 配额限制值一致${NC}"
+                else
+                    echo -e "  ${YELLOW}⚠️  配额限制值不一致 (需要重新设置配额)${NC}"
+                fi
             fi
         else
             echo -e "  ${CYAN}⏭️  无配额限制，跳过检查${NC}"
