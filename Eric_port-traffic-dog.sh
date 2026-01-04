@@ -1265,38 +1265,589 @@ manage_port_monitoring() {
     done
 }
 
-# 快速开通端口 - 串联调用现有功能
+# 快速开通端口 - 完整逻辑（复制自 add_port_monitoring + set_reset_day + manage_port_expiration + email_configure_port_recipients）
 quick_setup_port() {
     echo -e "${BLUE}=== 快速开通端口 ===${NC}"
     echo "此功能将依次引导您完成: 添加端口 → 设置重置日期 → 设置租期 → 设置邮箱"
     echo
     
-    # 第一步：完整调用添加端口（现有函数）
-    add_port_monitoring
+    # ==================== 第一步：添加端口监控（完整复制自 add_port_monitoring）====================
+    echo -e "${BLUE}=== 添加端口监控 ===${NC}"
+    echo
+
+    echo -e "${GREEN}当前系统端口使用情况:${NC}"
+    printf "%-15s %-9s\n" "程序名" "端口"
+    echo "────────────────────────────────────────────────────────"
+
+    # 解析ss输出，聚合同程序的端口
+    declare -A program_ports
+    while read line; do
+        if [[ "$line" =~ LISTEN|UNCONN ]]; then
+            local_addr=$(echo "$line" | awk '{print $5}')
+            port=$(echo "$local_addr" | grep -o ':[0-9]*$' | cut -d':' -f2)
+            program=$(echo "$line" | awk '{print $7}' | cut -d'"' -f2 2>/dev/null || echo "")
+
+            if [ -n "$port" ] && [ -n "$program" ] && [ "$program" != "-" ]; then
+                if [ -z "${program_ports[$program]:-}" ]; then
+                    program_ports[$program]="$port"
+                else
+                    # 避免重复端口
+                    if [[ ! "${program_ports[$program]}" =~ (^|.*\|)$port(\||$) ]]; then
+                        program_ports[$program]="${program_ports[$program]}|$port"
+                    fi
+                fi
+            fi
+        fi
+    done < <(ss -tulnp 2>/dev/null || true)
+
+    if [ ${#program_ports[@]} -gt 0 ]; then
+        for program in $(printf '%s\n' "${!program_ports[@]}" | sort); do
+            ports="${program_ports[$program]}"
+            printf "%-10s | %-9s\n" "$program" "$ports"
+        done
+    else
+        echo "无活跃端口"
+    fi
+
+    echo "────────────────────────────────────────────────────────"
+    echo
+
+    read -p "请输入要监控的端口号（多端口使用逗号,分隔,端口段使用-分隔）: " port_input
+
+    # 检查是否包含多个端口（非端口段的情况）
+    local single_port_count=0
+    IFS=',' read -ra PORT_PARTS <<< "$port_input"
+    for part in "${PORT_PARTS[@]}"; do
+        part=$(echo "$part" | tr -d ' ')
+        if [[ "$part" =~ ^[0-9]+$ ]]; then
+            single_port_count=$((single_port_count + 1))
+        fi
+    done
+
+    local valid_ports=()
     
-    # 第二步：设置重置日期（现有函数）
+    # 判断处理模式
+    if [ $single_port_count -gt 1 ]; then
+        # 多个端口：直接创建端口组（共享统计）
+        local group_key=""
+        for part in "${PORT_PARTS[@]}"; do
+            part=$(echo "$part" | tr -d ' ')
+            if [[ "$part" =~ ^[0-9]+$ ]] && [ "$part" -ge 1 ] && [ "$part" -le 65535 ]; then
+                if [ -n "$group_key" ]; then
+                    group_key="${group_key},${part}"
+                else
+                    group_key="$part"
+                fi
+            elif [[ "$part" =~ ^[0-9]+-[0-9]+$ ]]; then
+                # 端口段也支持加入组，展开后添加
+                local start_port=$(echo "$part" | cut -d'-' -f1)
+                local end_port=$(echo "$part" | cut -d'-' -f2)
+                for p in $(seq $start_port $end_port); do
+                    if [ -n "$group_key" ]; then
+                        group_key="${group_key},${p}"
+                    else
+                        group_key="$p"
+                    fi
+                done
+            fi
+        done
+        
+        if [ -n "$group_key" ]; then
+            if jq -e ".ports.\"$group_key\"" "$CONFIG_FILE" >/dev/null 2>&1; then
+                echo -e "${YELLOW}端口组 $group_key 已在监控列表中${NC}"
+            else
+                valid_ports+=("$group_key")
+                echo -e "${GREEN}创建端口组: $group_key (所有端口共享统计)${NC}"
+            fi
+        fi
+    else
+        # 单个端口或端口段：使用原有逻辑（独立统计）
+        local PORTS=()
+        parse_port_range_input "$port_input" PORTS
+        
+        for port in "${PORTS[@]}"; do
+            if jq -e ".ports.\"$port\"" "$CONFIG_FILE" >/dev/null 2>&1; then
+                echo -e "${YELLOW}端口 $port 已在监控列表中，跳过${NC}"
+                continue
+            fi
+            valid_ports+=("$port")
+        done
+    fi
+
+    if [ ${#valid_ports[@]} -eq 0 ]; then
+        echo -e "${RED}没有有效的端口可添加${NC}"
+        sleep 2
+        return
+    fi
+
+    echo
+    echo -e "${GREEN}说明:${NC}"
+    echo "1. 双向流量统计（推荐）："
+    echo "   总流量 = (入站 + 出站) × 2"
+    echo
+    echo "2. 仅出站统计："
+    echo "   总流量 = 出站 × 2"
+    echo
+    echo "3. CN Premium 内网中转："
+    echo "   总流量 = (入站 + 出站) × 1"
+    echo "   适用：CN 内网转发到软银的场景"
+    echo
+    echo "请选择统计模式:"
+    echo "1. 双向流量统计（推荐）"
+    echo "2. 仅出站统计"
+    echo "3. CN Premium 内网中转"
+    read -p "请选择(回车默认1) [1-3]: " billing_choice
+
+    local billing_mode="double"
+    case $billing_choice in
+        1|"") billing_mode="double" ;;
+        2) billing_mode="single" ;;
+        3) billing_mode="premium" ;;
+        *) billing_mode="double" ;;
+    esac
+
+    echo
+    local port_list=$(IFS=','; echo "${valid_ports[*]}")
+    while true; do
+        echo "为端口 $port_list 设置流量配额（总量控制）:"
+        echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
+        echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
+        read -p "流量配额(回车默认0): " quota_input
+
+        if [ -z "$quota_input" ]; then
+            quota_input="0"
+        fi
+
+        local QUOTAS=()
+        parse_comma_separated_input "$quota_input" QUOTAS
+
+        local all_valid=true
+        for quota in "${QUOTAS[@]}"; do
+            if [ "$quota" != "0" ] && ! validate_quota "$quota"; then
+                echo -e "${RED}配额格式错误: $quota，请使用如：100MB, 1GB, 2T${NC}"
+                all_valid=false
+                break
+            fi
+        done
+
+        if [ "$all_valid" = false ]; then
+            echo "请重新输入配额值"
+            continue
+        fi
+
+        expand_single_value_to_array QUOTAS ${#valid_ports[@]}
+        if [ ${#QUOTAS[@]} -ne ${#valid_ports[@]} ]; then
+            echo -e "${RED}配额值数量与端口数量不匹配${NC}"
+            continue
+        fi
+
+        break
+    done
+
+    echo
+    echo -e "${BLUE}=== 规则备注配置 ===${NC}"
+    echo "请输入当前规则备注(可选，直接回车跳过):"
+    echo "(多端口排序分别备注使用逗号,分隔)(只输入一个值，应用到所有端口):"
+    read -p "备注: " remark_input
+
+    local REMARKS=()
+    if [ -n "$remark_input" ]; then
+        parse_comma_separated_input "$remark_input" REMARKS
+
+        expand_single_value_to_array REMARKS ${#valid_ports[@]}
+        if [ ${#REMARKS[@]} -ne ${#valid_ports[@]} ]; then
+            echo -e "${RED}备注数量与端口数量不匹配${NC}"
+            sleep 2
+            return
+        fi
+    fi
+
+    local added_count=0
+    local added_ports=()
+    for i in "${!valid_ports[@]}"; do
+        local port="${valid_ports[$i]}"
+        local quota=$(echo "${QUOTAS[$i]}" | tr -d ' ')
+        local remark=""
+        if [ ${#REMARKS[@]} -gt $i ]; then
+            remark=$(echo "${REMARKS[$i]}" | tr -d ' ')
+        fi
+
+        local quota_enabled="true"
+        local monthly_limit="unlimited"
+
+        if [ "$quota" != "0" ] && [ -n "$quota" ]; then
+            monthly_limit="$quota"
+        fi
+
+        # 只有设置了流量限额时才添加reset_day字段（默认为1）
+        local quota_config
+        if [ "$monthly_limit" != "unlimited" ]; then
+            quota_config="{
+                \"enabled\": $quota_enabled,
+                \"monthly_limit\": \"$monthly_limit\",
+                \"reset_day\": 1
+            }"
+        else
+            quota_config="{
+                \"enabled\": $quota_enabled,
+                \"monthly_limit\": \"$monthly_limit\"
+            }"
+        fi
+
+        local port_config="{
+            \"name\": \"端口$port\",
+            \"enabled\": true,
+            \"billing_mode\": \"$billing_mode\",
+            \"bandwidth_limit\": {
+                \"enabled\": false,
+                \"rate\": \"unlimited\"
+            },
+            \"quota\": $quota_config,
+            \"remark\": \"$remark\",
+            \"created_at\": \"$(get_beijing_time -Iseconds)\"
+        }"
+
+        update_config ".ports.\"$port\" = $port_config"
+        add_nftables_rules "$port"
+
+        if [ "$monthly_limit" != "unlimited" ]; then
+            apply_nftables_quota "$port" "$quota"
+        fi
+
+        echo -e "${GREEN}端口 $port 监控添加成功${NC}"
+        setup_port_auto_reset_cron "$port"
+        added_count=$((added_count + 1))
+        added_ports+=("$port")
+    done
+
+    echo
+    echo -e "${GREEN}成功添加 $added_count 个端口监控${NC}"
+    sleep 2
+    
+    # ==================== 第二步：设置重置日期（完整复制自 set_reset_day）====================
     echo
     read -p "是否设置重置日期？[y/n] (默认y): " choice
     if [[ "$choice" != "n" && "$choice" != "N" ]]; then
-        set_reset_day
+        echo -e "${BLUE}=== 重置流量月重置日设置 ===${NC}"
+        echo
+
+        local active_ports=($(get_active_ports))
+
+        if ! show_port_list; then
+            echo -e "${RED}没有端口可设置${NC}"
+            sleep 2
+        else
+            echo
+
+            read -p "请选择要设置重置日期的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+
+            local valid_choices=()
+            local ports_to_set=()
+            parse_multi_choice_input "$choice_input" "${#active_ports[@]}" valid_choices
+
+            for choice in "${valid_choices[@]}"; do
+                local port=${active_ports[$((choice-1))]}
+                ports_to_set+=("$port")
+            done
+
+            if [ ${#ports_to_set[@]} -eq 0 ]; then
+                echo -e "${RED}没有有效的端口可设置${NC}"
+                sleep 2
+            else
+                echo
+                local port_list=$(IFS=','; echo "${ports_to_set[*]}")
+                echo "为端口 $port_list 设置月重置日期:"
+                echo "请输入月重置日（多端口使用逗号,分隔）(0代表不重置):"
+                echo "(只输入一个值，应用到所有端口):"
+                read -p "月重置日 [0-31]: " reset_day_input
+
+                local RESET_DAYS=()
+                parse_comma_separated_input "$reset_day_input" RESET_DAYS
+
+                expand_single_value_to_array RESET_DAYS ${#ports_to_set[@]}
+                if [ ${#RESET_DAYS[@]} -ne ${#ports_to_set[@]} ]; then
+                    echo -e "${RED}重置日期数量与端口数量不匹配${NC}"
+                    sleep 2
+                else
+                    local success_count=0
+                    for i in "${!ports_to_set[@]}"; do
+                        local port="${ports_to_set[$i]}"
+                        local reset_day=$(echo "${RESET_DAYS[$i]}" | tr -d ' ')
+
+                        if ! [[ "$reset_day" =~ ^[0-9]+$ ]] || [ "$reset_day" -lt 0 ] || [ "$reset_day" -gt 31 ]; then
+                            echo -e "${RED}端口 $port 重置日期无效: $reset_day，必须是0-31之间的数字${NC}"
+                            continue
+                        fi
+
+                        if [ "$reset_day" = "0" ]; then
+                            # 删除reset_day字段并移除定时任务
+                            jq "del(.ports.\"$port\".quota.reset_day)" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+                            remove_port_auto_reset_cron "$port"
+                            echo -e "${GREEN}端口 $port 已取消自动重置${NC}"
+                        else
+                            update_config ".ports.\"$port\".quota.reset_day = $reset_day"
+                            setup_port_auto_reset_cron "$port"
+                            echo -e "${GREEN}端口 $port 月重置日设置成功: 每月${reset_day}日${NC}"
+                        fi
+                        
+                        success_count=$((success_count + 1))
+                    done
+
+                    echo
+                    echo -e "${GREEN}成功设置 $success_count 个端口的月重置日期${NC}"
+                    sleep 2
+                fi
+            fi
+        fi
     fi
     
-    # 第三步：设置租期（现有函数）
+    # ==================== 第三步：设置租期（完整复制自 manage_port_expiration）====================
     echo
     read -p "是否设置租期？[y/n] (默认y): " choice
     if [[ "$choice" != "n" && "$choice" != "N" ]]; then
-        manage_port_expiration
+        # 确保后台检查任务已部署
+        setup_daily_check_cron
+
+        clear
+        echo -e "${BLUE}=== 管理端口租期 (到期自动停机) ===${NC}"
+        echo
+        
+        local active_ports=($(get_active_ports))
+        if [ ${#active_ports[@]} -eq 0 ]; then
+             echo "暂无监控端口"
+             sleep 2
+        else
+            echo "端口列表:"
+            for i in "${!active_ports[@]}"; do
+                local port=${active_ports[$i]}
+                
+                # 显示基本信息
+                local display_name=""
+                local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+                if is_port_group "$port"; then
+                    local display_str="$port"
+                    if [ ${#port} -gt 20 ]; then
+                        local count=$(echo "$port" | tr -cd ',' | wc -c)
+                        count=$((count + 1))
+                        display_str="${port:0:17}...(${count}个)"
+                    fi
+                    display_name="端口组[${display_str}]"
+                elif is_port_range "$port"; then
+                    display_name="端口段[$port]"
+                else
+                    display_name="端口 $port"
+                fi
+                if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+                    display_name+=" [$remark]"
+                fi
+
+                # 读取到期信息
+                local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+                local expire_status="${GREEN}永久有效${NC}"
+                
+                if [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
+                    local today=$(get_beijing_time +%Y-%m-%d)
+                    if [[ "$today" > "$expire_date" ]]; then
+                        expire_status="${RED}已过期 ($expire_date)${NC}"
+                    elif [[ "$today" == "$expire_date" ]]; then
+                        expire_status="${YELLOW}今天到期 ($expire_date)${NC}"
+                    else
+                        expire_status="${BLUE}$expire_date 到期${NC}"
+                    fi
+                fi
+                
+                echo -e "$((i+1)). $display_name -> $expire_status"
+            done
+            echo
+            echo "0. 跳过租期设置"
+            echo
+            
+            read -p "请选择要管理的端口 [1-${#active_ports[@]}, 0跳过]: " choice
+            
+            if [ "$choice" != "0" ]; then
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#active_ports[@]} ]; then
+                    local port=${active_ports[$((choice-1))]}
+                    
+                    # 完整复制 set_port_update_expiration 逻辑
+                    clear
+                    echo -e "${BLUE}=== 续费/设置租期: $port ===${NC}"
+                    
+                    # 获取当前信息
+                    local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+                    local reset_day=$(jq -r ".ports.\"$port\".quota.reset_day // \"\"" "$CONFIG_FILE")
+                    
+                    if [ -z "$expire_date" ] || [ "$expire_date" = "null" ]; then
+                        expire_date="未设置 (永久)"
+                    fi
+                    if [ -z "$reset_day" ] || [ "$reset_day" = "null" ]; then
+                        reset_day=$(get_beijing_time +%-d) # 默认为今天
+                        echo -e "${YELLOW}提示: 该端口未设置流量重置日，将默认以每月 ${reset_day} 日为基准。${NC}"
+                    fi
+                    
+                    echo -e "当前到期日: ${GREEN}$expire_date${NC}"
+                    echo -e "重置日基准: 每月 ${GREEN}${reset_day}${NC} 日"
+                    echo "------------------------"
+                    echo "1. 增加 1 个月"
+                    echo "2. 增加 3 个月 (季付)"
+                    echo "3. 增加 6 个月 (半年)"
+                    echo "4. 增加 1 年"
+                    echo "5. 手动输入到期日期"
+                    echo "6. 清除租期 (设置为永久)"
+                    echo "0. 跳过"
+                    echo
+                    
+                    read -p "请选择续费时长 [0-6]: " duration_choice
+                    
+                    local new_date=""
+                    local base_date=""
+                    local months_to_add=0
+                    
+                    # 确定基准日期逻辑
+                    local current_expire=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+                    local today=$(get_beijing_time +%Y-%m-%d)
+                    local is_renewal=false
+                    
+                    if [ -n "$current_expire" ] && [ "$current_expire" != "null" ] && [[ "$current_expire" > "$today" ]]; then
+                        # 续费模式：端口未过期，在现有到期日基础上叠加
+                        base_date="$current_expire"
+                        is_renewal=true
+                        echo -e "将在现有到期日 ($base_date) 基础上续费"
+                    else
+                        # 初始化/过期续费模式：从今天开始计算
+                        base_date="$today"
+                        is_renewal=false
+                        echo -e "端口已过期或首次设置，从今天 ($today) 开始计算租期"
+                    fi
+
+                    case $duration_choice in
+                        1) months_to_add=1 ;;
+                        2) months_to_add=3 ;;
+                        3) months_to_add=6 ;;
+                        4) months_to_add=12 ;;
+                        5) 
+                            read -p "请输入到期日期 (格式 YYYY-MM-DD): " manual_date
+                            if date -d "$manual_date" >/dev/null 2>&1; then
+                                new_date="$manual_date"
+                            else
+                                echo -e "${RED}日期格式错误${NC}"
+                                sleep 2
+                            fi
+                            ;;
+                        6)
+                            update_config "del(.ports.\"$port\".expiration_date)"
+                            echo -e "${GREEN}已清除租期，端口恢复永久有效。${NC}"
+                            sleep 2
+                            ;;
+                        0) ;;
+                        *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
+                    esac
+                    
+                    # 如果不是手动输入，则计算日期
+                    if [ -z "$new_date" ] && [ $duration_choice -ge 1 ] && [ $duration_choice -le 4 ]; then
+                        new_date=$(calculate_next_expiration "$base_date" "$months_to_add" "$reset_day")
+                    fi
+                    
+                    if [ -n "$new_date" ]; then
+                        update_config ".ports.\"$port\".expiration_date = \"$new_date\""
+                        echo -e "${GREEN}续费成功！新到期日: $new_date${NC}"
+                        sleep 2
+                    fi
+                else
+                    echo -e "${RED}无效选择${NC}"
+                    sleep 1
+                fi
+            fi
+        fi
     fi
     
-    # 第四步：设置用户邮箱（现有函数，可跳过）
+    # ==================== 第四步：设置用户邮箱（完整复制自 email_configure_port_recipients）====================
     echo
     read -p "是否设置用户邮箱？[y/n] (默认n，可后续补充): " choice
     if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-        email_configure_port_recipients
+        clear
+        echo -e "${BLUE}=== 配置端口独立收件人 ===${NC}"
+        echo
+        
+        local active_ports=($(get_active_ports))
+        if [ ${#active_ports[@]} -eq 0 ]; then
+             echo "暂无监控端口"
+             sleep 2
+        else
+            echo "端口列表:"
+            for i in "${!active_ports[@]}"; do
+                local port=${active_ports[$i]}
+                local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+                local email=$(jq -r ".ports.\"$port\".email // \"未设置\"" "$CONFIG_FILE")
+                
+                # 显示名称处理
+                local display_name=""
+                if is_port_group "$port"; then
+                    local display_str="$port"
+                    if [ ${#port} -gt 20 ]; then
+                        local count=$(echo "$port" | tr -cd ',' | wc -c)
+                        count=$((count + 1))
+                        display_str="${port:0:17}...(${count}个)"
+                    fi
+                    display_name="端口组[${display_str}]"
+                elif is_port_range "$port"; then
+                    display_name="端口段[$port]"
+                else
+                    display_name="端口 $port"
+                fi
+                
+                if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+                    display_name+=" [$remark]"
+                fi
+                
+                local email_display="${RED}未设置${NC}"
+                if [ "$email" != "未设置" ] && [ "$email" != "null" ] && [ "$email" != "" ]; then
+                    email_display="${GREEN}$email${NC}"
+                fi
+                
+                echo -e "$((i+1)). $display_name -> $email_display"
+            done
+            echo
+            echo "0. 跳过邮箱设置"
+            echo
+            
+            read -p "请选择要配置的端口 [1-${#active_ports[@]}, 0跳过]: " choice
+            
+            if [ "$choice" != "0" ]; then
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#active_ports[@]} ]; then
+                    local port=${active_ports[$((choice-1))]}
+                    
+                    echo
+                    local current_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
+                    if [ "$current_email" = "null" ]; then current_email=""; fi
+                    
+                    echo "正在配置端口: $port"
+                    echo "当前邮箱: ${current_email:-未设置}"
+                    echo "输入 'd' 或 'delete' 可删除邮箱配置"
+                    read -p "请输入接收邮箱: " new_email
+                    
+                    if [ "$new_email" = "d" ] || [ "$new_email" = "delete" ]; then
+                        update_config "del(.ports.\"$port\".email)"
+                        echo -e "${YELLOW}已删除端口 $port 的邮箱配置${NC}"
+                    elif [[ "$new_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+                        update_config ".ports.\"$port\".email = \"$new_email\""
+                        echo -e "${GREEN}端口 $port 邮箱已设置为: $new_email${NC}"
+                    else
+                        echo -e "${RED}邮箱格式错误，未保存${NC}"
+                    fi
+                    sleep 1
+                else
+                    echo -e "${RED}无效选择${NC}"
+                    sleep 1
+                fi
+            fi
+        fi
     fi
     
+    # ==================== 完成 ====================
     echo
-    echo -e "${GREEN}快速开通流程完成！${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}       快速开通流程完成！${NC}"
+    echo -e "${GREEN}========================================${NC}"
     sleep 2
 }
 
