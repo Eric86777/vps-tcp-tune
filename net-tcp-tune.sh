@@ -3,7 +3,7 @@
 # BBR v3 终极优化脚本 - 融合版
 # 功能：结合 XanMod 官方内核的稳定性 + 专业队列算法调优
 # 特点：安全性 + 性能 双优化
-# 版本：2.0 Ultimate Edition
+# 版本：2.1 Ultimate Edition
 #=============================================================================
 
 #=============================================================================
@@ -3794,7 +3794,7 @@ bbr_configure_direct() {
     
     # 获取物理内存用于虚拟内存参数调整
     local mem_total=$(free -m | awk 'NR==2{print $2}')
-    local vm_swappiness=10
+    local vm_swappiness=5
     local vm_dirty_ratio=15
     local vm_min_free_kbytes=65536
     
@@ -3835,11 +3835,32 @@ net.core.somaxconn=4096
 net.ipv4.tcp_max_syn_backlog=8192
 
 # 网络队列（高带宽优化）
-net.core.netdev_max_backlog=16384
+net.core.netdev_max_backlog=5000
 
 # 高级TCP优化
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
+
+# ===== Reality终极优化参数 =====
+
+# 发送低水位（上传速度优化关键）
+net.ipv4.tcp_notsent_lowat=16384
+
+# 连接回收优化
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_max_tw_buckets=5000
+
+# TCP保活优化（更快检测死连接）
+net.ipv4.tcp_keepalive_time=300
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=5
+
+# UDP缓冲区（QUIC/Hysteria/TUIC支持）
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
+
+# TCP安全增强
+net.ipv4.tcp_syncookies=1
 
 # 虚拟内存优化（根据物理内存调整）
 vm.swappiness=${vm_swappiness}
@@ -3870,11 +3891,11 @@ EOF
     if ! grep -q "BBR - 文件描述符优化" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf << 'LIMITSEOF'
 # BBR - 文件描述符优化
-* soft nofile 65535
-* hard nofile 65535
+* soft nofile 524288
+* hard nofile 524288
 LIMITSEOF
     fi
-    ulimit -n 65535 2>/dev/null
+    ulimit -n 524288 2>/dev/null
     
     # 禁用透明大页面
     if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
