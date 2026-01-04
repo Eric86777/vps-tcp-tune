@@ -869,21 +869,33 @@ get_port_status_label() {
             local usage_percent=$((current_usage * 100 / limit_bytes))
 
             local quota_display="$monthly_limit"
-            if [ "$billing_mode" = "single" ]; then
-                status_tags+=("[单向${quota_display}]")
-            else
-                status_tags+=("[双向${quota_display}]")
-            fi
+            case "$billing_mode" in
+                "double"|"relay")
+                    status_tags+=("[双向×2 ${quota_display}]")
+                    ;;
+                "premium")
+                    status_tags+=("[CN Premium ${quota_display}]")
+                    ;;
+                "single")
+                    status_tags+=("[单向×2 ${quota_display}]")
+                    ;;
+            esac
             
             if [ $usage_percent -ge 100 ]; then
                 status_tags+=("[已超限]")
             fi
         else
-            if [ "$billing_mode" = "single" ]; then
-                status_tags+=("[单向无限制]")
-            else
-                status_tags+=("[双向无限制]")
-            fi
+            case "$billing_mode" in
+                "double"|"relay")
+                    status_tags+=("[双向×2 无限制]")
+                    ;;
+                "premium")
+                    status_tags+=("[CN Premium 无限制]")
+                    ;;
+                "single")
+                    status_tags+=("[单向×2 无限制]")
+                    ;;
+            esac
         fi
 
         # 显示重置日期信息 (适用于有限制和无限制模式)
