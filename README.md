@@ -262,6 +262,20 @@ dog
 - ✅ 无需手动更新脚本
 - ✅ 所有历史数据、端口配置、通知设置完整保留
 
+### 🔍 计数器健康检查（排查用）
+
+**如果发现多台机器的流量统计不一致，可以用这个命令快速排查：**
+
+```bash
+bash -c 'counters=$(nft list counters inet port_traffic_monitor 2>/dev/null | grep -oP "counter port_\K[0-9_]+(?=_in)" | sort -u); echo "=== 端口计数器检查 ==="; echo "Uptime: $(cat /proc/uptime | awk "{print int(\$1/86400)\"天\"int((\$1%86400)/3600)\"时\"}")"; echo ""; for p in $counters; do in_data=$(nft list counter inet port_traffic_monitor "port_${p}_in" 2>/dev/null); out_data=$(nft list counter inet port_traffic_monitor "port_${p}_out" 2>/dev/null); in_pkt=$(echo "$in_data" | grep -oP "packets \K[0-9]+" || echo 0); out_pkt=$(echo "$out_data" | grep -oP "packets \K[0-9]+" || echo 0); in_b=$(echo "$in_data" | grep -oP "bytes \K[0-9]+" || echo 0); out_b=$(echo "$out_data" | grep -oP "bytes \K[0-9]+" || echo 0); status="✅正常"; [ "$in_pkt" = "0" ] && [ "$out_pkt" = "0" ] && [ "$in_b" != "0" -o "$out_b" != "0" ] && status="⚠️已恢复"; echo "端口$p: packets=$in_pkt/$out_pkt bytes=$in_b/$out_b $status"; done'
+```
+
+**状态说明**：
+- **✅正常** - 原始统计数据，`packets > 0`，数据可信
+- **⚠️已恢复** - 从备份恢复的数据，`packets = 0` 但 `bytes > 0`，可能有偏差
+
+> 💡 **提示**：如果多台机器的流量数据不一致，通常是因为某台机器重启过，数据从备份恢复导致不准。可以在所有相关机器上同时重置流量计数器，从零开始统计。
+
 ### ✨ 功能亮点
 
 - ✅ 计费级精度 (nftables)
