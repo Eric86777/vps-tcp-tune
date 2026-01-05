@@ -207,17 +207,15 @@ check_root() {
 }
 
 # 确保本地有脚本文件供 cron 任务使用
-# 当通过 bash <(curl ...) 运行时，需要下载一份到本地
+# 当通过 bash <(curl ...) 运行时，每次都更新本地脚本以保持最新
 ensure_local_script_for_cron() {
     local local_script="/usr/local/bin/port-traffic-dog.sh"
     local script_url="https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/Eric_port-traffic-dog.sh"
     
-    # 检查本地脚本是否存在且可执行
-    if [ ! -x "$local_script" ]; then
-        # 下载脚本到本地
-        if curl -fsSL "$script_url" -o "$local_script" 2>/dev/null; then
-            chmod +x "$local_script"
-        fi
+    # 每次在线运行时都更新本地脚本，确保 cron 任务使用最新版本
+    if curl -fsSL "$script_url" -o "${local_script}.tmp" 2>/dev/null; then
+        mv "${local_script}.tmp" "$local_script"
+        chmod +x "$local_script"
     fi
 }
 
