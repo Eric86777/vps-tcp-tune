@@ -11,7 +11,18 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 readonly SCRIPT_VERSION="1.8.8"
 readonly SCRIPT_NAME="端口流量狗"
-readonly SCRIPT_PATH="$(realpath "$0")"
+# 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
+# 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
+# 对于 cron 任务，我们需要使用固定的可执行路径
+_raw_script_path="$(realpath "$0" 2>/dev/null || echo "")"
+if [[ "$_raw_script_path" == /proc/* ]] || [[ "$_raw_script_path" == /dev/* ]] || [[ -z "$_raw_script_path" ]]; then
+    # 通过管道运行，使用固定的 cron 脚本路径
+    readonly SCRIPT_PATH="/usr/local/bin/port-traffic-dog.sh"
+    readonly SCRIPT_RUN_MODE="online"
+else
+    readonly SCRIPT_PATH="$_raw_script_path"
+    readonly SCRIPT_RUN_MODE="local"
+fi
 readonly CONFIG_DIR="/etc/port-traffic-dog"
 readonly CONFIG_FILE="$CONFIG_DIR/config.json"
 readonly LOG_FILE="$CONFIG_DIR/logs/traffic.log"
@@ -195,6 +206,21 @@ check_root() {
     fi
 }
 
+# 确保本地有脚本文件供 cron 任务使用
+# 当通过 bash <(curl ...) 运行时，需要下载一份到本地
+ensure_local_script_for_cron() {
+    local local_script="/usr/local/bin/port-traffic-dog.sh"
+    local script_url="https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/Eric_port-traffic-dog.sh"
+    
+    # 检查本地脚本是否存在且可执行
+    if [ ! -x "$local_script" ]; then
+        # 下载脚本到本地
+        if curl -fsSL "$script_url" -o "$local_script" 2>/dev/null; then
+            chmod +x "$local_script"
+        fi
+    fi
+}
+
 init_config() {
     mkdir -p "$CONFIG_DIR" "$(dirname "$LOG_FILE")"
 
@@ -247,6 +273,11 @@ init_config() {
   }
 }
 EOF
+    fi
+
+    # 如果是在线运行模式，需要下载脚本到本地供 cron 任务使用
+    if [ "$SCRIPT_RUN_MODE" = "online" ]; then
+        ensure_local_script_for_cron
     fi
 
     init_nftables
