@@ -217,6 +217,11 @@ ensure_local_script_for_cron() {
         mv "${local_script}.tmp" "$local_script"
         chmod +x "$local_script"
     fi
+    
+    # 自动修复 crontab 中的错误路径（/proc/xxx/fd/pipe:xxx → 正确路径）
+    if crontab -l 2>/dev/null | grep -q '/proc/.*fd/pipe:'; then
+        crontab -l 2>/dev/null | sed "s|/proc/[0-9]*/fd/pipe:\[[0-9]*\]|$local_script|g" | crontab -
+    fi
 }
 
 init_config() {
