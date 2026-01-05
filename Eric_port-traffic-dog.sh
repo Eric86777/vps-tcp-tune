@@ -4523,7 +4523,7 @@ diagnose_port_config() {
     fi
     
     # 自动备份
-    local backup_enabled=$(jq -r '.enabled // false' "$BACKUP_CONFIG_FILE" 2>/dev/null || echo "false")
+    local backup_enabled=$(jq -r '.auto_backup_enabled // false' "$BACKUP_CONFIG_FILE" 2>/dev/null || echo "false")
     if [ "$backup_enabled" = "true" ]; then
         local last_backup=$(jq -r '.last_backup_time // ""' "$BACKUP_CONFIG_FILE" 2>/dev/null)
         echo -e "  自动备份: ${GREEN}✅ 已开启${NC}"
