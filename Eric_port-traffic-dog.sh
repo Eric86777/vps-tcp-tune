@@ -5206,10 +5206,13 @@ generate_port_html_card() {
     fi
 
     # 计费模式显示
-    local mode_display="双向计费"
-    if [ "$billing_mode" != "double" ] && [ "$billing_mode" != "relay" ]; then
-        mode_display="单向计费(只输出站)"
-    fi
+    local mode_display
+    case "$billing_mode" in
+        "double"|"relay") mode_display="双向计费 (入+出)×2" ;;
+        "premium") mode_display="CN Premium (入+出)×1" ;;
+        "single") mode_display="单向计费 (出站×2)" ;;
+        *) mode_display="双向计费" ;;
+    esac
 
     echo "<div class=\"card\">
             <div class=\"card-header\">
