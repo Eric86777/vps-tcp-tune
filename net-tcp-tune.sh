@@ -3,7 +3,8 @@
 # BBR v3 终极优化脚本 - 融合版
 # 功能：结合 XanMod 官方内核的稳定性 + 专业队列算法调优
 # 特点：安全性 + 性能 双优化
-# 版本：2.1 Ultimate Edition
+# 版本：2.2 Ultimate Edition
+# 更新：安全下载校验 + MSS 规则安全处理 + Realm 依赖预检
 #=============================================================================
 
 #=============================================================================
@@ -147,6 +148,65 @@ install_package() {
             return 1
         fi
     done
+}
+
+safe_download_script() {
+    local url=$1
+    local output_file=$2
+
+    if command -v curl &>/dev/null; then
+        curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o "$output_file"
+    elif command -v wget &>/dev/null; then
+        wget -qO "$output_file" "$url"
+    else
+        return 1
+    fi
+
+    [ -s "$output_file" ]
+}
+
+verify_downloaded_script() {
+    local file=$1
+
+    if [ ! -s "$file" ]; then
+        return 1
+    fi
+
+    if head -n 1 "$file" | grep -qiE '<!DOCTYPE|<html'; then
+        return 1
+    fi
+
+    head -n 5 "$file" | grep -q '^#!'
+}
+
+run_remote_script() {
+    local url=$1
+    local interpreter=${2:-bash}
+    shift 2
+
+    local tmp_file
+    tmp_file=$(mktemp /tmp/net-tcp-tune.XXXXXX) || {
+        echo -e "${gl_hong}❌ 无法创建临时文件${gl_bai}"
+        return 1
+    }
+
+    if ! safe_download_script "$url" "$tmp_file"; then
+        echo -e "${gl_hong}❌ 下载脚本失败: ${url}${gl_bai}"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    if ! verify_downloaded_script "$tmp_file"; then
+        echo -e "${gl_hong}❌ 脚本校验失败，已取消执行${gl_bai}"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    chmod +x "$tmp_file"
+    "$interpreter" "$tmp_file" "$@"
+    local rc=$?
+    rm -f "$tmp_file"
+    return $rc
 }
 
 check_disk_space() {
@@ -1625,6 +1685,24 @@ enable_realm_ipv4() {
 
     echo ""
 
+    # 前置检查：确保依赖和配置可用
+    if [ ! -f /etc/realm/config.json ]; then
+        echo -e "${gl_hong}❌ /etc/realm/config.json 不存在${gl_bai}"
+        echo ""
+        break_end
+        return 1
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        echo "正在安装 jq..."
+        if ! install_package "jq"; then
+            echo -e "${gl_hong}❌ jq 安装失败，已取消操作${gl_bai}"
+            echo ""
+            break_end
+            return 1
+        fi
+    fi
+
     # 步骤2：修改 resolv.conf
     echo -e "${gl_zi}[步骤 2/6] 修改 DNS 配置...${gl_bai}"
     
@@ -1650,17 +1728,9 @@ enable_realm_ipv4() {
     
     if [ ! -f /etc/realm/config.json ]; then
         echo -e "${gl_hong}❌ /etc/realm/config.json 不存在${gl_bai}"
-        echo ""
-        break_end
         return 1
     fi
-    
-    # 检查是否安装了 jq
-    if ! command -v jq &>/dev/null; then
-        echo "正在安装 jq..."
-        apt-get update -qq && apt-get install -y jq >/dev/null 2>&1
-    fi
-    
+
     # 使用 sed 和手动编辑来修改配置
     local temp_config="/tmp/realm_config_temp.json"
 
@@ -2605,6 +2675,11 @@ apply_mss_clamp_with_value() {
             return 1
         fi
     fi
+
+    if ! iptables -m comment -h &>/dev/null; then
+        echo -e "${gl_hong}错误: iptables comment 模块不可用，已取消 MSS Clamp${gl_bai}"
+        return 1
+    fi
     
     # 备份当前规则
     local backup_file="/root/.iptables_backup_$(date +%Y%m%d_%H%M%S).rules"
@@ -2612,15 +2687,31 @@ apply_mss_clamp_with_value() {
     echo -e "${gl_zi}已备份当前规则到: ${backup_file}${gl_bai}"
     echo ""
     
-    # 清除旧的 MSS 规则
+    # 清除旧的 MSS 规则（仅处理本脚本添加的规则）
     echo "清除旧规则..."
-    iptables -t mangle -F OUTPUT 2>/dev/null
-    iptables -t mangle -F POSTROUTING 2>/dev/null
+    local comment_tag="net-tcp-tune-mss"
+    local old_rule_mss
+    while read -r old_rule_mss; do
+        [ -n "$old_rule_mss" ] || continue
+        iptables -t mangle -D OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$old_rule_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
+    done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "$comment_tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
+
+    while read -r old_rule_mss; do
+        [ -n "$old_rule_mss" ] || continue
+        iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$old_rule_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
+    done < <(iptables -t mangle -S POSTROUTING 2>/dev/null | grep "$comment_tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
+
+    if iptables -t mangle -S OUTPUT 2>/dev/null | grep 'TCPMSS' | grep -vq "$comment_tag"; then
+        echo -e "${gl_huang}⚠️  检测到非本脚本的 TCPMSS 规则，未自动清理${gl_bai}"
+    fi
+    if iptables -t mangle -S POSTROUTING 2>/dev/null | grep 'TCPMSS' | grep -vq "$comment_tag"; then
+        echo -e "${gl_huang}⚠️  检测到非本脚本的 TCPMSS 规则，未自动清理${gl_bai}"
+    fi
     
     # 应用新规则（OUTPUT链 + POSTROUTING链）
     echo "设置 MSS = ${mss} bytes..."
-    iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $mss
-    iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $mss
+    iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$mss" -m comment --comment "$comment_tag"
+    iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$mss" -m comment --comment "$comment_tag"
     
     echo ""
     echo -e "${gl_lv}✅ MSS Clamp 规则已应用${gl_bai}"
@@ -6458,7 +6549,11 @@ run_backtrace() {
     echo ""
 
     # 执行三网回程路由测试脚本
-    curl https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh -sSf | sh
+    if ! run_remote_script "https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh" sh; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -6474,7 +6569,11 @@ run_ns_detect() {
     echo ""
 
     # 执行 NS 一键检测脚本
-    bash <(curl -sL https://run.NodeQuality.com)
+    if ! run_remote_script "https://run.NodeQuality.com" bash; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -6490,7 +6589,11 @@ run_ip_quality_check() {
     echo ""
 
     # 执行 IP 质量检测脚本
-    bash <(curl -Ls https://IP.Check.Place)
+    if ! run_remote_script "https://IP.Check.Place" bash; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -6506,7 +6609,11 @@ run_ip_quality_check_ipv4() {
     echo ""
 
     # 执行 IP 质量检测脚本 - 仅 IPv4
-    bash <(curl -Ls https://IP.Check.Place) -4
+    if ! run_remote_script "https://IP.Check.Place" bash -4; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -6522,7 +6629,11 @@ run_network_latency_check() {
     echo ""
 
     # 执行网络延迟质量检测脚本
-    bash <(curl -sL https://Check.Place) -N
+    if ! run_remote_script "https://Check.Place" bash -N; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -7459,7 +7570,11 @@ run_unlock_check() {
     echo ""
 
     # 执行解锁检测脚本
-    bash <(curl -L -s https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh)
+    if ! run_remote_script "https://github.com/1-stream/RegionRestrictionCheck/raw/main/check.sh" bash; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -7475,7 +7590,7 @@ run_pf_realm() {
     echo ""
 
     # 执行 zywe_realm 转发脚本
-    if wget -qO- https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | bash -s install; then
+    if run_remote_script "https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh" bash -s install; then
         echo ""
         echo -e "${gl_lv}✅ zywe_realm 脚本执行完成${gl_bai}"
     else
@@ -7501,7 +7616,11 @@ run_kxy_script() {
     echo ""
 
     # 执行酷雪云脚本
-    bash <(curl -sL https://cdn.kxy.ovh/kxy.sh)
+    if ! run_remote_script "https://cdn.kxy.ovh/kxy.sh" bash; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -12037,7 +12156,11 @@ run_kejilion_script() {
     echo ""
 
     # 执行科技lion脚本
-    bash <(curl -sL kejilion.sh)
+    if ! run_remote_script "kejilion.sh" bash; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -12053,7 +12176,11 @@ run_fscarmen_singbox() {
     echo ""
 
     # 执行 F佬一键sing box脚本
-    bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh)
+    if ! run_remote_script "https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh" bash; then
+        echo -e "${gl_hong}❌ 脚本执行失败${gl_bai}"
+        break_end
+        return 1
+    fi
 
     echo ""
     echo "------------------------------------------------"
@@ -12077,7 +12204,9 @@ remove_bbr_lotserver() {
   rm -rf bbrmod
 
   if [[ -e /appex/bin/lotServer.sh ]]; then
-    echo | bash <(wget -qO- https://raw.githubusercontent.com/fei5seven/lotServer/master/lotServerInstall.sh) uninstall
+    if ! printf '\n' | run_remote_script "https://raw.githubusercontent.com/fei5seven/lotServer/master/lotServerInstall.sh" bash uninstall; then
+      echo -e "${gl_huang}⚠️  lotServer 卸载脚本执行失败，已跳过${gl_bai}"
+    fi
   fi
   clear
 }
@@ -13275,15 +13404,15 @@ check_substore_docker() {
                 case "$mirror_choice" in
                     1)
                         echo "正在使用阿里云镜像安装 Docker..."
-                        curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
+                        run_remote_script "https://get.docker.com" bash -s docker --mirror Aliyun
                         ;;
                     2)
                         echo "正在使用官方源安装 Docker..."
-                        curl -fsSL https://get.docker.com | bash
+                        run_remote_script "https://get.docker.com" bash
                         ;;
                     *)
                         echo "无效选择，使用阿里云镜像..."
-                        curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
+                        run_remote_script "https://get.docker.com" bash -s docker --mirror Aliyun
                         ;;
                 esac
                 

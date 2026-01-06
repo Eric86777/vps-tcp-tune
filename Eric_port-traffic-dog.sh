@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.1 更新: 安全下载校验+通知模块原子更新+cron写入稳健化+配额清理增强 (by Eric86777)
 # v1.9.0 更新: 修复dog别名运行时cron路径错误+自动修复crontab+邮件计费模式显示修复 (by Eric86777)
 # v1.8.8 更新: 修复检测结论逻辑-邮箱/租期缺失时不再显示"完全正常" (by Eric86777)
 # v1.8.7 更新: 快速开通端口流程优化-自动选择刚添加的端口，无需重复确认和选择 (by Eric86777)
 # v1.8.6 更新: 新增快速开通端口-串联调用添加端口/重置日期/租期/邮箱四个现有功能 (by Eric86777)
-# v1.8.5 更新: 检测功能增强-新增邮箱/租期/封锁状态检测，全局配置检查及问题端口汇总 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.0"
+readonly SCRIPT_VERSION="1.9.1"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -209,6 +209,26 @@ check_root() {
     fi
 }
 
+verify_downloaded_dog_script() {
+    local file=$1
+
+    if [ ! -s "$file" ]; then
+        return 1
+    fi
+
+    local first_line=""
+    first_line=$(head -n 1 "$file" 2>/dev/null || true)
+    if ! echo "$first_line" | grep -q "^#!"; then
+        return 1
+    fi
+
+    if ! grep -q 'SCRIPT_VERSION=' "$file" 2>/dev/null; then
+        return 1
+    fi
+
+    return 0
+}
+
 # 确保本地有脚本文件供 cron 任务使用
 # 当通过 bash <(curl ...) 运行时，每次都更新本地脚本以保持最新
 ensure_local_script_for_cron() {
@@ -216,9 +236,29 @@ ensure_local_script_for_cron() {
     local script_url="https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/Eric_port-traffic-dog.sh"
     
     # 每次在线运行时都更新本地脚本，确保 cron 任务使用最新版本
-    if curl -fsSL "$script_url" -o "${local_script}.tmp" 2>/dev/null; then
-        mv "${local_script}.tmp" "$local_script"
-        chmod +x "$local_script"
+    local temp_file=""
+    temp_file=$(mktemp) || true
+    if [ -n "$temp_file" ] && download_with_sources "$script_url" "$temp_file"; then
+        if verify_downloaded_dog_script "$temp_file"; then
+            local backup_path=""
+            if [ -f "$local_script" ]; then
+                backup_path="${local_script}.bak.$(date +%Y%m%d_%H%M%S)"
+                cp "$local_script" "$backup_path" 2>/dev/null || true
+            fi
+
+            if mv "$temp_file" "$local_script"; then
+                chmod +x "$local_script" 2>/dev/null || true
+            else
+                echo -e "${YELLOW}更新脚本失败，保留旧版本${NC}"
+                [ -n "$backup_path" ] && cp "$backup_path" "$local_script" 2>/dev/null || true
+                rm -f "$temp_file" 2>/dev/null || true
+            fi
+        else
+            echo -e "${YELLOW}脚本校验失败，已跳过更新${NC}"
+            rm -f "$temp_file" 2>/dev/null || true
+        fi
+    else
+        [ -n "$temp_file" ] && rm -f "$temp_file" 2>/dev/null || true
     fi
     
     # 自动修复 crontab 中的错误路径（/proc/xxx/fd/pipe:xxx → 正确路径）
@@ -3016,11 +3056,17 @@ apply_nftables_quota() {
     local quota_name="port_${port_safe}_quota"
 
     # 确保清理旧的 quota 规则和对象
-    local delete_attempts=0
-    while [ $delete_attempts -lt 200 ]; do
+    local last_handle=""
+    while true; do
         local old_handle=$(nft -a list table $family $table_name 2>/dev/null | \
             grep "quota name \"$quota_name\"" | head -n1 | sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
         [ -z "$old_handle" ] && break
+        if [ "$old_handle" = "$last_handle" ]; then
+            echo -e "${RED}清理旧规则失败，句柄重复: $old_handle${NC}" >&2
+            break
+        fi
+        last_handle="$old_handle"
+
         local deleted=false
         for chain in input output forward; do
             if nft delete rule $family $table_name $chain handle $old_handle 2>/dev/null; then
@@ -3029,7 +3075,6 @@ apply_nftables_quota() {
             fi
         done
         [ "$deleted" = false ] && break
-        delete_attempts=$((delete_attempts + 1))
     done
     nft delete quota $family $table_name $quota_name 2>/dev/null || true
 
@@ -3901,19 +3946,33 @@ download_notification_modules() {
     local notifications_dir="$CONFIG_DIR/notifications"
     local temp_dir=$(mktemp -d)
     local repo_url="https://github.com/zywe03/realm-xwPF/archive/refs/heads/main.zip"
+    local new_dir="$temp_dir/realm-xwPF-main/notifications"
+    local backup_dir=""
 
     # 下载解压复制清理：每次都覆盖更新确保版本一致
     if download_with_sources "$repo_url" "$temp_dir/repo.zip" &&
        (cd "$temp_dir" && unzip -q repo.zip) &&
-       rm -rf "$notifications_dir" &&
-       cp -r "$temp_dir/realm-xwPF-main/notifications" "$notifications_dir" &&
-       chmod +x "$notifications_dir"/*.sh; then
-        rm -rf "$temp_dir"
-        return 0
-    else
-        rm -rf "$temp_dir"
-        return 1
+       [ -d "$new_dir" ] &&
+       ls "$new_dir"/*.sh >/dev/null 2>&1; then
+        if [ -d "$notifications_dir" ]; then
+            backup_dir="${notifications_dir}.bak.$(date +%Y%m%d_%H%M%S)"
+            mv "$notifications_dir" "$backup_dir" 2>/dev/null || true
+        fi
+
+        if mv "$new_dir" "$notifications_dir"; then
+            chmod +x "$notifications_dir"/*.sh 2>/dev/null || true
+            rm -rf "$temp_dir"
+            return 0
+        fi
+
+        echo -e "${YELLOW}通知模块更新失败，尝试恢复旧版本${NC}"
+        if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
+            mv "$backup_dir" "$notifications_dir" 2>/dev/null || true
+        fi
     fi
+
+    rm -rf "$temp_dir"
+    return 1
 }
 
 # 安装(更新)脚本
@@ -6271,10 +6330,19 @@ setup_backup_cron() {
     
     # 删除旧的定时任务
     remove_backup_cron
-    
+
     # 添加新的定时任务（使用转换后的本地时间）
-    (crontab -l 2>/dev/null | grep -v -- "--auto-backup"; \
-     echo "$local_minute $local_hour * * * $0 --auto-backup >> $LOG_FILE 2>&1") | crontab -
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null > "$temp_cron" || true
+    grep -v -- "--auto-backup" "$temp_cron" > "${temp_cron}.clean" || true
+    mv "${temp_cron}.clean" "$temp_cron"
+    echo "$local_minute $local_hour * * * $SCRIPT_PATH --auto-backup >> $LOG_FILE 2>&1" >> "$temp_cron"
+    if ! crontab "$temp_cron" 2>/dev/null; then
+        rm -f "$temp_cron"
+        echo -e "${RED}写入备份定时任务失败${NC}" >&2
+        return 1
+    fi
+    rm -f "$temp_cron"
 }
 
 # 删除备份定时任务
@@ -6841,4 +6909,3 @@ main() {
 }
 
 main "$@"
-
