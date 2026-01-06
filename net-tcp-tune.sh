@@ -10037,552 +10037,1646 @@ delete_socks5_proxy() {
     fi
 }
 
-# --- TUIC v5 协议管理 ---
-readonly TUIC_CONF_DIR="/etc/tuic"
-readonly TUIC_BIN_PATH="/usr/local/bin/tuic-server"
+# --- TUIC v5 协议管理（从 vless-all-in-one 移植） ---
+readonly CFG="/etc/vless-reality"
+readonly DB_FILE="$CFG/db.json"
 
-# 获取 TUIC 最新版本
-get_tuic_latest_version() {
-    local version
-    # TUIC 的 release 格式是 tuic-server-x.x.x
-    version=$(curl -fsSL --max-time 10 "https://api.github.com/repos/EAimTY/tuic/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"tuic-server-([^"]+)".*/\1/')
-    if [[ -z "$version" ]]; then
-        version="1.0.0"  # 默认版本
+R='\e[31m'; G='\e[32m'; Y='\e[33m'; C='\e[36m'; W='\e[97m'; D='\e[2m'; NC='\e[0m'
+
+# 日志文件
+LOG_FILE="/var/log/vless-server.log"
+
+# IP 缓存变量
+_CACHED_IPV4=""
+_CACHED_IPV6=""
+
+# 系统检测
+if [[ -f /etc/alpine-release ]]; then
+    DISTRO="alpine"
+elif [[ -f /etc/redhat-release ]]; then
+    DISTRO="centos"
+elif [[ -f /etc/lsb-release ]] && grep -q "Ubuntu" /etc/lsb-release; then
+    DISTRO="ubuntu"
+elif [[ -f /etc/os-release ]] && grep -q "Ubuntu" /etc/os-release; then
+    DISTRO="ubuntu"
+else
+    DISTRO="debian"
+fi
+
+# Alpine busybox pgrep 不支持 -x，使用兼容方式检测进程
+_pgrep() {
+    local proc="$1"
+    if [[ "$DISTRO" == "alpine" ]]; then
+        # Alpine busybox pgrep: 先尝试精确匹配，再尝试命令行匹配
+        pgrep "$proc" >/dev/null 2>&1 || pgrep -f "$proc" >/dev/null 2>&1
+    else
+        pgrep -x "$proc" >/dev/null 2>&1
     fi
-    echo "$version"
 }
 
-# 检查 TUIC 是否已安装
-check_tuic_installed() {
-    [[ -x "$TUIC_BIN_PATH" ]] && file "$TUIC_BIN_PATH" 2>/dev/null | grep -qE "ELF.*executable"
+# 统一日志函数 - 同时输出到终端和日志文件
+_log() {
+    local level="$1"
+    shift
+    local msg="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    # 写入日志文件（无颜色）
+    echo "[$timestamp] [$level] $msg" >> "$LOG_FILE" 2>/dev/null
 }
 
-# 获取系统架构
-get_tuic_arch() {
-    local arch=$(uname -m)
-    case $arch in
-        x86_64)  echo "x86_64-unknown-linux-gnu" ;;
-        aarch64) echo "aarch64-unknown-linux-gnu" ;;
-        armv7l)  echo "armv7-unknown-linux-gnueabihf" ;;
-        *) echo "" ;;
-    esac
-}
+_line()  { echo -e "${D}─────────────────────────────────────────────${NC}"; }
+_dline() { echo -e "${C}═════════════════════════════════════════════${NC}"; }
+_info()  { echo -e "  ${C}▸${NC} $1"; }
+_ok()    { echo -e "  ${G}✓${NC} $1"; _log "OK" "$1"; }
+_err()   { echo -e "  ${R}✗${NC} $1"; _log "ERROR" "$1"; }
+_warn()  { echo -e "  ${Y}!${NC} $1"; _log "WARN" "$1"; }
+_item()  { echo -e "  ${G}$1${NC}) $2"; }
+_pause() { echo ""; read -rp "  按回车继续..."; }
 
-# 安装 TUIC 核心程序
-install_tuic_binary() {
-    local arch=$(get_tuic_arch)
-    if [[ -z "$arch" ]]; then
-        error "不支持的系统架构: $(uname -m)"
-        return 1
-    fi
-    
-    if check_tuic_installed; then
-        success "TUIC 核心已安装"
+check_cmd()       { command -v "$1" &>/dev/null; }
+
+#═══════════════════════════════════════════════════════════════════════════════
+#  全局状态数据库 (JSON)
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 初始化数据库
+init_db() {
+    mkdir -p "$CFG" || return 1
+    [[ -f "$DB_FILE" ]] && return 0
+    local now tmp
+    # Alpine busybox date 不支持 -Iseconds，使用兼容格式
+    now=$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')
+    tmp=$(mktemp) || return 1
+    if jq -n --arg v "4.0.0" --arg t "$now" \
+      '{version:$v,xray:{},singbox:{},meta:{created:$t,updated:$t}}' >"$tmp" 2>/dev/null; then
+        mv "$tmp" "$DB_FILE"
         return 0
     fi
-    
-    local version=$(get_tuic_latest_version)
-    info "正在下载 TUIC v${version}..."
-    local download_url="https://github.com/EAimTY/tuic/releases/download/tuic-server-${version}/tuic-server-${version}-${arch}"
-    local tmp_file=$(mktemp)
+    # jq 失败时使用简单方式创建
+    echo '{"version":"4.0.0","xray":{},"singbox":{},"meta":{}}' > "$DB_FILE"
+    rm -f "$tmp"
+    return 0
+}
 
-    
-    if curl -fSL -o "$tmp_file" --connect-timeout 30 --retry 3 "$download_url" 2>/dev/null; then
-        if file "$tmp_file" 2>/dev/null | grep -qE "ELF.*executable"; then
-            install -m 755 "$tmp_file" "$TUIC_BIN_PATH"
-            rm -f "$tmp_file"
-            success "TUIC 核心安装成功"
-            return 0
-        else
-            rm -f "$tmp_file"
-            error "下载的文件不是有效的可执行文件"
-            return 1
-        fi
+# 更新数据库时间戳
+_db_touch() {
+    [[ -f "$DB_FILE" ]] || init_db || return 1
+    local now tmp
+    now=$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')
+    tmp=$(mktemp) || return 1
+    if jq --arg t "$now" '.meta.updated=$t' "$DB_FILE" >"$tmp"; then
+        mv "$tmp" "$DB_FILE"
     else
-        rm -f "$tmp_file"
-        error "下载 TUIC 失败，请检查网络连接"
+        rm -f "$tmp"
         return 1
     fi
 }
 
-# 生成自签名证书
-generate_self_signed_cert() {
-    local port="$1"
-    local server_ip="$2"
-    local cert_dir="${TUIC_CONF_DIR}/certs"
-    
-    mkdir -p "$cert_dir"
-    
-    info "正在生成自签名证书..."
-    openssl req -x509 -nodes \
-        -newkey ec:<(openssl ecparam -name prime256v1) \
-        -keyout "${cert_dir}/tuic-${port}.key" \
-        -out "${cert_dir}/tuic-${port}.crt" \
-        -subj "/CN=${server_ip}" \
-        -days 36500 \
-        -addext "subjectAltName=IP:${server_ip}" \
-        -addext "basicConstraints=critical,CA:FALSE" \
-        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
-        -addext "extendedKeyUsage=serverAuth" 2>/dev/null
-    
-    chmod 600 "${cert_dir}/tuic-${port}.key"
-    chmod 644 "${cert_dir}/tuic-${port}.crt"
-    
-    success "自签名证书生成成功"
-    echo "cert_type=self-signed"
-    echo "cert_path=${cert_dir}/tuic-${port}.crt"
-    echo "key_path=${cert_dir}/tuic-${port}.key"
+_db_apply() { # _db_apply [jq args...] 'filter'
+    [[ -f "$DB_FILE" ]] || init_db || return 1
+    local tmp; tmp=$(mktemp) || return 1
+    if jq "$@" "$DB_FILE" >"$tmp" 2>/dev/null; then
+        mv "$tmp" "$DB_FILE"
+        _db_touch
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
 }
 
-
-
-# 生成 TUIC 分享链接
-generate_tuic_link() {
-    local ip="$1" port="$2" uuid="$3" password="$4" sni="$5" node_name="$6"
-    local encoded_name=$(echo -n "$node_name" | sed 's/ /%20/g; s/#/%23/g')
-    echo "tuic://${uuid}:${password}@${ip}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&udp_relay_mode=native&allow_insecure=1#${encoded_name}"
-}
-
-# 安装 TUIC 实例
-install_tuic() {
-    info "=== 安装 TUIC v5 实例 ==="
-    echo ""
+# 添加协议到数据库
+# 用法: db_add "xray" "vless" '{"uuid":"xxx","port":443,...}'
+db_add() { # db_add core proto json
+    local core="$1" proto="$2" json="$3"
     
-    # 安装核心程序
-    if ! install_tuic_binary; then
+    # 验证 JSON 格式
+    if ! echo "$json" | jq empty 2>/dev/null; then
+        _err "db_add: 无效的 JSON 格式 - $proto"
         return 1
     fi
     
-    # 创建配置目录
-    mkdir -p "$TUIC_CONF_DIR"
+    _db_apply --arg p "$proto" --argjson c "$json" ".${core}[\$p]=\$c"
+}
+
+# 从数据库获取协议配置
+db_get() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r --arg p "$2" ".${1}[\$p] // empty" "$DB_FILE" 2>/dev/null
+}
+
+# 从数据库获取协议的某个字段
+db_get_field() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r --arg p "$2" --arg f "$3" ".${1}[\$p][\$f] // empty" "$DB_FILE" 2>/dev/null
+}
+
+# 删除协议
+db_del() { # db_del core proto
+    _db_apply --arg p "$2" "del(.${1}[\$p])"
+}
+
+# 检查协议是否存在
+db_exists() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    local val=$(jq -r --arg p "$2" ".${1}[\$p] // empty" "$DB_FILE" 2>/dev/null)
+    [[ -n "$val" && "$val" != "null" ]]
+}
+
+# 获取某个核心下所有协议名
+db_list_protocols() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r ".${1} | keys[]" "$DB_FILE" 2>/dev/null
+}
+
+# 获取所有已安装协议
+db_get_all_protocols() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    { jq -r '.xray | keys[]' "$DB_FILE" 2>/dev/null; jq -r '.singbox | keys[]' "$DB_FILE" 2>/dev/null; } | sort -u
+}
+
+db_get_routing_rules() {
+    [[ ! -f "$DB_FILE" ]] && echo "[]" && return
+    jq -r '.routing_rules // []' "$DB_FILE" 2>/dev/null
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+#  通用配置保存函数
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 简化版：直接用关联数组构建 JSON
+# 用法: build_config "uuid" "$uuid" "port" "$port" "sni" "$sni"
+build_config() {
+    local args=()
+    local keys=()
     
-    # 生成随机端口
-    local default_port=$(shuf -i 30000-60000 -n 1)
-    
-    # 询问端口
-    echo -e "${cyan}请输入端口号 (1-65535)，直接回车使用随机端口 [默认: ${default_port}]:${none}"
-    while true; do
-        read -p "端口: " tuic_port || true
-        if [[ -z "$tuic_port" ]]; then
-            tuic_port=$default_port
-            success "使用随机端口: ${tuic_port}"
-            break
-        fi
-        if [[ "$tuic_port" =~ ^[0-9]+$ ]] && [[ "$tuic_port" -ge 1 ]] && [[ "$tuic_port" -le 65535 ]]; then
-            if ss -tulpn 2>/dev/null | grep -q ":${tuic_port} "; then
-                error "端口 ${tuic_port} 已被占用，请选择其他端口"
-            else
-                success "已设置端口为: ${tuic_port}"
-                break
-            fi
+    while [[ $# -ge 2 ]]; do
+        local key="$1" val="$2"
+        shift 2
+        keys+=("$key")
+        # 数字检测
+        if [[ "$val" =~ ^[0-9]+$ ]]; then
+            args+=(--argjson "$key" "$val")
         else
-            error "无效端口，请输入 1-65535 之间的数字"
+            args+=(--arg "$key" "$val")
         fi
     done
     
-    # 检查端口是否已有 TUIC 实例
-    if [[ -f "/etc/systemd/system/tuic-${tuic_port}.service" ]]; then
-        error "端口 ${tuic_port} 已存在 TUIC 实例"
-        return 1
+    # 自动添加 IP
+    local ipv4=$(get_ipv4) ipv6=$(get_ipv6)
+    args+=(--arg "ipv4" "$ipv4" --arg "ipv6" "$ipv6")
+    keys+=("ipv4" "ipv6")
+    
+    # 构建 jq 表达式
+    local expr="{"
+    local first=true
+    for k in "${keys[@]}"; do
+        [[ "$first" == "true" ]] && first=false || expr+=","
+        expr+="\"$k\":\$$k"
+    done
+    expr+="}"
+    
+    jq -n "${args[@]}" "$expr"
+}
+
+# 保存 JOIN 信息到文件
+# 用法: _save_join_info "协议名" "数据格式" "链接生成命令" [额外行...]
+# 数据格式中 %s 会被替换为 IP，%b 会被替换为 [IP] (IPv6 带括号)
+# 示例: _save_join_info "vless" "REALITY|%s|$port|$uuid" "gen_vless_link %s $port $uuid"
+_save_join_info() {
+    local protocol="$1" data_fmt="$2" link_cmd="$3"; shift 3
+    local join_file="$CFG/${protocol}.join"
+    local link_prefix; link_prefix=$(tr '[:lower:]-' '[:upper:]_' <<<"$protocol")
+    : >"$join_file"
+
+    local label ip ipfmt data code cmd link
+    for label in V4 V6; do
+        ip=$([[ "$label" == V4 ]] && get_ipv4 || get_ipv6)
+        [[ -z "$ip" ]] && continue
+        ipfmt=$ip; [[ "$label" == V6 ]] && ipfmt="[$ip]"
+
+        data=${data_fmt//%s/$ipfmt}; data=${data//%b/$ipfmt}
+        code=$(printf '%s' "$data" | base64 -w 0 2>/dev/null || printf '%s' "$data" | base64)
+        cmd=${link_cmd//%s/$ipfmt}; cmd=${cmd//%b/$ipfmt}
+        link=$(eval "$cmd")
+
+        printf '# IPv%s\nJOIN_%s=%s\n%s_%s=%s\n' "${label#V}" "$label" "$code" "$link_prefix" "$label" "$link" >>"$join_file"
+    done
+
+    local line
+    for line in "$@"; do
+        printf '%s\n' "$line" >>"$join_file"
+    done
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# 协议注册和状态管理
+#═══════════════════════════════════════════════════════════════════════════════
+
+XRAY_PROTOCOLS=""
+SINGBOX_PROTOCOLS="tuic"
+STANDALONE_PROTOCOLS=""
+
+register_protocol() {
+    local protocol=$1
+    local config_json="${2:-}"  # JSON 配置 (必需)
+    
+    mkdir -p "$CFG"
+    
+    # 写入数据库
+    if [[ -n "$config_json" ]]; then
+        local core="xray"
+        # 判断协议归属的核心 (使用空格包裹进行精确匹配，修复 grep -w 将连字符视为边界的问题)
+        if [[ " $SINGBOX_PROTOCOLS " == *" $protocol "* ]]; then
+            core="singbox"
+        elif [[ " $STANDALONE_PROTOCOLS " == *" $protocol "* ]]; then
+            core="singbox"  # 独立协议也记录到 singbox 分类
+        fi
+        
+        if ! db_add "$core" "$protocol" "$config_json"; then
+            _err "register_protocol: 写入数据库失败 - $protocol ($core)"
+            return 1
+        fi
+    fi
+}
+
+unregister_protocol() {
+    local protocol=$1
+    
+    # 从数据库删除
+    db_del "xray" "$protocol" 2>/dev/null
+    db_del "singbox" "$protocol" 2>/dev/null
+}
+
+get_installed_protocols() {
+    # 从数据库获取
+    if [[ -f "$DB_FILE" ]]; then
+        db_get_all_protocols
+    fi
+}
+
+is_protocol_installed() {
+    local protocol=$1
+    # 检查数据库
+    db_exists "xray" "$protocol" && return 0
+    db_exists "singbox" "$protocol" && return 0
+    return 1
+}
+
+filter_installed() { # filter_installed "proto1 proto2 ..."
+    local installed; installed=$(get_installed_protocols) || return 0
+    local p
+    for p in $1; do
+        grep -qx "$p" <<<"$installed" && echo "$p"
+    done
+}
+
+get_singbox_protocols()    { filter_installed "$SINGBOX_PROTOCOLS"; }
+
+#═══════════════════════════════════════════════════════════════════════════════
+# 网络工具
+#═══════════════════════════════════════════════════════════════════════════════
+get_ipv4() {
+    [[ -n "$_CACHED_IPV4" ]] && { echo "$_CACHED_IPV4"; return; }
+    local result=$(curl -4 -sf --connect-timeout 5 ip.sb 2>/dev/null || curl -4 -sf --connect-timeout 5 ifconfig.me 2>/dev/null)
+    [[ -n "$result" ]] && _CACHED_IPV4="$result"
+    echo "$result"
+}
+get_ipv6() {
+    [[ -n "$_CACHED_IPV6" ]] && { echo "$_CACHED_IPV6"; return; }
+    local result=$(curl -6 -sf --connect-timeout 5 ip.sb 2>/dev/null || curl -6 -sf --connect-timeout 5 ifconfig.me 2>/dev/null)
+    [[ -n "$result" ]] && _CACHED_IPV6="$result"
+    echo "$result"
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# 端口管理
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 检查脚本内部记录的端口占用 (从数据库读取)
+# 返回 0 表示被占用，1 表示未被占用
+is_internal_port_occupied() {
+    local check_port="$1"
+    
+    # 遍历 Xray 协议
+    local xray_protos=$(db_list_protocols "xray")
+    for proto in $xray_protos; do
+        local used_port=$(db_get_field "xray" "$proto" "port")
+        if [[ "$used_port" == "$check_port" ]]; then
+            echo "$proto"
+            return 0
+        fi
+    done
+    
+    # 遍历 Singbox 协议
+    local singbox_protos=$(db_list_protocols "singbox")
+    for proto in $singbox_protos; do
+        local used_port=$(db_get_field "singbox" "$proto" "port")
+        if [[ "$used_port" == "$check_port" ]]; then
+            echo "$proto"
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# 优化后的端口生成函数 - 增加端口冲突检测和最大尝试次数
+gen_port() {
+    local port
+    local max_attempts=100  # 最大尝试次数，防止无限循环
+    local attempt=0
+    
+    while [[ $attempt -lt $max_attempts ]]; do
+        port=$(shuf -i 10000-60000 -n 1 2>/dev/null || echo $((RANDOM % 50000 + 10000)))
+        # 检查端口是否被占用 (TCP 和 UDP)
+        if ! ss -tuln 2>/dev/null | grep -q ":$port " && ! netstat -tuln 2>/dev/null | grep -q ":$port "; then
+            echo "$port"
+            return 0
+        fi
+        ((attempt++))
+    done
+    
+    # 达到最大尝试次数，返回一个随机端口并警告
+    _warn "无法找到空闲端口（尝试 $max_attempts 次），使用随机端口" >&2
+    echo "$port"
+    return 1
+}
+
+# 智能端口推荐
+# 参数: $1=协议类型
+recommend_port() {
+    local protocol="$1"
+    
+    # 检查是否已安装主协议（Vision/Trojan/Reality），用于判断 WS 协议是否为回落子协议
+    local has_master=false
+    if db_exists "xray" "vless-vision" || db_exists "xray" "vless" || db_exists "xray" "trojan"; then
+        has_master=true
     fi
     
-    # 询问节点名称
-    echo -e "${cyan}请输入节点名称 (例如: 🇯🇵TUIC-Tokyo):${none}"
-    read -p "节点名称: " node_name || true
-    if [[ -z "$node_name" ]]; then
-        node_name="TUIC-${tuic_port}"
-        warning "未输入名称，使用默认名称: ${node_name}"
+    case "$protocol" in
+        vless-ws|vmess-ws)
+            # 如果已有主协议，这些是回落子协议，监听本地，随机端口即可
+            if [[ "$has_master" == "true" ]]; then
+                gen_port
+            else
+                # 独立运行时才需要 HTTPS 端口
+                if ! ss -tuln 2>/dev/null | grep -q ":443 " && ! is_internal_port_occupied "443" >/dev/null; then
+                    echo "443"
+                elif ! ss -tuln 2>/dev/null | grep -q ":8443 " && ! is_internal_port_occupied "8443" >/dev/null; then
+                    echo "8443"
+                else
+                    gen_port
+                fi
+            fi
+            ;;
+        vless|vless-xhttp|vless-vision|trojan|anytls|snell-shadowtls|snell-v5-shadowtls|ss2022-shadowtls)
+            # 这些协议需要对外暴露，优先使用 HTTPS 端口
+            if ! ss -tuln 2>/dev/null | grep -q ":443 " && ! is_internal_port_occupied "443" >/dev/null; then
+                echo "443"
+            elif ! ss -tuln 2>/dev/null | grep -q ":8443 " && ! is_internal_port_occupied "8443" >/dev/null; then
+                echo "8443"
+            elif ! ss -tuln 2>/dev/null | grep -q ":2096 " && ! is_internal_port_occupied "2096" >/dev/null; then
+                echo "2096"
+            else
+                gen_port
+            fi
+            ;;
+        hy2|tuic)
+            # UDP 协议直接随机
+            while true; do
+                local p=$(gen_port)
+                if ! is_internal_port_occupied "$p" >/dev/null; then
+                    echo "$p"
+                    break
+                fi
+            done
+            ;;
+        *)
+            gen_port
+            ;;
+    esac
+}
+
+# 交互式端口选择
+ask_port() {
+    local protocol="$1"
+    local recommend=$(recommend_port "$protocol")
+    
+    # 检查是否已安装主协议
+    local has_master=false
+    if db_exists "xray" "vless-vision" || db_exists "xray" "vless" || db_exists "xray" "trojan"; then
+        has_master=true
     fi
     
-    # 询问监听模式
-    echo -e "${cyan}请选择监听模式:${none}"
-    echo "1. 仅 IPv4 (0.0.0.0)"
-    echo "2. 仅 IPv6 (::)"
-    echo "3. 双栈 (同时支持 IPv4 和 IPv6)"
-    read -p "请输入选项 [1-3，默认为 3]: " listen_mode || true
-    listen_mode=${listen_mode:-3}
+    echo "" >&2
+    _line >&2
+    echo -e "  ${W}端口配置${NC}" >&2
     
-    local listen_addr ip_version
-    case $listen_mode in
-        1) listen_addr="0.0.0.0:${tuic_port}"; ip_version="v4-only"; success "已选择：仅 IPv4 模式" ;;
-        2) listen_addr="[::]:${tuic_port}"; ip_version="v6-only"; success "已选择：仅 IPv6 模式" ;;
-        *) listen_addr="[::]:${tuic_port}"; ip_version="dual"; success "已选择：双栈模式" ;;
+    # 根据协议类型和是否有主协议显示不同的提示
+    case "$protocol" in
+        vless-ws|vmess-ws)
+            if [[ "$has_master" == "true" ]]; then
+                # 回落子协议，内部端口
+                echo -e "  ${D}(作为回落子协议，监听本地，外部通过 443 访问)${NC}" >&2
+                echo -e "  ${C}建议: ${G}$recommend${NC} (内部端口，随机即可)" >&2
+            elif [[ "$recommend" == "443" ]]; then
+                echo -e "  ${C}建议: ${G}443${NC} (标准 HTTPS 端口)" >&2
+            else
+                local owner_443=$(is_internal_port_occupied "443")
+                if [[ -n "$owner_443" ]]; then
+                    echo -e "  ${Y}注意: 443 端口已被 [$owner_443] 协议占用${NC}" >&2
+                fi
+                echo -e "  ${C}建议: ${G}$recommend${NC} (已自动避开冲突)" >&2
+            fi
+            ;;
+        vless|vless-xhttp|vless-vision|trojan)
+            if [[ "$recommend" == "443" ]]; then
+                echo -e "  ${C}建议: ${G}443${NC} (标准 HTTPS 端口)" >&2
+            else
+                local owner_443=$(is_internal_port_occupied "443")
+                if [[ -n "$owner_443" ]]; then
+                    echo -e "  ${Y}注意: 443 端口已被 [$owner_443] 协议占用${NC}" >&2
+                fi
+                echo -e "  ${C}建议: ${G}$recommend${NC} (已自动避开冲突)" >&2
+            fi
+            ;;
+        *)
+            echo -e "  ${C}建议: ${G}$recommend${NC}" >&2
+            ;;
     esac
     
-    # 获取服务器 IP
-    local server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
-    if [[ -z "$server_ip" ]]; then
-        server_ip=$(curl -6s --max-time 5 https://api64.ipify.org 2>/dev/null)
+    echo "" >&2
+    
+    while true; do
+        read -rp "  请输入端口 [回车使用 $recommend]: " custom_port
+        
+        # 如果用户直接回车，使用推荐端口
+        if [[ -z "$custom_port" ]]; then
+            custom_port="$recommend"
+        fi
+        
+        # 0. 验证端口格式 (必须是1-65535的数字)
+        if ! [[ "$custom_port" =~ ^[0-9]+$ ]] || [[ $custom_port -lt 1 ]] || [[ $custom_port -gt 65535 ]]; then
+            _err "无效端口: $custom_port" >&2
+            _warn "端口必须是 1-65535 之间的数字" >&2
+            continue # 跳过本次循环，让用户重输
+        fi
+        
+        # 0.1 检查是否使用了系统保留端口
+        if [[ $custom_port -lt 1024 && $custom_port -ne 80 && $custom_port -ne 443 ]]; then
+            _warn "端口 $custom_port 是系统保留端口，可能需要特殊权限" >&2
+            read -rp "  是否继续使用? [y/N]: " use_reserved
+            if [[ ! "$use_reserved" =~ ^[yY]$ ]]; then
+                continue
+            fi
+        fi
+        
+        # 1. 检查是否被脚本内部其他协议占用 (最重要的一步！)
+        local conflict_proto=$(is_internal_port_occupied "$custom_port")
+        if [[ -n "$conflict_proto" ]]; then
+            _err "端口 $custom_port 已被已安装的 [$conflict_proto] 占用！" >&2
+            _warn "不同协议不能共用同一端口，请更换其他端口。" >&2
+            continue # 跳过本次循环，让用户重输
+        fi
+        
+        # 2. 检查系统端口占用 (Nginx 等外部程序)
+        if ss -tuln 2>/dev/null | grep -q ":$custom_port " || netstat -tuln 2>/dev/null | grep -q ":$custom_port "; then
+            _warn "端口 $custom_port 系统占用中" >&2
+            read -rp "  是否强制使用? (可能导致启动失败) [y/N]: " force
+            if [[ "$force" =~ ^[yY]$ ]]; then
+                echo "$custom_port"
+                return
+            else
+                continue
+            fi
+        else
+            # 端口干净，通过
+            echo "$custom_port"
+            return
+        fi
+    done
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# 密钥与凭证生成
+#═══════════════════════════════════════════════════════════════════════════════
+
+gen_uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%04x%04x-%04x-%04x-%04x-%04x%04x%04x\n' $RANDOM $RANDOM $RANDOM $(($RANDOM&0x0fff|0x4000)) $(($RANDOM&0x3fff|0x8000)) $RANDOM $RANDOM $RANDOM; }
+
+gen_sni() { 
+    # 稳定的 SNI 列表（国内可访问、大厂子域名、不易被封）
+    local s=(
+        # 科技巨头与云服务（最稳）
+        "www.microsoft.com"
+        "learn.microsoft.com"
+        "azure.microsoft.com"
+        "www.apple.com"
+        "www.amazon.com"
+        "aws.amazon.com"
+        "www.icloud.com"
+        "itunes.apple.com"
+        # 硬件与芯片厂商（流量特征正常）
+        "www.nvidia.com"
+        "www.amd.com"
+        "www.intel.com"
+        "www.samsung.com"
+        "www.dell.com"
+        # 企业软件与网络安全（企业级白名单常客）
+        "www.cisco.com"
+        "www.oracle.com"
+        "www.ibm.com"
+        "www.adobe.com"
+        "www.autodesk.com"
+        "www.sap.com"
+        "www.vmware.com"
+    )
+    # 使用 /dev/urandom 生成更好的随机数
+    local idx=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
+    [[ -z "$idx" ]] && idx=$RANDOM
+    echo "${s[$((idx % ${#s[@]}))]}"
+}
+
+gen_password() { head -c 16 /dev/urandom 2>/dev/null | base64 | tr -d '/+=' | head -c 16 || printf '%s%s' $RANDOM $RANDOM | md5sum | head -c 16; }
+
+urlencode() {
+    local s="$1" i c o=""
+    for ((i=0; i<${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [-_.~a-zA-Z0-9]) o+="$c" ;;
+            *) printf -v c '%%%02x' "'$c"; o+="$c" ;;
+        esac
+    done
+    echo "$o"
+}
+
+# 提取 IP 地址后缀（IPv4 取最后一段，IPv6 直接返回 "v6"）
+get_ip_suffix() {
+    local ip="$1"
+    # 移除方括号
+    ip="${ip#[}"
+    ip="${ip%]}"
+    
+    if [[ "$ip" == *:* ]]; then
+        # IPv6: 直接返回 "v6"
+        echo "v6"
+    else
+        # IPv4: 取最后一个点后面的数字
+        echo "${ip##*.}"
+    fi
+}
+
+# 生成各协议分享链接
+gen_tuic_link() {
+    local ip="$1" port="$2" uuid="$3" password="$4" sni="$5" country="${6:-}"
+    local ip_suffix=$(get_ip_suffix "$ip")
+    local name="${country:+${country}-}TUIC${ip_suffix:+-${ip_suffix}}"
+    printf '%s\n' "tuic://${uuid}:${password}@${ip}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&udp_relay_mode=native&allow_insecure=1#${name}"
+}
+
+# SNI配置交互式询问
+# 参数: $1=默认SNI (可选), $2=已申请的域名 (可选)
+ask_sni_config() {
+    local default_sni="${1:-$(gen_sni)}"
+    local cert_domain="${2:-}"
+    
+    # 如果有证书域名，检查是否是真实证书
+    if [[ -n "$cert_domain" && -f "$CFG/certs/server.crt" ]]; then
+        local is_real_cert=false
+        local issuer=$(openssl x509 -in "$CFG/certs/server.crt" -noout -issuer 2>/dev/null)
+        if [[ "$issuer" == *"Let's Encrypt"* ]] || [[ "$issuer" == *"R3"* ]] || [[ "$issuer" == *"R10"* ]] || [[ "$issuer" == *"R11"* ]] || [[ "$issuer" == *"E1"* ]] || [[ "$issuer" == *"ZeroSSL"* ]] || [[ "$issuer" == *"Buypass"* ]]; then
+            is_real_cert=true
+        fi
+        
+        # 真实证书：直接使用证书域名，不询问
+        if [[ "$is_real_cert" == "true" ]]; then
+            _ok "使用证书域名: $cert_domain" >&2
+            echo "$cert_domain"
+            return 0
+        fi
     fi
     
-    if [[ -z "$server_ip" ]]; then
-        error "无法获取服务器公网 IP"
+    echo "" >&2
+    _line >&2
+    echo -e "  ${W}SNI 配置${NC}" >&2
+    
+    # 生成一个真正的随机 SNI（用于"更隐蔽"选项）
+    local random_sni=$(gen_sni)
+    
+    # 如果有证书域名（自签名证书），询问是否使用
+    if [[ -n "$cert_domain" ]]; then
+        echo -e "  ${G}1${NC}) 使用证书域名 (${G}$cert_domain${NC}) - 推荐" >&2
+        echo -e "  ${G}2${NC}) 使用随机SNI (${G}$random_sni${NC}) - 更隐蔽" >&2
+        echo -e "  ${G}3${NC}) 自定义SNI" >&2
+        echo "" >&2
+        
+        local sni_choice=""
+        while true; do
+            read -rp "  请选择 [1-3，默认 1]: " sni_choice
+            
+            if [[ -z "$sni_choice" ]]; then
+                sni_choice="1"
+            fi
+            
+            if [[ "$sni_choice" == "1" ]]; then
+                echo "$cert_domain"
+                return 0
+            elif [[ "$sni_choice" == "2" ]]; then
+                echo "$random_sni"
+                return 0
+            elif [[ "$sni_choice" == "3" ]]; then
+                break
+            else
+                _err "无效选择: $sni_choice" >&2
+                _warn "请输入 1、2 或 3" >&2
+            fi
+        done
+    else
+        # 没有证书域名时（如Reality协议），提供随机SNI和自定义选项
+        echo -e "  ${G}1${NC}) 使用随机SNI (${G}$default_sni${NC}) - 推荐" >&2
+        echo -e "  ${G}2${NC}) 自定义SNI" >&2
+        echo "" >&2
+        
+        local sni_choice=""
+        while true; do
+            read -rp "  请选择 [1-2，默认 1]: " sni_choice
+            
+            if [[ -z "$sni_choice" ]]; then
+                sni_choice="1"
+            fi
+            
+            if [[ "$sni_choice" == "1" ]]; then
+                echo "$default_sni"
+                return 0
+            elif [[ "$sni_choice" == "2" ]]; then
+                break
+            else
+                _err "无效选择: $sni_choice" >&2
+                _warn "请输入 1 或 2" >&2
+            fi
+        done
+    fi
+    
+    # 自定义SNI输入
+    while true; do
+        echo "" >&2
+        echo -e "  ${C}请输入自定义SNI域名 (回车使用随机SNI):${NC}" >&2
+        read -rp "  SNI: " custom_sni
+        
+        if [[ -z "$custom_sni" ]]; then
+            # 重新生成一个随机SNI
+            local new_random_sni=$(gen_sni)
+            echo -e "  ${G}使用随机SNI: $new_random_sni${NC}" >&2
+            echo "$new_random_sni"
+            return 0
+        else
+            # 基本域名格式验证
+            if [[ "$custom_sni" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+                echo "$custom_sni"
+                return 0
+            else
+                _err "无效SNI格式: $custom_sni" >&2
+                _warn "SNI格式示例: www.example.com" >&2
+            fi
+        fi
+    done
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# Sing-box 核心 - 统一管理 UDP/QUIC 协议 (Hy2/TUIC)
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 获取 GitHub 最新版本号
+_get_latest_version() {
+    local repo="$1"
+    curl -sL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//'
+}
+
+# 架构映射 (减少重复代码)
+# 用法: local mapped=$(_map_arch "amd64:arm64:armv7")
+_map_arch() {
+    local mapping="$1" arch=$(uname -m)
+    local x86 arm64 arm7
+    IFS=':' read -r x86 arm64 arm7 <<< "$mapping"
+    case $arch in
+        x86_64)  echo "$x86" ;;
+        aarch64) echo "$arm64" ;;
+        armv7l)  echo "$arm7" ;;
+        *) return 1 ;;
+    esac
+}
+
+# 通用二进制下载安装函数
+_install_binary() {
+    local name="$1" repo="$2" url_pattern="$3" extract_cmd="$4"
+    check_cmd "$name" && { _ok "$name 已安装"; return 0; }
+    
+    _info "安装 $name (获取最新版本)..."
+    local version=$(_get_latest_version "$repo")
+    [[ -z "$version" ]] && { _err "获取 $name 版本失败"; return 1; }
+    
+    local arch=$(uname -m)
+    local tmp=$(mktemp -d)
+    local url=$(eval echo "$url_pattern")
+    
+    if curl -sLo "$tmp/pkg" --connect-timeout 60 "$url"; then
+        eval "$extract_cmd"
+        rm -rf "$tmp"
+        _ok "$name v$version 已安装"
+        return 0
+    fi
+    rm -rf "$tmp"
+    _err "下载 $name 失败"
+    return 1
+}
+
+install_singbox() {
+    local sarch=$(_map_arch "amd64:arm64:armv7") || { _err "不支持的架构"; return 1; }
+    # Alpine 需要安装 gcompat 兼容层来运行 glibc 编译的二进制
+    if [[ "$DISTRO" == "alpine" ]]; then
+        apk add --no-cache gcompat libc6-compat &>/dev/null
+    fi
+    _install_binary "sing-box" "SagerNet/sing-box" \
+        'https://github.com/SagerNet/sing-box/releases/download/v$version/sing-box-$version-linux-${sarch}.tar.gz' \
+        'tar -xzf "$tmp/pkg" -C "$tmp/" && install -m 755 "$(find "$tmp" -name sing-box -type f | head -1)" /usr/local/bin/sing-box'
+}
+
+# 生成 Sing-box 统一配置 (Hy2 + TUIC 共用一个进程)
+generate_singbox_config() {
+    local singbox_protocols=$(db_list_protocols "singbox")
+    [[ -z "$singbox_protocols" ]] && return 1
+    
+    mkdir -p "$CFG"
+    
+    # 收集所有需要的出口
+    local outbounds='[{"type": "direct", "tag": "direct"}]'
+    local routing_rules=""
+    local has_routing=false
+    
+    # 获取分流规则
+    local rules=$(db_get_routing_rules)
+    
+    if [[ -n "$rules" && "$rules" != "[]" ]]; then
+        # 收集所有用到的出口 (支持多出口)
+        local added_warp=false
+        declare -A added_chains  # 记录已添加的链式代理节点
+        
+        while IFS= read -r outbound; do
+            [[ -z "$outbound" ]] && continue
+            
+            if [[ "$outbound" == "warp" && "$added_warp" == "false" ]]; then
+                local warp_out=$(gen_singbox_warp_outbound)
+                [[ -n "$warp_out" ]] && {
+                    outbounds=$(echo "$outbounds" | jq --argjson out "$warp_out" '. + [$out]')
+                    added_warp=true
+                }
+            elif [[ "$outbound" == chain:* ]]; then
+                local node_name="${outbound#chain:}"
+                # 检查是否已添加该节点
+                if [[ -z "${added_chains[$node_name]}" ]]; then
+                    local tag="chain-${node_name}"
+                    local chain_out=$(gen_singbox_chain_outbound "$node_name" "$tag")
+                    [[ -n "$chain_out" ]] && {
+                        outbounds=$(echo "$outbounds" | jq --argjson out "$chain_out" '. + [$out]')
+                        added_chains[$node_name]=1
+                    }
+                fi
+            fi
+        done < <(echo "$rules" | jq -r '.[].outbound')
+        
+        routing_rules=$(gen_singbox_routing_rules)
+        [[ -n "$routing_rules" && "$routing_rules" != "[]" ]] && has_routing=true
+    fi
+    
+    # 构建基础配置
+    local base_config=""
+    if [[ "$has_routing" == "true" ]]; then
+        base_config=$(jq -n --argjson outbounds "$outbounds" '{
+            log: {level: "warn", timestamp: true},
+            inbounds: [],
+            outbounds: $outbounds,
+            route: {rules: []}
+        }')
+        
+        # 添加路由规则
+        if [[ -n "$routing_rules" && "$routing_rules" != "[]" ]]; then
+            base_config=$(echo "$base_config" | jq --argjson rules "$routing_rules" '.route.rules = $rules')
+        fi
+    else
+        base_config=$(jq -n '{
+            log: {level: "warn", timestamp: true},
+            inbounds: [],
+            outbounds: [{type: "direct", tag: "direct"}]
+        }')
+    fi
+    
+    local inbounds="[]"
+    local success_count=0
+    
+    for proto in $singbox_protocols; do
+        local cfg=$(db_get "singbox" "$proto")
+        [[ -z "$cfg" ]] && continue
+        
+        local port=$(echo "$cfg" | jq -r '.port // empty')
+        [[ -z "$port" ]] && continue
+        
+        local inbound=""
+        
+        case "$proto" in
+            hy2)
+                local password=$(echo "$cfg" | jq -r '.password // empty')
+                local sni=$(echo "$cfg" | jq -r '.sni // "www.bing.com"')
+                
+                # 智能证书选择：优先使用 ACME 证书，否则使用 hy2 独立自签证书
+                local cert_path="$CFG/certs/hy2/server.crt"
+                local key_path="$CFG/certs/hy2/server.key"
+                if [[ -f "$CFG/cert_domain" && -f "$CFG/certs/server.crt" ]]; then
+                    local cert_domain=$(cat "$CFG/cert_domain" 2>/dev/null)
+                    if [[ "$sni" == "$cert_domain" ]]; then
+                        cert_path="$CFG/certs/server.crt"
+                        key_path="$CFG/certs/server.key"
+                    fi
+                fi
+                
+                inbound=$(jq -n \
+                    --argjson port "$port" \
+                    --arg password "$password" \
+                    --arg cert "$cert_path" \
+                    --arg key "$key_path" \
+                '{
+                    type: "hysteria2",
+                    tag: "hy2-in",
+                    listen: "::",
+                    listen_port: $port,
+                    users: [{password: $password}],
+                    tls: {
+                        enabled: true,
+                        certificate_path: $cert,
+                        key_path: $key
+                    },
+                    masquerade: "https://www.bing.com"
+                }')
+                ;;
+            tuic)
+                local uuid=$(echo "$cfg" | jq -r '.uuid // empty')
+                local password=$(echo "$cfg" | jq -r '.password // empty')
+                
+                # TUIC 使用独立证书目录
+                local cert_path="$CFG/certs/tuic/server.crt"
+                local key_path="$CFG/certs/tuic/server.key"
+                [[ ! -f "$cert_path" ]] && { cert_path="$CFG/certs/server.crt"; key_path="$CFG/certs/server.key"; }
+                
+                inbound=$(jq -n \
+                    --argjson port "$port" \
+                    --arg uuid "$uuid" \
+                    --arg password "$password" \
+                    --arg cert "$cert_path" \
+                    --arg key "$key_path" \
+                '{
+                    type: "tuic",
+                    tag: "tuic-in",
+                    listen: "::",
+                    listen_port: $port,
+                    users: [{uuid: $uuid, password: $password}],
+                    congestion_control: "bbr",
+                    tls: {
+                        enabled: true,
+                        certificate_path: $cert,
+                        key_path: $key,
+                        alpn: ["h3"]
+                    }
+                }')
+                ;;
+            ss2022|ss-legacy)
+                local password=$(echo "$cfg" | jq -r '.password // empty')
+                local default_method="2022-blake3-aes-128-gcm"
+                [[ "$p" == "ss-legacy" ]] && default_method="aes-256-gcm"
+                local method=$(echo "$cfg" | jq -r '.method // empty')
+                [[ -z "$method" ]] && method="$default_method"
+                
+                inbound=$(jq -n \
+                    --argjson port "$port" \
+                    --arg method "$method" \
+                    --arg password "$password" \
+                    --arg tag "${p}-in" \
+                '{
+                    type: "shadowsocks",
+                    tag: $tag,
+                    listen: "::",
+                    listen_port: $port,
+                    method: $method,
+                    password: $password
+                }')
+                ;;
+        esac
+        
+        if [[ -n "$inbound" ]]; then
+            inbounds=$(echo "$inbounds" | jq --argjson ib "$inbound" '. += [$ib]')
+            ((success_count++))
+        fi
+    done
+    
+    if [[ $success_count -eq 0 ]]; then
+        _err "没有有效的 Sing-box 协议配置"
         return 1
     fi
     
-    # 直接使用自签名证书（无需域名）
-    info "正在生成自签名证书..."
-    generate_self_signed_cert "$tuic_port" "$server_ip" >/dev/null
+    # 合并配置并写入文件
+    echo "$base_config" | jq --argjson ibs "$inbounds" '.inbounds = $ibs' > "$CFG/singbox.json"
     
-    local cert_type="self-signed"
-    local cert_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.crt"
-    local key_path="${TUIC_CONF_DIR}/certs/tuic-${tuic_port}.key"
-    local sni_domain="$server_ip"
+    # 验证配置
+    if ! jq empty "$CFG/singbox.json" 2>/dev/null; then
+        _err "Sing-box 配置 JSON 格式错误"
+        return 1
+    fi
     
-    # 生成 UUID 和密码
-    local uuid=$(cat /proc/sys/kernel/random/uuid)
-    local password=$(openssl rand -base64 16 | tr -d '/+=' | head -c 16)
+    _ok "Sing-box 配置生成成功 ($success_count 个协议)"
+    return 0
+}
+
+# 创建 Sing-box 服务
+create_singbox_service() {
+    local service_name="vless-singbox"
+    local exec_cmd="/usr/local/bin/sing-box run -c $CFG/singbox.json"
     
-    info "正在生成配置..."
+    # 检查是否有 hy2 协议且启用了端口跳跃
+    local has_hy2_hop=false
+    if db_exists "singbox" "hy2"; then
+        local hop_enable=$(db_get_field "singbox" "hy2" "hop_enable")
+        [[ "$hop_enable" == "1" ]] && has_hy2_hop=true
+    fi
     
-    # 创建 TUIC 配置文件
-    cat > "${TUIC_CONF_DIR}/tuic-${tuic_port}.json" << EOF
-{
-    "server": "${listen_addr}",
-    "users": {
-        "${uuid}": "${password}"
-    },
-    "certificate": "${cert_path}",
-    "private_key": "${key_path}",
-    "congestion_control": "bbr",
-    "alpn": ["h3"],
-    "zero_rtt_handshake": false,
-    "auth_timeout": "3s",
-    "max_idle_time": "10s",
-    "max_external_packet_size": 1500,
-    "gc_interval": "3s",
-    "gc_lifetime": "15s",
-    "log_level": "warn"
+    local has_tuic_hop=false
+    if db_exists "singbox" "tuic"; then
+        local hop_enable=$(db_get_field "singbox" "tuic" "hop_enable")
+        [[ "$hop_enable" == "1" ]] && has_tuic_hop=true
+    fi
+    
+    if [[ "$DISTRO" == "alpine" ]]; then
+        # Alpine: 在 start_pre 中执行端口跳跃脚本
+        cat > /etc/init.d/$service_name << EOF
+#!/sbin/openrc-run
+name="Sing-box Proxy Server"
+command="/usr/local/bin/sing-box"
+command_args="run -c $CFG/singbox.json"
+command_background="yes"
+pidfile="/run/${service_name}.pid"
+depend() { need net; }
+start_pre() {
+    [[ -x "$CFG/hy2-nat.sh" ]] && "$CFG/hy2-nat.sh" || true
+    [[ -x "$CFG/tuic-nat.sh" ]] && "$CFG/tuic-nat.sh" || true
 }
 EOF
-    chmod 600 "${TUIC_CONF_DIR}/tuic-${tuic_port}.json"
-    
-    # 保存节点信息
-    local tuic_link=$(generate_tuic_link "$server_ip" "$tuic_port" "$uuid" "$password" "$sni_domain" "$node_name")
-    # 生成 Surge 配置格式
-    local uuid_upper=$(echo "$uuid" | tr '[:lower:]' '[:upper:]')
-    local ip_version_str=""
-    [[ "$ip_version" != "dual" ]] && ip_version_str=", ip-version=${ip_version}"
-    local surge_config="${node_name} = tuic-v5, ${server_ip}, ${tuic_port}, password=${password}, uuid=${uuid_upper}, alpn=h3${ip_version_str}, sni=${sni_domain}"
-    
-    cat > "${TUIC_CONF_DIR}/tuic-${tuic_port}.info" << EOF
-node_name=${node_name}
-port=${tuic_port}
-uuid=${uuid}
-password=${password}
-server_ip=${server_ip}
-sni=${sni_domain}
-cert_type=${cert_type}
-ip_version=${ip_version}
-link=${tuic_link}
-surge_config=${surge_config}
-EOF
-    
-    # 创建 Systemd 服务文件
-    cat > "/etc/systemd/system/tuic-${tuic_port}.service" << EOF
+        chmod +x /etc/init.d/$service_name
+    else
+        # systemd: 添加 ExecStartPre 执行端口跳跃脚本
+        local pre_cmd=""
+        [[ -f "$CFG/hy2-nat.sh" ]] && pre_cmd="ExecStartPre=-/bin/bash $CFG/hy2-nat.sh"
+        [[ -f "$CFG/tuic-nat.sh" ]] && pre_cmd="${pre_cmd}"$'\n'"ExecStartPre=-/bin/bash $CFG/tuic-nat.sh"
+        
+        cat > /etc/systemd/system/${service_name}.service << EOF
 [Unit]
-Description=TUIC v5 Proxy Service (Port ${tuic_port})
+Description=Sing-box Proxy Server (Hy2/TUIC/SS2022)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${TUIC_BIN_PATH} -c ${TUIC_CONF_DIR}/tuic-${tuic_port}.json
-Restart=on-failure
+${pre_cmd}
+ExecStart=$exec_cmd
+Restart=always
 RestartSec=3
 LimitNOFILE=51200
 
 [Install]
 WantedBy=multi-user.target
 EOF
+        systemctl daemon-reload
+    fi
+}
+
+# 清理 Hysteria2/TUIC 端口跳跃 NAT 规则
+cleanup_hy2_nat_rules() {
+    # 清理 Hysteria2 端口跳跃规则
+    if db_exists "singbox" "hy2"; then
+        local port=$(db_get_field "singbox" "hy2" "port")
+        local hs=$(db_get_field "singbox" "hy2" "hop_start"); hs="${hs:-20000}"
+        local he=$(db_get_field "singbox" "hy2" "hop_end"); he="${he:-50000}"
+        [[ -n "$port" ]] && {
+            iptables -t nat -D PREROUTING -p udp --dport ${hs}:${he} -j REDIRECT --to-ports ${port} 2>/dev/null
+            iptables -t nat -D OUTPUT -p udp --dport ${hs}:${he} -j REDIRECT --to-ports ${port} 2>/dev/null
+        }
+    fi
+    # 清理 TUIC 端口跳跃规则
+    if db_exists "singbox" "tuic"; then
+        local port=$(db_get_field "singbox" "tuic" "port")
+        local hs=$(db_get_field "singbox" "tuic" "hop_start"); hs="${hs:-20000}"
+        local he=$(db_get_field "singbox" "tuic" "hop_end"); he="${he:-50000}"
+        [[ -n "$port" ]] && {
+            iptables -t nat -D PREROUTING -p udp --dport ${hs}:${he} -j REDIRECT --to-ports ${port} 2>/dev/null
+            iptables -t nat -D OUTPUT -p udp --dport ${hs}:${he} -j REDIRECT --to-ports ${port} 2>/dev/null
+        }
+    fi
+    # 兜底清理
+    for chain in PREROUTING OUTPUT; do
+        iptables -t nat -S $chain 2>/dev/null | grep -E 'REDIRECT --to-ports' | while read -r rule; do
+            iptables -t nat -D $chain ${rule#-A $chain } 2>/dev/null || true
+        done
+    done
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# 服务端辅助脚本生成
+#═══════════════════════════════════════════════════════════════════════════════
+create_server_scripts() {
+    # Watchdog 脚本 - 服务端监控进程（带重启次数限制）
+    cat > "$CFG/watchdog.sh" << 'EOFSCRIPT'
+#!/bin/bash
+CFG="/etc/vless-reality"
+LOG_FILE="/var/log/vless-watchdog.log"
+MAX_RESTARTS=5           # 冷却期内最大重启次数
+COOLDOWN_PERIOD=300      # 冷却期（秒）
+declare -A restart_counts
+declare -A first_restart_time
+
+log() { 
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    # 日志轮转：超过 2MB 时截断
+    local size=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    if [[ $size -gt 2097152 ]]; then
+        tail -n 500 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+    fi
+}
+
+restart_service() {
+    local svc="$1"
+    local now=$(date +%s)
+    local first_time=${first_restart_time[$svc]:-0}
+    local count=${restart_counts[$svc]:-0}
     
-    # 启动服务
-    systemctl daemon-reload
-    systemctl enable "tuic-${tuic_port}.service" >/dev/null 2>&1
-    systemctl start "tuic-${tuic_port}.service"
-    
-    sleep 2
-    
-    if systemctl is-active --quiet "tuic-${tuic_port}.service"; then
-        echo ""
-        echo -e "${green}═══════════════════════════════════════════════${none}"
-        success "TUIC v5 (端口 ${tuic_port}) 安装成功！"
-        echo -e "${green}═══════════════════════════════════════════════${none}"
-        echo ""
-        echo -e "${cyan}【节点信息】${none}"
-        echo -e "  名称: ${yellow}${node_name}${none}"
-        echo -e "  端口: ${yellow}${tuic_port}${none}"
-        echo -e "  UUID: ${yellow}${uuid}${none}"
-        echo -e "  密码: ${yellow}${password}${none}"
-        echo -e "  证书: ${yellow}${cert_type}${none}"
-        echo ""
-        echo -e "${cyan}【分享链接】${none}"
-        echo -e "${green}${tuic_link}${none}"
-        echo ""
-        echo -e "${cyan}【Surge 配置】${none}"
-        echo -e "${green}${surge_config}${none}"
-        echo ""
-        
-        echo -e "${yellow}💡 提示：${none}"
-        echo -e "  使用自签名证书，客户端链接已自动添加 ${green}allow_insecure=1${none}"
-        echo -e "  无需下载证书，直接导入链接即可使用！"
+    # 检查是否在冷却期内
+    if [[ $((now - first_time)) -gt $COOLDOWN_PERIOD ]]; then
+        # 冷却期已过，重置计数
+        restart_counts[$svc]=1
+        first_restart_time[$svc]=$now
     else
-        error "TUIC 服务启动失败"
-        echo "请检查日志: journalctl -u tuic-${tuic_port} -n 20"
+        # 仍在冷却期内
+        ((count++))
+        restart_counts[$svc]=$count
+        
+        if [[ $count -gt $MAX_RESTARTS ]]; then
+            log "ERROR: $svc 在 ${COOLDOWN_PERIOD}s 内重启次数超过 $MAX_RESTARTS 次，暂停监控该服务"
+            return 1
+        fi
+    fi
+    
+    log "INFO: 正在重启 $svc (第 ${restart_counts[$svc]} 次)"
+    
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl restart "$svc" 2>&1; then
+            log "OK: $svc 重启成功"
+            return 0
+        else
+            log "ERROR: $svc 重启失败"
+            return 1
+        fi
+    elif command -v rc-service >/dev/null 2>&1; then
+        if rc-service "$svc" restart 2>&1; then
+            log "OK: $svc 重启成功"
+            return 0
+        else
+            log "ERROR: $svc 重启失败"
+            return 1
+        fi
+    else
+        log "ERROR: 无法找到服务管理命令"
         return 1
     fi
 }
 
-# 列出 TUIC 实例
-list_tuic_instances() {
-    echo -e "${cyan}当前已安装的 TUIC 实例：${none}"
-    echo "================================================================"
-    printf "%-25s %-10s %-12s %-10s\n" "节点名称" "端口" "状态" "证书类型"
-    echo "================================================================"
+# 获取所有需要监控的服务 (支持多协议) - 从数据库读取
+get_all_services() {
+    local services=""
+    local DB_FILE="$CFG/db.json"
     
-    local count=0
-    for service_file in /etc/systemd/system/tuic-*.service; do
-        if [[ -f "$service_file" ]]; then
-            local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
-            local info_file="${TUIC_CONF_DIR}/tuic-${port}.info"
-            
-            local node_name="未命名"
-            local cert_type="未知"
-            if [[ -f "$info_file" ]]; then
-                node_name=$(grep "^node_name=" "$info_file" | cut -d'=' -f2)
-                cert_type=$(grep "^cert_type=" "$info_file" | cut -d'=' -f2)
-            fi
-            
-            local status_text="已停止"
-            local status_color="${red}"
-            if systemctl is-active --quiet "tuic-${port}.service"; then
-                status_text="运行中"
-                status_color="${green}"
-            fi
-            
-            printf "%-25s %-10s ${status_color}%-12s${none} %-10s\n" "$node_name" "$port" "$status_text" "$cert_type"
-            ((count++)) || true
+    [[ ! -f "$DB_FILE" ]] && { echo ""; return; }
+    
+    # 检查 Xray 协议
+    local xray_protos=$(jq -r '.xray | keys[]' "$DB_FILE" 2>/dev/null)
+    [[ -n "$xray_protos" ]] && services+="vless-reality:xray "
+    
+    # 检查 Sing-box 协议 (hy2/tuic 由 vless-singbox 统一管理)
+    local singbox_protos=$(jq -r '.singbox | keys[]' "$DB_FILE" 2>/dev/null)
+    local has_singbox=false
+    for proto in $singbox_protos; do
+        case "$proto" in
+            hy2|tuic) has_singbox=true ;;
+            snell) services+="vless-snell:snell-server " ;;
+            snell-v5) services+="vless-snell-v5:snell-server-v5 " ;;
+            anytls) services+="vless-anytls:anytls-server " ;;
+            snell-shadowtls) services+="vless-snell-shadowtls:shadow-tls " ;;
+            snell-v5-shadowtls) services+="vless-snell-v5-shadowtls:shadow-tls " ;;
+            ss2022-shadowtls) services+="vless-ss2022-shadowtls:shadow-tls " ;;
+        esac
+    done
+    [[ "$has_singbox" == "true" ]] && services+="vless-singbox:sing-box "
+    
+    echo "$services"
+}
+
+log "INFO: Watchdog 启动"
+
+while true; do
+    for svc_info in $(get_all_services); do
+        IFS=':' read -r svc_name proc_name <<< "$svc_info"
+        # 多种方式检测进程 (使用兼容函数)
+        if ! _pgrep "$proc_name" && ! pgrep -f "$proc_name" > /dev/null 2>&1; then
+            log "CRITICAL: $proc_name 进程不存在，尝试重启 $svc_name..."
+            restart_service "$svc_name"
+            sleep 5
         fi
     done
-    
-    if [[ $count -eq 0 ]]; then
-        echo "暂无安装任何 TUIC 实例"
+    sleep 60
+done
+EOFSCRIPT
+
+    # Hysteria2 端口跳跃规则脚本 (服务端) - 从数据库读取
+    if is_protocol_installed "hy2"; then
+        cat > "$CFG/hy2-nat.sh" << 'EOFSCRIPT'
+#!/bin/bash
+CFG=/etc/vless-reality
+DB_FILE="$CFG/db.json"
+
+[[ ! -f "$DB_FILE" ]] && exit 0
+
+# 从数据库读取配置
+port=$(jq -r '.singbox.hy2.port // empty' "$DB_FILE" 2>/dev/null)
+hop_enable=$(jq -r '.singbox.hy2.hop_enable // empty' "$DB_FILE" 2>/dev/null)
+hop_start=$(jq -r '.singbox.hy2.hop_start // empty' "$DB_FILE" 2>/dev/null)
+hop_end=$(jq -r '.singbox.hy2.hop_end // empty' "$DB_FILE" 2>/dev/null)
+
+[[ -z "$port" ]] && exit 0
+
+hop_start="${hop_start:-20000}"
+hop_end="${hop_end:-50000}"
+
+if ! [[ "$hop_start" =~ ^[0-9]+$ && "$hop_end" =~ ^[0-9]+$ ]] || [[ "$hop_start" -ge "$hop_end" ]]; then
+  exit 0
+fi
+
+iptables -t nat -D PREROUTING -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null
+iptables -t nat -D OUTPUT -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null
+
+[[ "${hop_enable:-0}" != "1" ]] && exit 0
+
+iptables -t nat -C PREROUTING -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null \
+  || iptables -t nat -A PREROUTING -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port
+
+iptables -t nat -C OUTPUT -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null \
+  || iptables -t nat -A OUTPUT -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port
+EOFSCRIPT
     fi
-    echo "================================================================"
+
+    # TUIC 端口跳跃规则脚本 (服务端) - 从数据库读取
+    if is_protocol_installed "tuic"; then
+        cat > "$CFG/tuic-nat.sh" << 'EOFSCRIPT'
+#!/bin/bash
+CFG=/etc/vless-reality
+DB_FILE="$CFG/db.json"
+
+[[ ! -f "$DB_FILE" ]] && exit 0
+
+# 从数据库读取配置
+port=$(jq -r '.singbox.tuic.port // empty' "$DB_FILE" 2>/dev/null)
+hop_enable=$(jq -r '.singbox.tuic.hop_enable // empty' "$DB_FILE" 2>/dev/null)
+hop_start=$(jq -r '.singbox.tuic.hop_start // empty' "$DB_FILE" 2>/dev/null)
+hop_end=$(jq -r '.singbox.tuic.hop_end // empty' "$DB_FILE" 2>/dev/null)
+
+[[ -z "$port" ]] && exit 0
+
+hop_start="${hop_start:-20000}"
+hop_end="${hop_end:-50000}"
+
+if ! [[ "$hop_start" =~ ^[0-9]+$ && "$hop_end" =~ ^[0-9]+$ ]] || [[ "$hop_start" -ge "$hop_end" ]]; then
+  exit 0
+fi
+
+iptables -t nat -D PREROUTING -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null
+iptables -t nat -D OUTPUT -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null
+
+[[ "${hop_enable:-0}" != "1" ]] && exit 0
+
+iptables -t nat -C PREROUTING -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null \
+  || iptables -t nat -A PREROUTING -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port
+
+iptables -t nat -C OUTPUT -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port 2>/dev/null \
+  || iptables -t nat -A OUTPUT -p udp --dport ${hop_start}:${hop_end} -j REDIRECT --to-ports $port
+EOFSCRIPT
+    fi
+
+    chmod +x "$CFG"/*.sh 2>/dev/null
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# 服务管理
+#═══════════════════════════════════════════════════════════════════════════════
+
+svc() { # svc action service_name
+    local action="$1" name="$2" err=/tmp/svc_error.log
+    _svc_try() { : >"$err"; "$@" 2>"$err" || { [[ -s "$err" ]] && { _err "服务${action}失败:"; cat "$err"; }; rm -f "$err"; return 1; }; rm -f "$err"; }
+
+    if [[ "$DISTRO" == "alpine" ]]; then
+        case "$action" in
+            start|restart) _svc_try rc-service "$name" "$action" ;;
+            stop)    rc-service "$name" stop &>/dev/null ;;
+            enable)  rc-update add "$name" default &>/dev/null ;;
+            disable) rc-update del "$name" default &>/dev/null ;;
+            reload)  rc-service "$name" reload &>/dev/null || rc-service "$name" restart &>/dev/null ;;
+            status)
+                rc-service "$name" status &>/dev/null && return 0
+                local pidfile="/run/${name}.pid"
+                [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null && return 0
+                local p="${SVC_PROC[$name]:-}"
+                [[ -n "$p" ]] && _pgrep "$p" && return 0
+                return 1
+                ;;
+        esac
+    else
+        case "$action" in
+            start|restart)
+                _svc_try systemctl "$action" "$name" || { _err "详细状态信息:"; systemctl status "$name" --no-pager -l || true; return 1; }
+                ;;
+            stop|enable|disable) systemctl "$action" "$name" &>/dev/null ;;
+            reload) systemctl reload "$name" &>/dev/null || systemctl restart "$name" &>/dev/null ;;
+            status)
+                local state; state=$(systemctl is-active "$name" 2>/dev/null)
+                [[ "$state" == active || "$state" == activating ]]
+                ;;
+        esac
+    fi
+}
+
+# TUIC v5 服务端配置
+gen_tuic_server_config() {
+    local uuid="$1" password="$2" port="$3" sni="${4:-bing.com}"
+    local hop_enable="${5:-0}" hop_start="${6:-20000}" hop_end="${7:-50000}"
+    mkdir -p "$CFG"
+    
+    # 生成自签证书（Sing-box 使用）
+    local tuic_cert_dir="$CFG/certs/tuic"
+    mkdir -p "$tuic_cert_dir"
+    local cert_file="$tuic_cert_dir/server.crt"
+    local key_file="$tuic_cert_dir/server.key"
+    
+    local server_ip=$(get_ipv4)
+    [[ -z "$server_ip" ]] && server_ip=$(get_ipv6)
+    [[ -z "$server_ip" ]] && server_ip="$sni"
+    
+    # 检查是否有真实域名的 ACME 证书可复用
+    local common_snis="www.microsoft.com learn.microsoft.com azure.microsoft.com www.apple.com www.amazon.com aws.amazon.com www.icloud.com itunes.apple.com www.nvidia.com www.amd.com www.intel.com www.samsung.com www.dell.com www.cisco.com www.oracle.com www.ibm.com www.adobe.com www.autodesk.com www.sap.com www.vmware.com"
+    
+    if ! echo "$common_snis" | grep -qw "$sni"; then
+        # 真实域名：检查是否有共享证书
+        if [[ -f "$CFG/certs/server.crt" && -f "$CFG/certs/server.key" ]]; then
+            local cert_cn=$(openssl x509 -in "$CFG/certs/server.crt" -noout -subject 2>/dev/null | sed 's/.*CN *= *//')
+            if [[ "$cert_cn" == "$sni" ]]; then
+                _ok "复用现有证书 (域名: $sni)"
+            fi
+        fi
+    fi
+    
+    # 生成独立自签证书（无论是否有 ACME 证书都生成，Sing-box 配置会智能选择）
+    if [[ ! -f "$cert_file" ]]; then
+        _info "为 TUIC 生成独立自签证书 (SNI: $sni)..."
+        openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
+            -keyout "$key_file" -out "$cert_file" \
+            -subj "/CN=$server_ip" -days 36500 \
+            -addext "subjectAltName=DNS:$server_ip,IP:$server_ip" \
+            -addext "basicConstraints=critical,CA:FALSE" \
+            -addext "extendedKeyUsage=serverAuth" 2>/dev/null
+        chmod 600 "$key_file"
+        _ok "TUIC 自签证书生成完成"
+    fi
+
+    # 写入数据库（Sing-box 从数据库读取配置生成 singbox.json）
+    register_protocol "tuic" "$(build_config \
+        uuid "$uuid" password "$password" port "$port" sni "$sni" \
+        hop_enable "$hop_enable" hop_start "$hop_start" hop_end "$hop_end")"
+    
+    # 保存 join 信息
+    local extra_lines=()
+    [[ "$hop_enable" == "1" ]] && extra_lines=("" "# 端口跳跃已启用" "# 客户端请手动将端口改为: ${hop_start}-${hop_end}")
+    
+    _save_join_info "tuic" "TUIC|%s|$port|$uuid|$password|$sni" \
+        "gen_tuic_link %s $port $uuid $password $sni" "${extra_lines[@]}"
+    cp "$CFG/tuic.join" "$CFG/join.txt" 2>/dev/null
+    echo "server" > "$CFG/role"
+}
+
+# 安装 TUIC (vless-all-in-one 流程)
+install_tuic() {
+    local protocol="tuic"
+    init_db
+
+    if is_protocol_installed "$protocol"; then
+        _warn "协议 TUIC 已安装"
+        read -rp "  是否重新安装? [y/N]: " reinstall
+        if [[ "$reinstall" =~ ^[yY]$ ]]; then
+            _info "卸载现有 $protocol 协议..."
+            cleanup_hy2_nat_rules
+            svc stop vless-singbox 2>/dev/null
+            unregister_protocol "$protocol"
+            rm -f "$CFG/${protocol}.join"
+            rm -rf "$CFG/certs/tuic"
+
+            local remaining_singbox=$(get_singbox_protocols)
+            if [[ -n "$remaining_singbox" ]]; then
+                rm -f "$CFG/singbox.json"
+                generate_singbox_config 2>/dev/null || true
+                svc start vless-singbox 2>/dev/null || true
+            else
+                rm -f "$CFG/singbox.json"
+            fi
+
+            _ok "旧配置已清理"
+        else
+            return
+        fi
+    fi
+
+    _info "检测并安装 Sing-box..."
+    install_singbox || return 1
+
+    _info "生成配置参数..."
+
+    local port=$(ask_port "$protocol")
+    local uuid=$(gen_uuid) password=$(gen_password)
+
+    # TUIC不需要证书申请，直接询问SNI配置
+    local final_sni=$(ask_sni_config "$(gen_sni)" "")
+
+    # ===== 端口跳跃开关 + 范围（默认不启用）=====
+    local hop_enable=0
+    local hop_start=20000
+    local hop_end=50000
+
+    echo ""
+    _line
+    echo -e "  ${C}TUIC v5 配置${NC}"
+    _line
+    echo -e "  端口: ${G}$port${NC} (UDP/QUIC)"
+    echo -e "  UUID: ${G}${uuid:0:8}...${NC}"
+    echo -e "  密码: ${G}$password${NC}"
+    echo -e "  SNI: ${G}$final_sni${NC}"
+    echo ""
+
+    echo -e "  ${W}端口跳跃(Port Hopping)${NC}"
+    echo -e "  ${D}说明：会将一段 UDP 端口范围重定向到 ${G}$port${NC}；高位随机端口有暴露风险，默认关闭。${NC}"
+    read -rp "  是否启用端口跳跃? [y/N]: " hop_ans
+    if [[ "$hop_ans" =~ ^[yY]$ ]]; then
+        hop_enable=1
+
+        read -rp "  起始端口 [回车默认 $hop_start]: " _hs
+        [[ -n "$_hs" ]] && hop_start="$_hs"
+        read -rp "  结束端口 [回车默认 $hop_end]: " _he
+        [[ -n "$_he" ]] && hop_end="$_he"
+
+        # 基础校验：数字 + 范围 + start<end
+        if ! [[ "$hop_start" =~ ^[0-9]+$ && "$hop_end" =~ ^[0-9]+$ ]] \
+           || [[ "$hop_start" -lt 1 || "$hop_start" -gt 65535 ]] \
+           || [[ "$hop_end" -lt 1 || "$hop_end" -gt 65535 ]] \
+           || [[ "$hop_start" -ge "$hop_end" ]]; then
+            _warn "端口范围无效，已自动关闭端口跳跃"
+            hop_enable=0
+            hop_start=20000
+            hop_end=50000
+        else
+            echo -e "  ${C}将启用：${G}${hop_start}-${hop_end}${NC} → 转发至 ${G}$port${NC}"
+        fi
+    else
+        echo -e "  ${D}已选择：不启用端口跳跃${NC}"
+    fi
+
+    _line
+    echo ""
+    read -rp "  确认安装? [Y/n]: " confirm
+    [[ "$confirm" =~ ^[nN]$ ]] && return
+
+    _info "生成配置..."
+    gen_tuic_server_config "$uuid" "$password" "$port" "$final_sni" "$hop_enable" "$hop_start" "$hop_end"
+
+    _info "创建服务..."
+    create_server_scripts
+
+    _info "启动服务..."
+    local singbox_protocols=$(get_singbox_protocols)
+    if [[ -n "$singbox_protocols" ]]; then
+        _info "生成 Sing-box 配置..."
+        if generate_singbox_config; then
+            create_singbox_service
+            svc enable vless-singbox 2>/dev/null
+            
+            if svc status vless-singbox >/dev/null 2>&1; then
+                if ! svc restart vless-singbox; then
+                    _err "Sing-box 服务重启失败"
+                    return 1
+                else
+                    sleep 2
+                    if _pgrep sing-box; then
+                        local sb_list=$(echo $singbox_protocols | tr '\n' ' ')
+                        _ok "Sing-box 服务已更新 (协议: $sb_list)"
+                    else
+                        _err "Sing-box 进程未运行"
+                        return 1
+                    fi
+                fi
+            else
+                if ! svc start vless-singbox; then
+                    _err "Sing-box 服务启动失败"
+                    return 1
+                else
+                    sleep 2
+                    if _pgrep sing-box; then
+                        local sb_list=$(echo $singbox_protocols | tr '\n' ' ')
+                        _ok "Sing-box 服务已启动 (协议: $sb_list)"
+                    else
+                        _err "Sing-box 进程未运行"
+                        return 1
+                    fi
+                fi
+            fi
+        else
+            _err "Sing-box 配置生成失败"
+            return 1
+        fi
+    fi
+
+    _ok "TUIC v5 安装完成"
+
+    # UDP协议提示开放防火墙
+    local listen_port=""
+    if db_exists "singbox" "tuic"; then
+        listen_port=$(db_get_field "singbox" "tuic" "port")
+    fi
+    if [[ -n "$listen_port" ]]; then
+        echo ""
+        _warn "重要: 请确保防火墙开放 UDP 端口 $listen_port"
+        echo -e "  ${D}# iptables 示例:${NC}"
+        echo -e "  ${C}iptables -A INPUT -p udp --dport $listen_port -j ACCEPT${NC}"
+        echo -e "  ${D}# 或使用 ufw:${NC}"
+        echo -e "  ${C}ufw allow $listen_port/udp${NC}"
+        echo ""
+    fi
+
+    # TUIC 协议需要客户端持有证书
+    echo ""
+    _warn "TUIC v5 要求客户端必须持有服务端证书!"
+    _line
+    echo -e "  ${C}请在客户端执行以下命令下载证书:${NC}"
+    echo ""
+    echo -e "  ${G}mkdir -p /etc/vless-reality/certs${NC}"
+    echo -e "  ${G}scp root@$(get_ipv4):$CFG/certs/server.crt /etc/vless-reality/certs/${NC}"
+    echo ""
+    echo -e "  ${D}或手动复制证书内容到客户端 /etc/vless-reality/certs/server.crt${NC}"
+    _line
+}
+
+# 列出 TUIC 实例
+list_tuic_instances() {
+    if ! db_exists "singbox" "tuic"; then
+        _warn "未检测到 TUIC 协议"
+        return
+    fi
+
+    local port=$(db_get_field "singbox" "tuic" "port")
+    local sni=$(db_get_field "singbox" "tuic" "sni")
+    local hop_enable=$(db_get_field "singbox" "tuic" "hop_enable")
+
+    echo ""
+    _line
+    echo -e "  ${C}TUIC v5 实例${NC}"
+    _line
+    echo -e "  端口: ${G}${port:-未知}${NC}"
+    echo -e "  SNI:  ${G}${sni:-未知}${NC}"
+    echo -e "  端口跳跃: ${G}${hop_enable:-0}${NC}"
+    if svc status vless-singbox >/dev/null 2>&1; then
+        echo -e "  状态: ${G}运行中${NC}"
+    else
+        echo -e "  状态: ${R}未运行${NC}"
+    fi
+    _line
 }
 
 # 卸载 TUIC 实例
 uninstall_tuic() {
-    echo -e "${green}=== 卸载 TUIC 服务 ===${none}"
-    
-    list_tuic_instances
-    
-    # 检查是否有实例
-    local has_instance=false
-    for f in /etc/systemd/system/tuic-*.service; do
-        [[ -f "$f" ]] && has_instance=true && break
-    done
-    
-    if [[ "$has_instance" != "true" ]]; then
-        warning "未检测到任何 TUIC 实例，无需卸载"
+    if ! is_protocol_installed "tuic"; then
+        _warn "未检测到 TUIC 协议"
         return
     fi
-    
-    echo ""
-    echo "请选择卸载方式："
-    echo "1. 卸载指定端口的实例"
-    echo "2. 卸载所有实例"
-    echo "0. 取消"
-    read -p "请输入选项 [0-2]: " uninstall_choice || true
-    
-    case "$uninstall_choice" in
-        1)
-            read -p "请输入要卸载的端口号: " port_to_uninstall || true
-            if [[ -z "$port_to_uninstall" ]]; then
-                error "端口号不能为空"
-                return
-            fi
-            
-            if [[ ! -f "/etc/systemd/system/tuic-${port_to_uninstall}.service" ]]; then
-                error "未找到端口 ${port_to_uninstall} 的 TUIC 实例"
-                return
-            fi
-            
-            systemctl stop "tuic-${port_to_uninstall}.service" 2>/dev/null
-            systemctl disable "tuic-${port_to_uninstall}.service" 2>/dev/null
-            rm -f "/etc/systemd/system/tuic-${port_to_uninstall}.service"
-            rm -f "${TUIC_CONF_DIR}/tuic-${port_to_uninstall}.json"
-            rm -f "${TUIC_CONF_DIR}/tuic-${port_to_uninstall}.info"
-            rm -f "${TUIC_CONF_DIR}/certs/tuic-${port_to_uninstall}.crt"
-            rm -f "${TUIC_CONF_DIR}/certs/tuic-${port_to_uninstall}.key"
-            systemctl daemon-reload
-            
-            success "TUIC 实例 (端口 ${port_to_uninstall}) 卸载成功"
-            ;;
-        2)
-            read -p "确定要卸载所有 TUIC 实例吗？[y/N]: " confirm || true
-            if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-                info "已取消"
-                return
-            fi
-            
-            for service_file in /etc/systemd/system/tuic-*.service; do
-                if [[ -f "$service_file" ]]; then
-                    local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
-                    systemctl stop "tuic-${port}.service" 2>/dev/null
-                    systemctl disable "tuic-${port}.service" 2>/dev/null
-                    rm -f "$service_file"
-                    rm -f "${TUIC_CONF_DIR}/tuic-${port}.json"
-                    rm -f "${TUIC_CONF_DIR}/tuic-${port}.info"
-                    rm -f "${TUIC_CONF_DIR}/certs/tuic-${port}.crt"
-                    rm -f "${TUIC_CONF_DIR}/certs/tuic-${port}.key"
-                fi
-            done
-            
-            systemctl daemon-reload
-            success "所有 TUIC 实例已卸载"
-            ;;
-        *)
-            info "已取消"
-            ;;
-    esac
+
+    read -rp "确认卸载 TUIC? [y/N]: " confirm
+    [[ "$confirm" =~ ^[yY]$ ]] || return
+
+    cleanup_hy2_nat_rules
+    svc stop vless-singbox 2>/dev/null
+    unregister_protocol "tuic"
+    rm -f "$CFG/tuic.join"
+    rm -rf "$CFG/certs/tuic"
+
+    local remaining_singbox=$(get_singbox_protocols)
+    if [[ -n "$remaining_singbox" ]]; then
+        rm -f "$CFG/singbox.json"
+        generate_singbox_config 2>/dev/null || true
+        svc start vless-singbox 2>/dev/null || true
+    else
+        rm -f "$CFG/singbox.json"
+        svc disable vless-singbox 2>/dev/null || true
+    fi
+
+    _ok "TUIC 已卸载"
 }
 
-# 更新 TUIC 核心
+# 更新 TUIC (更新 sing-box)
 update_tuic() {
-    if ! check_tuic_installed; then
-        warning "TUIC 未安装，无需更新"
-        return
-    fi
-    
-    info "正在更新 TUIC 核心..."
-    
-    # 停止所有实例
-    for service_file in /etc/systemd/system/tuic-*.service; do
-        if [[ -f "$service_file" ]]; then
-            local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
-            systemctl stop "tuic-${port}.service" 2>/dev/null
+    _info "更新 Sing-box..."
+    install_singbox || { _err "Sing-box 更新失败"; return 1; }
+
+    if is_protocol_installed "tuic"; then
+        _info "重载 TUIC 配置..."
+        if generate_singbox_config; then
+            create_singbox_service
+            svc restart vless-singbox 2>/dev/null || true
         fi
-    done
-    
-    # 删除旧版本
-    rm -f "$TUIC_BIN_PATH"
-    
-    # 安装新版本
-    if install_tuic_binary; then
-        # 重启所有实例
-        for service_file in /etc/systemd/system/tuic-*.service; do
-            if [[ -f "$service_file" ]]; then
-                local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
-                systemctl start "tuic-${port}.service"
-            fi
-        done
-        success "TUIC 核心更新成功"
-    else
-        error "TUIC 更新失败"
     fi
+    _ok "Sing-box 更新完成"
 }
 
 # 查看 TUIC 配置
 view_tuic_config() {
-    list_tuic_instances
-    
-    # 检查是否有实例
-    local has_instance=false
-    for f in /etc/systemd/system/tuic-*.service; do
-        [[ -f "$f" ]] && has_instance=true && break
-    done
-    
-    if [[ "$has_instance" != "true" ]]; then
+    if ! db_exists "singbox" "tuic"; then
+        _warn "未检测到 TUIC 协议"
         return
     fi
-    
+
+    local port=$(db_get_field "singbox" "tuic" "port")
+    local uuid=$(db_get_field "singbox" "tuic" "uuid")
+    local password=$(db_get_field "singbox" "tuic" "password")
+    local sni=$(db_get_field "singbox" "tuic" "sni")
+
     echo ""
-    read -p "请输入要查看配置的端口号: " view_port || true
-    
-    local info_file="${TUIC_CONF_DIR}/tuic-${view_port}.info"
-    if [[ ! -f "$info_file" ]]; then
-        error "未找到端口 ${view_port} 的配置文件"
-        return
-    fi
-    
-    echo ""
-    echo -e "${cyan}═══════════════════════════════════════════════${none}"
-    echo -e "${cyan}  TUIC 节点配置 (端口 ${view_port})${none}"
-    echo -e "${cyan}═══════════════════════════════════════════════${none}"
-    
-    source "$info_file"
-    
-    echo -e "  节点名称: ${yellow}${node_name}${none}"
-    echo -e "  端口: ${yellow}${port}${none}"
-    echo -e "  UUID: ${yellow}${uuid}${none}"
-    echo -e "  密码: ${yellow}${password}${none}"
-    echo -e "  服务器: ${yellow}${server_ip}${none}"
-    echo -e "  SNI: ${yellow}${sni}${none}"
-    echo -e "  证书类型: ${yellow}${cert_type}${none}"
-    echo ""
-    echo -e "${cyan}【分享链接】${none}"
-    echo -e "${green}${link}${none}"
-    echo ""
-    
-    if [[ -n "$surge_config" ]]; then
-        echo -e "${cyan}【Surge 配置】${none}"
-        echo -e "${green}${surge_config}${none}"
+    _line
+    echo -e "  ${C}TUIC v5 配置${NC}"
+    _line
+    echo -e "  端口: ${G}${port:-未知}${NC}"
+    echo -e "  UUID: ${G}${uuid:-未知}${NC}"
+    echo -e "  密码: ${G}${password:-未知}${NC}"
+    echo -e "  SNI:  ${G}${sni:-未知}${NC}"
+    _line
+
+    if [[ -f "$CFG/tuic.join" ]]; then
         echo ""
-    fi
-    
-    if [[ "$cert_type" == "self-signed" ]]; then
-        echo -e "${yellow}【证书内容】${none}"
-        echo -e "${cyan}cat ${TUIC_CONF_DIR}/certs/tuic-${view_port}.crt${none}"
-        echo ""
+        _ok "分享信息已生成: $CFG/tuic.join"
+        cat "$CFG/tuic.join"
     fi
 }
 
 # TUIC 管理菜单
+
 tuic_menu() {
     while true; do
         clear
-        echo -e "${cyan}=== TUIC v5 管理工具 ===${none}"
-        
-        # 统计实例数量
-        local instance_count=0
-        local running_count=0
-        
-        for service_file in /etc/systemd/system/tuic-*.service; do
-            if [[ -f "$service_file" ]]; then
-                ((instance_count++)) || true
-                local port=$(echo "$service_file" | sed -E 's/.*tuic-([0-9]+)\.service/\1/')
-                if systemctl is-active --quiet "tuic-${port}.service"; then
-                    ((running_count++)) || true
-                fi
-            fi
-        done
-        
-        echo -e "已安装实例: ${green}${instance_count}${none} 个"
-        echo -e "运行中实例: ${green}${running_count}${none} 个"
-        
-        if check_tuic_installed; then
-            local version=$(get_tuic_latest_version)
-            echo -e "核心版本: ${green}v${version}${none}"
+        echo -e "${C}=== TUIC v5 管理工具 (vless-all-in-one 流程) ===${NC}"
+
+        if db_exists "singbox" "tuic"; then
+            local port=$(db_get_field "singbox" "tuic" "port")
+            local sni=$(db_get_field "singbox" "tuic" "sni")
+            echo -e "已安装: ${G}是${NC}  端口: ${G}${port:-未知}${NC}  SNI: ${G}${sni:-未知}${NC}"
         else
-            echo -e "核心版本: ${red}未安装${none}"
+            echo -e "已安装: ${R}否${NC}"
         fi
-        
+
+        if check_cmd sing-box; then
+            local sb_ver=$(sing-box version 2>/dev/null | head -n 1)
+            echo -e "Sing-box: ${G}${sb_ver:-已安装}${NC}"
+        else
+            echo -e "Sing-box: ${R}未安装${NC}"
+        fi
+
         echo ""
-        echo "1. 安装/添加 TUIC 服务"
-        echo "2. 卸载/删除 TUIC 服务"
-        echo "3. 查看所有 TUIC 实例"
-        echo "4. 更新 TUIC 核心"
-        echo "5. 查看 TUIC 配置"
+        echo "1. 安装/重装 TUIC"
+        echo "2. 卸载 TUIC"
+        echo "3. 查看 TUIC 状态"
+        echo "4. 查看 TUIC 配置"
+        echo "5. 更新 Sing-box"
         echo "0. 返回上级菜单"
         echo "======================"
         read -p "请输入选项编号: " tuic_choice || true
-        
+
         case "$tuic_choice" in
             1) install_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             2) uninstall_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             3) list_tuic_instances; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            4) update_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
-            5) view_tuic_config || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            4) view_tuic_config || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
+            5) update_tuic || true; echo ""; read -n 1 -s -r -p "按任意键继续..." ;;
             0) return ;;
             *) error "无效选项"; sleep 1 ;;
         esac
