@@ -11704,6 +11704,14 @@ check_anytls_installed() {
 
 # 获取系统架构
 get_anytls_arch() {
+    if declare -F _map_arch >/dev/null 2>&1; then
+        local mapped
+        mapped=$(_map_arch "amd64:arm64:armv7" 2>/dev/null) || mapped=""
+        if [[ -n "$mapped" ]]; then
+            echo "$mapped"
+            return
+        fi
+    fi
     local arch=$(uname -m)
     case $arch in
         x86_64)  echo "amd64" ;;
@@ -11720,6 +11728,10 @@ install_anytls_binary() {
         error "不支持的系统架构: $(uname -m)"
         return 1
     fi
+
+    if [[ "${DISTRO:-}" == "alpine" || -f /etc/alpine-release ]]; then
+        apk add --no-cache gcompat libc6-compat &>/dev/null || true
+    fi
     
     if check_anytls_installed; then
         success "AnyTLS 核心已安装"
@@ -11734,10 +11746,15 @@ install_anytls_binary() {
     
     if curl -fSL -o "${tmp_dir}/anytls.zip" --connect-timeout 30 --retry 3 "$download_url" 2>/dev/null; then
         # 解压
+        if ! command -v unzip &>/dev/null; then
+            if declare -F install_package >/dev/null 2>&1; then
+                install_package unzip >/dev/null 2>&1 || true
+            fi
+        fi
         if command -v unzip &>/dev/null; then
             unzip -q "${tmp_dir}/anytls.zip" -d "$tmp_dir"
         else
-            error "需要安装 unzip: apt install unzip"
+            error "需要安装 unzip"
             rm -rf "$tmp_dir"
             return 1
         fi
@@ -11769,7 +11786,29 @@ install_anytls_binary() {
 generate_anytls_link() {
     local ip="$1" port="$2" password="$3" sni="$4" node_name="$5"
     local encoded_name=$(echo -n "$node_name" | sed 's/ /%20/g; s/#/%23/g')
-    echo "anytls://${password}@${ip}:${port}?sni=${sni}&allowInsecure=1#${encoded_name}"
+    local host="$ip"
+    if [[ "$host" == *:* && "$host" != \[*\] ]]; then
+        host="[$host]"
+    fi
+    echo "anytls://${password}@${host}:${port}?sni=${sni}&allowInsecure=1#${encoded_name}"
+}
+
+# 检查 AnyTLS 端口冲突
+anytls_port_conflict() {
+    local port="$1"
+    if [[ -f "/etc/systemd/system/anytls-${port}.service" || -f "${ANYTLS_CONF_DIR}/anytls-${port}.info" ]]; then
+        echo "AnyTLS"
+        return 0
+    fi
+    if declare -F is_internal_port_occupied >/dev/null 2>&1; then
+        local owner
+        owner=$(is_internal_port_occupied "$port" 2>/dev/null || true)
+        if [[ -n "$owner" ]]; then
+            echo "$owner"
+            return 0
+        fi
+    fi
+    return 1
 }
 
 # 安装 AnyTLS 实例
@@ -11786,7 +11825,19 @@ install_anytls() {
     mkdir -p "$ANYTLS_CONF_DIR"
     
     # 生成随机端口
-    local default_port=$(shuf -i 30000-60000 -n 1)
+    local default_port=""
+    if declare -F gen_port >/dev/null 2>&1; then
+        default_port=$(gen_port 2>/dev/null || true)
+    fi
+    if [[ -z "$default_port" ]]; then
+        default_port=$(shuf -i 30000-60000 -n 1 2>/dev/null || echo $((RANDOM % 50000 + 10000)))
+    fi
+    local attempt=0
+    while anytls_port_conflict "$default_port" >/dev/null 2>&1; do
+        ((attempt++))
+        [[ $attempt -ge 20 ]] && break
+        default_port=$(shuf -i 30000-60000 -n 1 2>/dev/null || echo $((RANDOM % 50000 + 10000)))
+    done
     
     # 询问端口
     echo -e "${cyan}请输入端口号 (1-65535)，直接回车使用随机端口 [默认: ${default_port}]:${none}"
@@ -11798,8 +11849,19 @@ install_anytls() {
             break
         fi
         if [[ "$anytls_port" =~ ^[0-9]+$ ]] && [[ "$anytls_port" -ge 1 ]] && [[ "$anytls_port" -le 65535 ]]; then
-            if ss -tulpn 2>/dev/null | grep -q ":${anytls_port} "; then
-                error "端口 ${anytls_port} 已被占用，请选择其他端口"
+            local conflict
+            conflict=$(anytls_port_conflict "$anytls_port")
+            if [[ -n "$conflict" ]]; then
+                error "端口 ${anytls_port} 已被已安装的 [${conflict}] 占用，请选择其他端口"
+                continue
+            fi
+            if ss -tulpn 2>/dev/null | grep -q ":${anytls_port} " || netstat -tulpn 2>/dev/null | grep -q ":${anytls_port} "; then
+                warning "端口 ${anytls_port} 系统占用中"
+                read -p "是否强制使用? (可能导致启动失败) [y/N]: " force || true
+                if [[ "$force" =~ ^[yY]$ ]]; then
+                    success "已设置端口为: ${anytls_port}"
+                    break
+                fi
             else
                 success "已设置端口为: ${anytls_port}"
                 break
@@ -11809,12 +11871,6 @@ install_anytls() {
         fi
     done
     
-    # 检查端口是否已有 AnyTLS 实例
-    if [[ -f "/etc/systemd/system/anytls-${anytls_port}.service" ]]; then
-        error "端口 ${anytls_port} 已存在 AnyTLS 实例"
-        return 1
-    fi
-    
     # 询问节点名称
     echo -e "${cyan}请输入节点名称 (例如: 🇯🇵AnyTLS-Tokyo):${none}"
     read -p "节点名称: " node_name || true
@@ -11823,33 +11879,9 @@ install_anytls() {
         warning "未输入名称，使用默认名称: ${node_name}"
     fi
     
-    # 询问 SNI 域名
-    echo ""
-    echo -e "${cyan}请选择 SNI 域名:${none}"
-    echo "1. www.microsoft.com"
-    echo "2. www.apple.com"
-    echo "3. www.cloudflare.com"
-    echo "4. addons.mozilla.org"
-    echo "5. 自定义输入"
-    read -p "请输入选项 [1-5，默认为 1]: " sni_choice || true
-    sni_choice=${sni_choice:-1}
-    
+    # 询问 SNI 域名（支持随机/自定义校验）
     local sni_domain
-    case $sni_choice in
-        1) sni_domain="www.microsoft.com" ;;
-        2) sni_domain="www.apple.com" ;;
-        3) sni_domain="www.cloudflare.com" ;;
-        4) sni_domain="addons.mozilla.org" ;;
-        5)
-            echo -e "${cyan}请输入自定义 SNI 域名:${none}"
-            read -p "域名: " sni_domain || true
-            if [[ -z "$sni_domain" ]]; then
-                sni_domain="www.microsoft.com"
-                warning "未输入域名，使用默认: ${sni_domain}"
-            fi
-            ;;
-        *) sni_domain="www.microsoft.com" ;;
-    esac
+    sni_domain=$(ask_sni_config "$(gen_sni)" "")
     success "SNI 域名: ${sni_domain}"
     
     # 询问监听模式
@@ -11868,10 +11900,17 @@ install_anytls() {
         *) listen_addr="[::]:${anytls_port}"; success "已选择：双栈模式" ;;
     esac
     
-    # 获取服务器 IP
-    local server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
+    # 获取服务器 IP（优先 IPv4，失败则 IPv6）
+    local server_ip=""
+    if declare -F get_ipv4 >/dev/null 2>&1; then
+        server_ip=$(get_ipv4)
+    fi
+    if [[ -z "$server_ip" ]] && declare -F get_ipv6 >/dev/null 2>&1; then
+        server_ip=$(get_ipv6)
+    fi
     if [[ -z "$server_ip" ]]; then
-        server_ip=$(curl -6s --max-time 5 https://api64.ipify.org 2>/dev/null)
+        server_ip=$(curl -4s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4s --max-time 5 https://ip.sb 2>/dev/null)
+        [[ -z "$server_ip" ]] && server_ip=$(curl -6s --max-time 5 https://api64.ipify.org 2>/dev/null)
     fi
     
     # 生成密码
