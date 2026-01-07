@@ -12434,10 +12434,13 @@ main_menu() {
         echo -e "${cyan}[高级功能]${none}"
         printf "  ${green}%-2s${none} %-35s ⭐\n" "18." "路由过滤规则管理"
         draw_divider
+        echo -e "${cyan}[多协议代理一键部署脚本]${none}"
+        printf "  ${green}%-2s${none} %-35s\n" "19." "vless-all-in-one"
+        draw_divider
         printf "  ${red}%-2s${none} %-35s\n" "0." "退出脚本"
         draw_divider
 
-        read -p " 请输入选项 [0-18]: " choice || true
+        read -p " 请输入选项 [0-19]: " choice || true
 
         local needs_pause=true
 
@@ -12460,8 +12463,9 @@ main_menu() {
             16) view_xray_log; needs_pause=false ;;
             17) view_all_info ;;
             18) manage_routing_rules ;;
+            19) wget -O vless-server.sh https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh && chmod +x vless-server.sh && bash vless-server.sh; needs_pause=false ;;
             0) success "感谢使用！"; exit 0 ;;
-            *) error "无效选项。请输入0到18之间的数字。" ;;
+            *) error "无效选项。请输入0到19之间的数字。" ;;
         esac
 
         if [ "$needs_pause" = true ]; then
