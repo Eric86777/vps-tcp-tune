@@ -1677,12 +1677,15 @@ quick_setup_port() {
         # 确定基准日期逻辑
         local current_expire=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
         local today=$(get_beijing_time +%Y-%m-%d)
+        local is_renewal=false
         
         if [ -n "$current_expire" ] && [ "$current_expire" != "null" ] && [[ "$current_expire" > "$today" ]]; then
             base_date="$current_expire"
+            is_renewal=true
             echo -e "将在现有到期日 ($base_date) 基础上续费"
         else
             base_date="$today"
+            is_renewal=false
             echo -e "端口已过期或首次设置，从今天 ($today) 开始计算租期"
         fi
 
@@ -1709,6 +1712,9 @@ quick_setup_port() {
         
         # 如果不是手动输入，则计算日期
         if [ -z "$new_date" ] && [ "$duration_choice" -ge 1 ] 2>/dev/null && [ "$duration_choice" -le 4 ] 2>/dev/null; then
+            if [ "$is_renewal" = "false" ]; then
+                months_to_add=$(adjust_initial_expiration_months "$base_date" "$months_to_add" "$reset_day")
+            fi
             new_date=$(calculate_next_expiration "$base_date" "$months_to_add" "$reset_day")
         fi
         
@@ -2846,7 +2852,6 @@ set_port_update_expiration() {
             echo -e "将在现有到期日 ($base_date) 基础上续费"
         else
             # 初始化/过期续费模式：从今天开始计算
-            # 修复BUG：已过期端口续费时，应始终从今天开始，确保至少续费整月
             base_date="$today"
             is_renewal=false
             echo -e "端口已过期或首次设置，从今天 ($today) 开始计算租期"
@@ -2929,6 +2934,9 @@ set_port_update_expiration() {
         
         # 如果不是手动输入，则计算日期
         if [ -z "$new_date" ] && [ $duration_choice -le 4 ]; then
+            if [ "$is_renewal" = "false" ]; then
+                months_to_add=$(adjust_initial_expiration_months "$base_date" "$months_to_add" "$reset_day")
+            fi
             new_date=$(calculate_next_expiration "$base_date" "$months_to_add" "$reset_day")
         fi
         
@@ -2989,6 +2997,45 @@ set_port_update_expiration() {
             return
         fi
     done
+}
+
+# 首次/过期续费时，根据重置日调整月数：重置日仍在本月则把本月计为第1个月
+# 参数: $1=基准日期, $2=增加月数, $3=目标重置日(Day)
+adjust_initial_expiration_months() {
+    local base_date="$1"
+    local months="$2"
+    local reset_day="$3"
+
+    if ! [[ "$months" =~ ^[0-9]+$ ]] || [ "$months" -le 0 ]; then
+        echo "$months"
+        return
+    fi
+
+    if ! [[ "$reset_day" =~ ^[0-9]+$ ]]; then
+        echo "$months"
+        return
+    fi
+
+    local today_day=$(get_beijing_time -d "$base_date" +%-d 2>/dev/null || date -d "$base_date" +%-d)
+    local month_prefix="${base_date:0:8}"
+    local last_day=$(get_beijing_time -d "${month_prefix}01 + 1 month - 1 day" +%-d 2>/dev/null || date -d "${month_prefix}01 + 1 month - 1 day" +%-d)
+
+    local today_day_num=$((10#$today_day))
+    local reset_day_num=$((10#$reset_day))
+    local last_day_num=$((10#$last_day))
+
+    if [ "$reset_day_num" -gt "$last_day_num" ]; then
+        reset_day_num=$last_day_num
+    fi
+
+    if [ "$reset_day_num" -gt "$today_day_num" ]; then
+        months=$((months - 1))
+        if [ "$months" -lt 0 ]; then
+            months=0
+        fi
+    fi
+
+    echo "$months"
 }
 
 # 计算下一个到期日
@@ -4137,7 +4184,6 @@ block_port_traffic() {
 check_all_ports_expiration() {
     local active_ports=($(get_active_ports))
     local today=$(get_beijing_time +%Y-%m-%d)
-    local warning_date=$(get_beijing_time -d "+3 days" +%Y-%m-%d 2>/dev/null || date -d "$(get_beijing_time +%Y-%m-%d) + 3 days" +%Y-%m-%d)
     
     for port in "${active_ports[@]}"; do
         local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
@@ -4146,55 +4192,23 @@ check_all_ports_expiration() {
         if [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
             local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
             
-            # 1. 检查是否需要预警 (剩余天数 <= 3 且 > 0)
-            # 计算剩余天数逻辑太复杂，不如直接比较日期字符串
-            # 只要 today < expire_date <= warning_date (今天没过期，但在警戒线内)
-            if [[ "$expire_date" > "$today" ]] && [[ "$expire_date" < "$warning_date" || "$expire_date" == "$warning_date" ]]; then
-                # 读取上次发送预警的日期，防止重复发送
-                local last_warning=$(jq -r ".ports.\"$port\".last_warning_date // \"\"" "$CONFIG_FILE")
-                
-                # 如果尚未发送过预警，或者上次预警不是今天 (理论上一个周期只发一次更好，但为了稳妥，每到一个新的预警天数发一次也行？)
-                # 您的需求是“保证能发出去”，最稳妥的是：只要在3天内，且"本周期内"没发过。
-                # 但判断"本周期"比较麻烦。
-                # 简化稳健策略：只要今天没发过，就发。这样剩3天发一次，剩2天发一次，剩1天发一次。
-                # 或者：记录 last_warning_date。如果 last_warning_date 距离 today 小于 7天（假设），就不重发？
-                # 让我们采用：【每个到期周期只发一次】。
-                # 逻辑：如果 last_warning 存在，且 last_warning 距离 expire_date 小于等于3天，说明已经在本次即将到期的窗口期内发过了。
-                
-                local need_send=true
-                if [ -n "$last_warning" ] && [ "$last_warning" != "null" ]; then
-                     # 检查 last_warning 是否是在本次倒计时期间发的
-                     # 如果 last_warning > (expire_date - 4 days)，说明最近几天发过
-                     # 为了简单有效，我们规定：如果在当前评估的 expire_date 的前7天内已经发过，就不再发。
-                     # 换种思路：记录 last_warning_for_expire = "2023-05-01"。
-                     # 这种最准确。我们在 config 里存 last_warning_target_date 及其对应得操作时间。
-                     
-                     # 简化版：如果 last_warning_date 是最近3天内的，就不发了？
-                     # 不，用户如果不处理，可能希望多提醒几次。
-                     # 这是一个权衡。
-                     # 方案 A: 每天一催 (剩3, 2, 1天各发一封) -> 烦人但安全。
-                     # 方案 B: 只发一次 (剩3天发了，剩2天就不发) -> 清净但怕用户忘。
-                     
-                     # 既然您担心“漏发”，那我倾向于【每天未处理就每天提醒】，直到过期或续费。
-                     # 所以逻辑定为：只要今天没发过 (last_warning != today)，就发。
-                     if [ "$last_warning" == "$today" ]; then
-                         need_send=false
-                     fi
-                fi
-
-                if [ "$need_send" = "true" ]; then
-                    log_notification "[租期预警] 端口 $port 将在近期 ($expire_date) 到期，发送提醒。"
-                    
+            # 1. 到期提醒：到期前3天窗口内仅发送一次（若当天未配置邮箱，允许后续补发）
+            local warning_start=$(get_beijing_time -d "$expire_date - 3 days" +%Y-%m-%d 2>/dev/null || date -d "$expire_date - 3 days" +%Y-%m-%d 2>/dev/null || echo "")
+            if [ -n "$warning_start" ] && [[ "$today" > "$warning_start" || "$today" == "$warning_start" ]] && [[ "$today" < "$expire_date" ]]; then
+                local last_warning_target=$(jq -r ".ports.\"$port\".last_warning_target_date // \"\"" "$CONFIG_FILE")
+                if [ "$last_warning_target" != "$expire_date" ]; then
                     # 发送邮件预警
                     if [ -n "$user_email" ] && [ "$user_email" != "null" ]; then
+                        log_notification "[租期预警] 端口 $port 将在近期 ($expire_date) 到期，发送提醒。"
                         local title="【租期提醒】端口 $port 服务即将到期"
                         local body="<h1>⚠️ 续费提醒</h1>
                                     <p>您好，</p>
                                     <p>您租用的端口 <strong>$port</strong> 即将到期 (<strong>$expire_date</strong>)。</p>
                                     <p>请及时联系管理员进行续费，以免影响使用。</p>"
                         if send_email_notification "$title" "$body" "$user_email" >/dev/null 2>&1; then
-                             # 发送成功后，记录今天已发送
-                             update_config ".ports.\"$port\".last_warning_date = \"$today\""
+                             # 发送成功后，记录本次到期周期已发送
+                             update_config ".ports.\"$port\".last_warning_target_date = \"$expire_date\" |
+                                 .ports.\"$port\".last_warning_date = \"$today\""
                         fi
                     fi
                 fi
@@ -4287,6 +4301,8 @@ diagnose_port_config() {
         
         # === 新增检测项 ===
         
+        local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
+
         # 通知配置检查
         echo -e "${YELLOW}[通知配置检查]${NC}"
         local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
@@ -4296,11 +4312,19 @@ diagnose_port_config() {
             echo -e "  用户邮箱: ${YELLOW}⚠️ 未配置${NC} (到期/超限通知无法发送给用户)"
             ports_no_email+=("$port")
         fi
+        local d3_configured=false
+        if [ -n "$user_email" ] && [ "$user_email" != "null" ] && [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
+            d3_configured=true
+        fi
+        if [ "$d3_configured" = "true" ]; then
+            echo -e "  D-3提醒: ${GREEN}✅ 已配置${NC}"
+        else
+            echo -e "  D-3提醒: ${YELLOW}⚠️ 未配置${NC}"
+        fi
         echo
         
         # 租期状态检查
         echo -e "${YELLOW}[租期状态检查]${NC}"
-        local expire_date=$(jq -r ".ports.\"$port\".expiration_date // \"\"" "$CONFIG_FILE")
         if [ -n "$expire_date" ] && [ "$expire_date" != "null" ]; then
             local today=$(get_beijing_time +%Y-%m-%d)
             # 计算剩余天数
