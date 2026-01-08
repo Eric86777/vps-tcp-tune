@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.4 更新: 诊断汇总提示规则异常/规则不足的修复方式 (by Eric86777)
 # v1.9.3 更新: 检测汇总新增D-3提醒/规则异常/规则不足统计 (by Eric86777)
 # v1.9.2 更新: 到期提醒D-3单次补发逻辑+检测项新增D-3配置提示 (by Eric86777)
 # v1.9.1 更新: 安全下载校验+通知模块原子更新+cron写入稳健化+配额清理增强 (by Eric86777)
 # v1.9.0 更新: 修复dog别名运行时cron路径错误+自动修复crontab+邮件计费模式显示修复 (by Eric86777)
-# v1.8.8 更新: 修复检测结论逻辑-邮箱/租期缺失时不再显示"完全正常" (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.3"
+readonly SCRIPT_VERSION="1.9.4"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -4691,16 +4691,16 @@ diagnose_port_config() {
         echo -e "  D-3提醒未配置端口: ${GREEN}0个${NC}"
     fi
     if [ ${#problem_ports[@]} -gt 0 ]; then
-        echo -e "  规则异常端口: ${RED}${#problem_ports[@]}个${NC} - ${problem_ports[*]}"
+        echo -e "  规则异常端口 [重新配置配额 ✅]: ${RED}${#problem_ports[@]}个${NC} - ${problem_ports[*]}"
         has_issues=true
     else
-        echo -e "  规则异常端口: ${GREEN}0个${NC}"
+        echo -e "  规则异常端口 [重新配置配额 ✅]: ${GREEN}0个${NC}"
     fi
     if [ ${#ports_rules_insufficient[@]} -gt 0 ]; then
-        echo -e "  规则数量可能不足端口: ${YELLOW}${#ports_rules_insufficient[@]}个${NC} - ${ports_rules_insufficient[*]}"
+        echo -e "  规则数量可能不足端口 [重新配置配额 ✅]: ${YELLOW}${#ports_rules_insufficient[@]}个${NC} - ${ports_rules_insufficient[*]}"
         has_issues=true
     else
-        echo -e "  规则数量可能不足端口: ${GREEN}0个${NC}"
+        echo -e "  规则数量可能不足端口 [重新配置配额 ✅]: ${GREEN}0个${NC}"
     fi
     if [ ${#ports_expired[@]} -gt 0 ]; then
         echo -e "  已过期的端口: ${RED}${#ports_expired[@]}个${NC} - ${ports_expired[*]}"
