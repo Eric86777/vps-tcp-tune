@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.6 更新: 规则数量不足改为基于计数器/配额规则检查 (by Eric86777)
 # v1.9.5 更新: 检测结果框对齐微调 (by Eric86777)
 # v1.9.4 更新: 诊断汇总提示规则异常/规则不足的修复方式 (by Eric86777)
 # v1.9.3 更新: 检测汇总新增D-3提醒/规则异常/规则不足统计 (by Eric86777)
 # v1.9.2 更新: 到期提醒D-3单次补发逻辑+检测项新增D-3配置提示 (by Eric86777)
-# v1.9.1 更新: 安全下载校验+通知模块原子更新+cron写入稳健化+配额清理增强 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.5"
+readonly SCRIPT_VERSION="1.9.6"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -4384,6 +4384,7 @@ diagnose_port_config() {
         # 2. 检查计数器
         echo -e "${YELLOW}[计数器检查]${NC}"
         local counter_ok=true
+        local rules_insufficient=false
         if nft list counter $family $table_name "port_${port_safe}_in" &>/dev/null; then
             local counter_in=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | grep bytes | awk '{print $4}')
             echo -e "  ${GREEN}✅ 入站计数器存在: $counter_in bytes${NC}"
@@ -4429,6 +4430,7 @@ diagnose_port_config() {
             echo -e "  ${GREEN}✅ counter规则完整${NC}"
         else
             echo -e "  ${YELLOW}⚠️  counter规则数量异常 (实际: $counter_rules, 预期: $expected_counter_rules)${NC}"
+            rules_insufficient=true
         fi
         echo
         
@@ -4475,6 +4477,7 @@ diagnose_port_config() {
             else
                 echo -e "  ${YELLOW}⚠️  quota规则数量异常${NC}"
                 quota_ok=false
+                rules_insufficient=true
             fi
             
             # 5. 规则类型验证（入站/出站规则是否符合计费模式）
@@ -4586,28 +4589,11 @@ diagnose_port_config() {
             echo -e "  ${CYAN}⏭️  无配额限制，跳过检查${NC}"
         fi
         echo
-        
-        # 5. 总规则数统计
-        echo -e "${YELLOW}[总规则数统计]${NC}"
-        local total_rules=$(echo "$all_rules" | grep -c "$port_safe" || echo "0")
-        echo "  包含 '$port_safe' 的总规则数: $total_rules"
-        
-        # 计算预期总规则数
-        local expected_total=3  # counter定义(2个) + quota定义(1个，如果有)
-        expected_total=$((expected_total + counter_rules))
-        if [ "$quota_limit" != "unlimited" ]; then
-            expected_total=$((expected_total + quota_drop_rules))
-        fi
-        
-        echo "  理论最小规则数: $expected_total"
-        
-        if [ $total_rules -ge $expected_total ]; then
-            echo -e "  ${GREEN}✅ 规则数量正常${NC}"
-        else
-            echo -e "  ${YELLOW}⚠️  规则数量可能不足${NC}"
+
+        if [ "$rules_insufficient" = "true" ]; then
             ports_rules_insufficient+=("$port")
         fi
-        
+
         # 判断整体状态
         if [ "$counter_ok" = false ] || [ "$quota_ok" = false ]; then
             problem_ports+=("$port")
