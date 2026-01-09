@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.8 更新: 修复定时任务北京时间换算为系统时区 (by Eric86777)
 # v1.9.7 更新: 检测结果框再次微调对齐 (by Eric86777)
 # v1.9.6 更新: 规则数量不足改为基于计数器/配额规则检查 (by Eric86777)
 # v1.9.5 更新: 检测结果框对齐微调 (by Eric86777)
 # v1.9.4 更新: 诊断汇总提示规则异常/规则不足的修复方式 (by Eric86777)
-# v1.9.3 更新: 检测汇总新增D-3提醒/规则异常/规则不足统计 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.7"
+readonly SCRIPT_VERSION="1.9.8"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -396,45 +396,77 @@ get_beijing_time() {
     TZ='Asia/Shanghai' date "$@"
 }
 
-# 将北京时间转换为UTC时间（用于 cron 任务）
+# 将北京时间转换为系统本地时间（用于 cron 任务）
 # 参数: $1=小时(0-23), $2=分钟(0-59), $3=星期(0-6,可选,0=周日)
-# 返回: "UTC小时 UTC分钟 [UTC星期]"
-# 示例: convert_beijing_to_local_time 12 30      → "04 30"
-#       convert_beijing_to_local_time 00 00 1    → "16 00 0" (北京周一00:00 = UTC周日16:00)
+# 返回: "本地小时 本地分钟 [本地星期]"
+# 示例: convert_beijing_to_local_time 12 30      → "13 30" (东京)
+#       convert_beijing_to_local_time 00 00 1    → "16 00 0" (UTC环境，北京周一00:00 = UTC周日16:00)
 convert_beijing_to_local_time() {
     local beijing_hour=$1
     local beijing_minute=$2
     local beijing_weekday=${3:-}  # 可选参数，使用默认值避免unbound variable
-    
-    # 北京时间 = UTC+8，转换为UTC需要减8小时
-    local utc_hour=$((beijing_hour - 8))
-    local utc_minute=$beijing_minute
-    local utc_weekday=$beijing_weekday
-    
-    # 处理跨天情况
-    if [ $utc_hour -lt 0 ]; then
-        # 小时<0，说明跨到了前一天
-        utc_hour=$((utc_hour + 24))
-        
-        # 如果传入了星期参数，需要调整星期（往前推一天）
-        if [ -n "$beijing_weekday" ]; then
-            utc_weekday=$((beijing_weekday - 1))
-            # 周日(0)减1变成-1，应该是周六(6)
-            if [ $utc_weekday -lt 0 ]; then
-                utc_weekday=6
+
+    # 获取北京时间的基准日期
+    local base_date
+    base_date=$(TZ='Asia/Shanghai' date +%Y-%m-%d 2>/dev/null || date +%Y-%m-%d)
+
+    # 如果传入了星期参数，找到北京当前日期中对应的下一次该星期
+    local target_date="$base_date"
+    if [ -n "$beijing_weekday" ]; then
+        local current_weekday
+        current_weekday=$(TZ='Asia/Shanghai' date +%w 2>/dev/null || date +%w)
+        if [[ "$current_weekday" =~ ^[0-6]$ ]] && [[ "$beijing_weekday" =~ ^[0-6]$ ]]; then
+            local diff=$((beijing_weekday - current_weekday))
+            if [ $diff -lt 0 ]; then
+                diff=$((diff + 7))
             fi
+            target_date=$(TZ='Asia/Shanghai' date -d "$base_date +$diff day" +%Y-%m-%d 2>/dev/null || \
+                date -d "$base_date +$diff day" +%Y-%m-%d 2>/dev/null || echo "$base_date")
         fi
     fi
-    
-    # 格式化输出（补齐前导零，确保两位数）
-    local formatted_hour=$(printf "%02d" $utc_hour)
-    local formatted_minute=$(printf "%02d" $utc_minute)
-    
-    # 根据是否有星期参数返回不同格式
-    if [ -n "$utc_weekday" ]; then
-        echo "$formatted_hour $formatted_minute $utc_weekday"
+
+    # 生成北京时间对应的时间戳，再转换为系统本地时间
+    local epoch=""
+    epoch=$(TZ='Asia/Shanghai' date -d "$target_date $beijing_hour:$beijing_minute:00" +%s 2>/dev/null || \
+        date -d "$target_date $beijing_hour:$beijing_minute:00" +%s 2>/dev/null || echo "")
+
+    local local_hour=""
+    local local_minute=""
+    local local_weekday=""
+    if [ -n "$epoch" ]; then
+        local_hour=$(date -d "@$epoch" +%H 2>/dev/null || date -r "$epoch" +%H 2>/dev/null || echo "")
+        local_minute=$(date -d "@$epoch" +%M 2>/dev/null || date -r "$epoch" +%M 2>/dev/null || echo "")
+        local_weekday=$(date -d "@$epoch" +%w 2>/dev/null || date -r "$epoch" +%w 2>/dev/null || echo "")
+    fi
+
+    # 兜底：若转换失败，则退回旧的UTC换算逻辑
+    if ! [[ "$local_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$local_minute" =~ ^[0-9]{1,2}$ ]]; then
+        local utc_hour=$((beijing_hour - 8))
+        local utc_minute=$beijing_minute
+        local utc_weekday=$beijing_weekday
+
+        if [ $utc_hour -lt 0 ]; then
+            utc_hour=$((utc_hour + 24))
+            if [ -n "$beijing_weekday" ]; then
+                utc_weekday=$((beijing_weekday - 1))
+                if [ $utc_weekday -lt 0 ]; then
+                    utc_weekday=6
+                fi
+            fi
+        fi
+
+        local_hour=$(printf "%02d" $utc_hour)
+        local_minute=$(printf "%02d" $utc_minute)
+        local_weekday=$utc_weekday
     else
-        echo "$formatted_hour $formatted_minute"
+        local_hour=$(printf "%02d" "$local_hour")
+        local_minute=$(printf "%02d" "$local_minute")
+    fi
+
+    if [ -n "$beijing_weekday" ]; then
+        echo "$local_hour $local_minute $local_weekday"
+    else
+        echo "$local_hour $local_minute"
     fi
 }
 
