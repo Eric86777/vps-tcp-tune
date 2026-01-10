@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.9 更新: 修复恢复监控时重复追加规则 (by Eric86777)
 # v1.9.8 更新: 修复定时任务北京时间换算为系统时区 (by Eric86777)
 # v1.9.7 更新: 检测结果框再次微调对齐 (by Eric86777)
 # v1.9.6 更新: 规则数量不足改为基于计数器/配额规则检查 (by Eric86777)
 # v1.9.5 更新: 检测结果框对齐微调 (by Eric86777)
-# v1.9.4 更新: 诊断汇总提示规则异常/规则不足的修复方式 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.8"
+readonly SCRIPT_VERSION="1.9.9"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -692,13 +692,19 @@ restore_monitoring_if_needed() {
         return 0
     fi
 
-    # 检查nftables规则是否存在，判断是否需要恢复
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
-    local need_restore=false
+    local all_rules
+    all_rules=$(nft -a list table $family $table_name 2>/dev/null || true)
+    local ports_to_restore=()
 
     for port in "${active_ports[@]}"; do
-        # 根据端口类型确定计数器名称
+        local running_status
+        running_status=$(get_port_running_status "$port")
+        if [ "$running_status" = "blocked_expired" ]; then
+            continue
+        fi
+
         local port_safe
         if is_port_group "$port"; then
             port_safe=$(generate_port_group_safe_name "$port")
@@ -708,19 +714,51 @@ restore_monitoring_if_needed() {
             port_safe="$port"
         fi
 
+        local counter_missing=false
         if ! nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1; then
-            need_restore=true
-            break
+            counter_missing=true
+        fi
+        if ! nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1; then
+            counter_missing=true
+        fi
+
+        local rules_insufficient=false
+        if [ "$counter_missing" = false ]; then
+            local counter_rules
+            counter_rules=$(echo "$all_rules" | grep "counter name \"port_${port_safe}_" | wc -l)
+
+            local expected_counter_rules=8
+            if is_port_group "$port"; then
+                local group_ports=($(get_group_ports "$port"))
+                local port_count=${#group_ports[@]}
+                expected_counter_rules=$((port_count * 8))
+            fi
+
+            if [ "$counter_rules" -lt "$expected_counter_rules" ]; then
+                rules_insufficient=true
+            fi
+        fi
+
+        if [ "$counter_missing" = true ] || [ "$rules_insufficient" = true ]; then
+            ports_to_restore+=("$port")
         fi
     done
 
-    if [ "$need_restore" = "true" ]; then
-        restore_traffic_data_from_backup
-        restore_all_monitoring_rules >/dev/null 2>&1
+    if [ ${#ports_to_restore[@]} -eq 0 ]; then
+        return 0
     fi
+
+    # 仅修复缺失端口，避免重复追加规则
+    for port in "${ports_to_restore[@]}"; do
+        remove_nftables_rules "$port" >/dev/null 2>&1
+    done
+
+    restore_traffic_data_from_backup "${ports_to_restore[@]}"
+    restore_all_monitoring_rules "${ports_to_restore[@]}" >/dev/null 2>&1
 }
 
 restore_traffic_data_from_backup() {
+    local target_ports=("$@")
     if [ ! -f "$TRAFFIC_DATA_FILE" ]; then
         return 0
     fi
@@ -730,6 +768,19 @@ restore_traffic_data_from_backup() {
     local backup_ports=($(jq -r 'keys[]' "$TRAFFIC_DATA_FILE" 2>/dev/null || true))
 
     for port in "${backup_ports[@]}"; do
+        if [ ${#target_ports[@]} -gt 0 ]; then
+            local matched=false
+            for target_port in "${target_ports[@]}"; do
+                if [ "$port" = "$target_port" ]; then
+                    matched=true
+                    break
+                fi
+            done
+            if [ "$matched" = false ]; then
+                continue
+            fi
+        fi
+
         local backup_input=$(jq -r ".\"$port\".input // 0" "$TRAFFIC_DATA_FILE" 2>/dev/null || echo "0")
         local backup_output=$(jq -r ".\"$port\".output // 0" "$TRAFFIC_DATA_FILE" 2>/dev/null || echo "0")
 
@@ -768,9 +819,51 @@ restore_counter_value() {
 }
 
 restore_all_monitoring_rules() {
-    local active_ports=($(get_active_ports))
+    local active_ports=("$@")
+    if [ ${#active_ports[@]} -eq 0 ]; then
+        active_ports=($(get_active_ports))
+    fi
+    if [ ${#active_ports[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local all_rules
+    all_rules=$(nft -a list table $family $table_name 2>/dev/null || true)
 
     for port in "${active_ports[@]}"; do
+        local port_safe
+        if is_port_group "$port"; then
+            port_safe=$(generate_port_group_safe_name "$port")
+        elif is_port_range "$port"; then
+            port_safe=$(echo "$port" | tr '-' '_')
+        else
+            port_safe="$port"
+        fi
+
+        local counter_in_exists=false
+        local counter_out_exists=false
+        if nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1; then
+            counter_in_exists=true
+        fi
+        if nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1; then
+            counter_out_exists=true
+        fi
+
+        local counter_rules
+        counter_rules=$(echo "$all_rules" | grep "counter name \"port_${port_safe}_" | wc -l)
+        local expected_counter_rules=8
+        if is_port_group "$port"; then
+            local group_ports=($(get_group_ports "$port"))
+            local port_count=${#group_ports[@]}
+            expected_counter_rules=$((port_count * 8))
+        fi
+
+        if [ "$counter_in_exists" = true ] && [ "$counter_out_exists" = true ] && [ "$counter_rules" -ge "$expected_counter_rules" ]; then
+            continue
+        fi
+
         add_nftables_rules "$port"
 
         # 恢复配额限制
