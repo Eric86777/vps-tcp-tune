@@ -4802,16 +4802,16 @@ diagnose_port_config() {
         echo -e "  D-3提醒未配置端口: ${GREEN}0个${NC}"
     fi
     if [ ${#problem_ports[@]} -gt 0 ]; then
-        echo -e "  规则异常端口 [重新配置配额 ✅]: ${RED}${#problem_ports[@]}个${NC} - ${problem_ports[*]}"
+        echo -e "  规则异常端口 [重新设置配额 ✅]: ${RED}${#problem_ports[@]}个${NC} - ${problem_ports[*]}"
         has_issues=true
     else
-        echo -e "  规则异常端口 [重新配置配额 ✅]: ${GREEN}0个${NC}"
+        echo -e "  规则异常端口 [重新设置配额 ✅]: ${GREEN}0个${NC}"
     fi
     if [ ${#ports_rules_insufficient[@]} -gt 0 ]; then
-        echo -e "  规则数量可能不足端口 [重新配置配额 ✅]: ${YELLOW}${#ports_rules_insufficient[@]}个${NC} - ${ports_rules_insufficient[*]}"
+        echo -e "  规则数量可能不足端口 [重建监控规则 ✅]: ${YELLOW}${#ports_rules_insufficient[@]}个${NC} - ${ports_rules_insufficient[*]}"
         has_issues=true
     else
-        echo -e "  规则数量可能不足端口 [重新配置配额 ✅]: ${GREEN}0个${NC}"
+        echo -e "  规则数量可能不足端口 [重建监控规则 ✅]: ${GREEN}0个${NC}"
     fi
     if [ ${#ports_expired[@]} -gt 0 ]; then
         echo -e "  已过期的端口: ${RED}${#ports_expired[@]}个${NC} - ${ports_expired[*]}"
