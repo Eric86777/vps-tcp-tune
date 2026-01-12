@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.10 更新: 修复邮件通知入/出流量显示与计费模式不一致 (by Eric86777)
 # v1.9.9 更新: 修复恢复监控时重复追加规则 (by Eric86777)
 # v1.9.8 更新: 修复定时任务北京时间换算为系统时区 (by Eric86777)
 # v1.9.7 更新: 检测结果框再次微调对齐 (by Eric86777)
 # v1.9.6 更新: 规则数量不足改为基于计数器/配额规则检查 (by Eric86777)
-# v1.9.5 更新: 检测结果框对齐微调 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.9"
+readonly SCRIPT_VERSION="1.9.10"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -5404,9 +5404,18 @@ generate_port_html_card() {
     
     local total_traffic_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
     local total_traffic_str=$(format_bytes "$total_traffic_bytes")
-    # 所有模式都×2显示，反映真实网卡消耗（与TG通知保持一致）
-    local input_str=$(format_bytes $((input_bytes * 2)))
-    local output_str=$(format_bytes $((output_bytes * 2)))
+    # 根据计费模式决定入站/出站显示是否×2（与终端显示逻辑一致）
+    # - double/relay/single: ×2 显示（反映真实网卡消耗）
+    # - premium: 不×2（内网中转场景，只统计用户侧）
+    local input_str
+    local output_str
+    if [ "$billing_mode" = "premium" ]; then
+        input_str=$(format_bytes "$input_bytes")
+        output_str=$(format_bytes "$output_bytes")
+    else
+        input_str=$(format_bytes $((input_bytes * 2)))
+        output_str=$(format_bytes $((output_bytes * 2)))
+    fi
     
     local quota_info_html=""
     local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
