@@ -14036,23 +14036,81 @@ ag_proxy_handle_port_conflict() {
     local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
 
     if [ -n "$pid" ]; then
-        echo -e "${gl_huang}⚠ 端口 ${port} 被 PID ${pid} 占用${gl_bai}"
-        echo "正在终止旧进程..."
-        kill "$pid" 2>/dev/null
-        sleep 1
+        # 检查是否是本项目的进程
+        local proc_cwd=$(readlink -f /proc/$pid/cwd 2>/dev/null)
+        local proc_comm=$(cat /proc/$pid/comm 2>/dev/null)
 
-        # 检查是否成功终止
-        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
-            echo "进程未响应，强制终止..."
-            kill -9 "$pid" 2>/dev/null
+        if [ "$proc_cwd" = "$AG_PROXY_INSTALL_DIR" ] || [[ "$proc_comm" == "node" && -f "$AG_PROXY_INSTALL_DIR/package.json" ]]; then
+            # 是本项目的进程，可以安全终止
+            echo -e "${gl_huang}⚠ 端口 ${port} 被本项目旧进程占用 (PID ${pid})${gl_bai}"
+            echo "正在终止旧进程..."
+            kill "$pid" 2>/dev/null
             sleep 1
-        fi
 
-        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
-            echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
-            return 1
+            # 检查是否成功终止
+            if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+                echo "进程未响应，强制终止..."
+                kill -9 "$pid" 2>/dev/null
+                sleep 1
+            fi
+
+            if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+                echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
+                return 1
+            fi
+            echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
+        else
+            # 不是本项目的进程，提示用户
+            echo -e "${gl_hong}❌ 端口 ${port} 被其他程序占用 (PID ${pid})${gl_bai}"
+            echo ""
+            echo -e "占用进程信息："
+            echo -e "  PID: ${pid}"
+            echo -e "  程序: ${proc_comm}"
+            echo -e "  目录: ${proc_cwd}"
+            echo ""
+            echo -e "${gl_huang}请选择操作：${gl_bai}"
+            echo "1. 使用其他端口（推荐）"
+            echo "2. 强制终止该进程并使用 ${port}"
+            echo "0. 取消部署"
+            echo ""
+            read -e -p "请选择 [0-2]: " conflict_choice
+
+            case "$conflict_choice" in
+                1)
+                    read -e -p "请输入新端口 (1-65535): " new_port
+                    if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ]; then
+                        # 检查新端口是否可用
+                        if ss -lntp 2>/dev/null | grep -q ":${new_port} "; then
+                            echo -e "${gl_hong}❌ 端口 ${new_port} 也被占用${gl_bai}"
+                            return 1
+                        fi
+                        echo "$new_port" > "$AG_PROXY_PORT_FILE"
+                        echo -e "${gl_lv}✅ 将使用端口 ${new_port}${gl_bai}"
+                    else
+                        echo -e "${gl_hong}❌ 无效的端口号${gl_bai}"
+                        return 1
+                    fi
+                    ;;
+                2)
+                    echo "正在强制终止进程 ${pid}..."
+                    kill "$pid" 2>/dev/null
+                    sleep 1
+                    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+                        kill -9 "$pid" 2>/dev/null
+                        sleep 1
+                    fi
+                    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+                        echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
+                        return 1
+                    fi
+                    echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
+                    ;;
+                *)
+                    echo "已取消"
+                    return 1
+                    ;;
+            esac
         fi
-        echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
     else
         echo -e "${gl_lv}✅ 端口 ${port} 可用${gl_bai}"
     fi
