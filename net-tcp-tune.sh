@@ -14017,13 +14017,22 @@ ag_proxy_install_deps() {
     echo -e "${gl_kjlan}[3/6] 安装项目依赖...${gl_bai}"
 
     cd "$AG_PROXY_INSTALL_DIR"
-    npm install --production >/dev/null 2>&1
 
-    if [ $? -eq 0 ]; then
+    # 先检查 package.json 是否存在
+    if [ ! -f "package.json" ]; then
+        echo -e "${gl_hong}❌ package.json 不存在，项目可能未正确克隆${gl_bai}"
+        return 1
+    fi
+
+    # 安装依赖，显示进度
+    echo "正在执行 npm install（可能需要几分钟）..."
+    npm install --production 2>&1 | tail -20
+
+    if [ ${PIPESTATUS[0]} -eq 0 ]; then
         echo -e "${gl_lv}✅ 依赖安装成功${gl_bai}"
         return 0
     else
-        echo -e "${gl_hong}❌ 依赖安装失败${gl_bai}"
+        echo -e "${gl_hong}❌ 依赖安装失败，请检查上方错误信息${gl_bai}"
         return 1
     fi
 }
