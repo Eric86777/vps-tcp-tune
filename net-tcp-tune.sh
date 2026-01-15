@@ -6978,6 +6978,9 @@ show_main_menu() {
     echo "37. NS论坛CAKE调优"
     echo "38. 科技lion高性能模式"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━ Antigravity Claude Proxy ━━━━━━━━${gl_bai}"
+    echo "39. Antigravity Claude Proxy 部署管理 ⭐ 推荐"
+    echo ""
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -7112,6 +7115,9 @@ show_main_menu() {
             ;;
         38)
             Kernel_optimize
+            ;;
+        39)
+            manage_ag_proxy
             ;;
         99)
             uninstall_all
@@ -13884,9 +13890,616 @@ manage_reverse_proxy() {
     done
 }
 
+#=============================================================================
+# Antigravity Claude Proxy 部署管理
+#=============================================================================
+
+# 固定配置
+AG_PROXY_SERVICE_NAME="ag-proxy"
+AG_PROXY_INSTALL_DIR="/root/antigravity-claude-proxy"
+AG_PROXY_PORT="8080"
+AG_PROXY_REPO="https://github.com/badri-s2001/antigravity-claude-proxy.git"
+AG_PROXY_SERVICE_FILE="/etc/systemd/system/ag-proxy.service"
+AG_PROXY_PORT_FILE="/root/antigravity-claude-proxy/.ag-proxy-port"
+
+# 获取当前配置的端口
+ag_proxy_get_port() {
+    if [ -f "$AG_PROXY_PORT_FILE" ]; then
+        cat "$AG_PROXY_PORT_FILE"
+    else
+        echo "$AG_PROXY_PORT"
+    fi
+}
+
+# 检测 Antigravity Claude Proxy 状态
+ag_proxy_check_status() {
+    if [ ! -d "$AG_PROXY_INSTALL_DIR" ]; then
+        echo "not_installed"
+    elif ! systemctl is-enabled "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        echo "installed_no_service"
+    elif systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        echo "running"
+    else
+        echo "stopped"
+    fi
+}
+
+# 检测并安装 Node.js
+ag_proxy_install_nodejs() {
+    echo -e "${gl_kjlan}[1/6] 检测 Node.js 环境...${gl_bai}"
+
+    if command -v node &>/dev/null; then
+        local node_version=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [ "$node_version" -ge 18 ]; then
+            echo -e "${gl_lv}✅ Node.js $(node -v) 已安装${gl_bai}"
+            return 0
+        else
+            echo -e "${gl_huang}⚠ Node.js 版本过低 ($(node -v))，需要 18+${gl_bai}"
+        fi
+    else
+        echo -e "${gl_huang}⚠ Node.js 未安装${gl_bai}"
+    fi
+
+    echo "正在安装 Node.js 18..."
+
+    # 检测系统类型
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        local os_id="${ID,,}"
+    fi
+
+    if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]]; then
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
+        apt-get install -y nodejs >/dev/null 2>&1
+    elif [[ "$os_id" == "centos" || "$os_id" == "rhel" || "$os_id" == "fedora" || "$os_id" == "rocky" || "$os_id" == "alma" ]]; then
+        curl -fsSL https://rpm.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
+        if command -v dnf &>/dev/null; then
+            dnf install -y nodejs >/dev/null 2>&1
+        else
+            yum install -y nodejs >/dev/null 2>&1
+        fi
+    else
+        echo -e "${gl_hong}❌ 不支持的系统，请手动安装 Node.js 18+${gl_bai}"
+        return 1
+    fi
+
+    if command -v node &>/dev/null; then
+        echo -e "${gl_lv}✅ Node.js $(node -v) 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ Node.js 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 克隆项目
+ag_proxy_clone_repo() {
+    echo -e "${gl_kjlan}[2/6] 拉取项目代码...${gl_bai}"
+
+    if [ -d "$AG_PROXY_INSTALL_DIR" ]; then
+        echo -e "${gl_huang}⚠ 项目目录已存在，正在更新...${gl_bai}"
+        cd "$AG_PROXY_INSTALL_DIR"
+        git pull >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo -e "${gl_lv}✅ 代码更新成功${gl_bai}"
+            return 0
+        else
+            echo -e "${gl_hong}❌ 代码更新失败，尝试重新克隆...${gl_bai}"
+            cd /root
+            rm -rf "$AG_PROXY_INSTALL_DIR"
+        fi
+    fi
+
+    # 安装 git（如果没有）
+    if ! command -v git &>/dev/null; then
+        echo "正在安装 git..."
+        if command -v apt-get &>/dev/null; then
+            apt-get update -qq && apt-get install -y git >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y git >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y git >/dev/null 2>&1
+        fi
+    fi
+
+    git clone "$AG_PROXY_REPO" "$AG_PROXY_INSTALL_DIR" >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 项目克隆成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 项目克隆失败，请检查网络连接${gl_bai}"
+        return 1
+    fi
+}
+
+# 安装依赖
+ag_proxy_install_deps() {
+    echo -e "${gl_kjlan}[3/6] 安装项目依赖...${gl_bai}"
+
+    cd "$AG_PROXY_INSTALL_DIR"
+    npm install --production >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 依赖安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 依赖安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 检测并处理端口冲突
+ag_proxy_handle_port_conflict() {
+    local port=$(ag_proxy_get_port)
+    echo -e "${gl_kjlan}[4/6] 检测端口 ${port} 占用情况...${gl_bai}"
+
+    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
+
+    if [ -n "$pid" ]; then
+        echo -e "${gl_huang}⚠ 端口 ${port} 被 PID ${pid} 占用${gl_bai}"
+        echo "正在终止旧进程..."
+        kill "$pid" 2>/dev/null
+        sleep 1
+
+        # 检查是否成功终止
+        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+            echo "进程未响应，强制终止..."
+            kill -9 "$pid" 2>/dev/null
+            sleep 1
+        fi
+
+        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+            echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
+            return 1
+        fi
+        echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ 端口 ${port} 可用${gl_bai}"
+    fi
+    return 0
+}
+
+# 创建 systemd 服务
+ag_proxy_create_service() {
+    local port=$(ag_proxy_get_port)
+    echo -e "${gl_kjlan}[5/6] 创建 systemd 服务...${gl_bai}"
+
+    cat > "$AG_PROXY_SERVICE_FILE" <<EOF
+[Unit]
+Description=Antigravity Claude Proxy
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${AG_PROXY_INSTALL_DIR}
+Environment=PORT=${port}
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+
+    if [ -f "$AG_PROXY_SERVICE_FILE" ]; then
+        echo -e "${gl_lv}✅ 服务文件创建成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 服务文件创建失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 启动服务
+ag_proxy_start_service() {
+    echo -e "${gl_kjlan}[6/6] 启动服务...${gl_bai}"
+
+    systemctl enable "$AG_PROXY_SERVICE_NAME" >/dev/null 2>&1
+    systemctl start "$AG_PROXY_SERVICE_NAME"
+
+    sleep 2
+
+    if systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务启动成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+        echo "查看日志: journalctl -u $AG_PROXY_SERVICE_NAME -n 20"
+        return 1
+    fi
+}
+
+# 一键部署
+ag_proxy_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Antigravity Claude Proxy 一键部署${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(ag_proxy_check_status)
+    if [ "$status" = "running" ]; then
+        echo -e "${gl_huang}⚠ 服务已在运行中${gl_bai}"
+        echo ""
+        read -e -p "是否重新部署？(Y/N): " confirm
+        case "$confirm" in
+            [Yy]) ;;
+            *) return ;;
+        esac
+        echo ""
+        systemctl stop "$AG_PROXY_SERVICE_NAME" 2>/dev/null
+    fi
+
+    # 执行部署步骤
+    ag_proxy_install_nodejs || { break_end; return 1; }
+    echo ""
+    ag_proxy_clone_repo || { break_end; return 1; }
+    echo ""
+    ag_proxy_install_deps || { break_end; return 1; }
+    echo ""
+    ag_proxy_handle_port_conflict || { break_end; return 1; }
+    echo ""
+    ag_proxy_create_service || { break_end; return 1; }
+    echo ""
+    ag_proxy_start_service || { break_end; return 1; }
+
+    # 保存端口配置
+    echo "$AG_PROXY_PORT" > "$AG_PROXY_PORT_FILE"
+
+    # 获取服务器 IP
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+    local port=$(ag_proxy_get_port)
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo ""
+    echo "下一步: 打开上面的地址，添加 Google 账号"
+    echo ""
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: systemctl status $AG_PROXY_SERVICE_NAME"
+    echo "  日志: journalctl -u $AG_PROXY_SERVICE_NAME -f"
+    echo "  重启: systemctl restart $AG_PROXY_SERVICE_NAME"
+    echo ""
+
+    break_end
+}
+
+# 更新项目
+ag_proxy_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 Antigravity Claude Proxy${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ ! -d "$AG_PROXY_INSTALL_DIR" ]; then
+        echo -e "${gl_hong}❌ 项目未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在拉取最新代码..."
+    cd "$AG_PROXY_INSTALL_DIR"
+    git pull
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "正在更新依赖..."
+        npm install --production >/dev/null 2>&1
+
+        echo ""
+        echo "正在重启服务..."
+        systemctl restart "$AG_PROXY_SERVICE_NAME"
+
+        sleep 2
+
+        if systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+            echo ""
+            echo -e "${gl_lv}✅ 更新完成，服务已重启${gl_bai}"
+
+            # 显示版本信息
+            if [ -f "$AG_PROXY_INSTALL_DIR/package.json" ]; then
+                local version=$(grep '"version"' "$AG_PROXY_INSTALL_DIR/package.json" | head -1 | grep -oP '"\d+\.\d+\.\d+"' | tr -d '"')
+                if [ -n "$version" ]; then
+                    echo -e "当前版本: ${gl_huang}v${version}${gl_bai}"
+                fi
+            fi
+        else
+            echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ 代码更新失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+ag_proxy_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Antigravity Claude Proxy 服务状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    systemctl status "$AG_PROXY_SERVICE_NAME" --no-pager
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+ag_proxy_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Antigravity Claude Proxy 日志（按 Ctrl+C 退出）${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    journalctl -u "$AG_PROXY_SERVICE_NAME" -f
+}
+
+# 启动服务
+ag_proxy_start() {
+    echo "正在启动服务..."
+    systemctl start "$AG_PROXY_SERVICE_NAME"
+    sleep 2
+
+    if systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已启动${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 停止服务
+ag_proxy_stop() {
+    echo "正在停止服务..."
+    systemctl stop "$AG_PROXY_SERVICE_NAME"
+
+    if ! systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务停止失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 重启服务
+ag_proxy_restart() {
+    echo "正在重启服务..."
+
+    # 检测端口冲突
+    local port=$(ag_proxy_get_port)
+    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
+    local service_pid=$(systemctl show -p MainPID "$AG_PROXY_SERVICE_NAME" 2>/dev/null | cut -d= -f2)
+
+    # 如果端口被其他进程占用（不是当前服务）
+    if [ -n "$pid" ] && [ "$pid" != "$service_pid" ] && [ "$pid" != "0" ]; then
+        echo -e "${gl_huang}⚠ 端口 ${port} 被 PID ${pid} 占用，正在释放...${gl_bai}"
+        kill "$pid" 2>/dev/null
+        sleep 1
+        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+            kill -9 "$pid" 2>/dev/null
+            sleep 1
+        fi
+    fi
+
+    systemctl restart "$AG_PROXY_SERVICE_NAME"
+    sleep 2
+
+    if systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
+        echo "查看日志: journalctl -u $AG_PROXY_SERVICE_NAME -n 20"
+    fi
+
+    break_end
+}
+
+# 修改端口
+ag_proxy_change_port() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  修改 Antigravity Claude Proxy 端口${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local current_port=$(ag_proxy_get_port)
+    echo -e "当前端口: ${gl_huang}${current_port}${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新端口 (1-65535): " new_port
+
+    # 验证端口
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${gl_hong}❌ 无效的端口号${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if [ "$new_port" = "$current_port" ]; then
+        echo -e "${gl_huang}⚠ 端口未改变${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    # 检查新端口是否被占用
+    if ss -lntp 2>/dev/null | grep -q ":${new_port} "; then
+        echo -e "${gl_hong}❌ 端口 ${new_port} 已被占用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    # 停止服务
+    systemctl stop "$AG_PROXY_SERVICE_NAME" 2>/dev/null
+
+    # 更新服务文件
+    sed -i "s/Environment=PORT=.*/Environment=PORT=${new_port}/" "$AG_PROXY_SERVICE_FILE"
+
+    # 保存端口配置
+    echo "$new_port" > "$AG_PROXY_PORT_FILE"
+
+    # 重新加载并启动
+    systemctl daemon-reload
+    systemctl start "$AG_PROXY_SERVICE_NAME"
+
+    sleep 2
+
+    if systemctl is-active "$AG_PROXY_SERVICE_NAME" &>/dev/null; then
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 端口已修改为 ${new_port}${gl_bai}"
+        echo -e "新访问地址: ${gl_huang}http://${server_ip}:${new_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 卸载
+ag_proxy_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 Antigravity Claude Proxy${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}警告: 此操作将删除服务和所有项目文件！${gl_bai}"
+    echo ""
+
+    read -e -p "确认卸载？(输入 yes 确认): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "已取消"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在停止服务..."
+    systemctl stop "$AG_PROXY_SERVICE_NAME" 2>/dev/null
+    systemctl disable "$AG_PROXY_SERVICE_NAME" 2>/dev/null
+
+    echo "正在删除服务文件..."
+    rm -f "$AG_PROXY_SERVICE_FILE"
+    systemctl daemon-reload
+
+    echo "正在删除项目文件..."
+    rm -rf "$AG_PROXY_INSTALL_DIR"
+
+    echo ""
+    echo -e "${gl_lv}✅ 卸载完成${gl_bai}"
+
+    break_end
+}
+
+# Antigravity Claude Proxy 主菜单
+manage_ag_proxy() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Antigravity Claude Proxy 部署管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(ag_proxy_check_status)
+        local port=$(ag_proxy_get_port)
+
+        case "$status" in
+            "not_installed")
+                echo -e "当前状态: ${gl_huang}⚠️ 未安装${gl_bai}"
+                ;;
+            "installed_no_service")
+                echo -e "当前状态: ${gl_huang}⚠️ 已安装但服务未配置${gl_bai}"
+                ;;
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: ${port})"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新项目"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置与卸载]${gl_bai}"
+        echo "8. 修改端口"
+        echo -e "${gl_hong}9. 卸载（删除服务+代码）${gl_bai}"
+        echo ""
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-9]: " choice
+
+        case $choice in
+            1)
+                ag_proxy_deploy
+                ;;
+            2)
+                ag_proxy_update
+                ;;
+            3)
+                ag_proxy_status
+                ;;
+            4)
+                ag_proxy_logs
+                ;;
+            5)
+                ag_proxy_start
+                ;;
+            6)
+                ag_proxy_stop
+                ;;
+            7)
+                ag_proxy_restart
+                ;;
+            8)
+                ag_proxy_change_port
+                ;;
+            9)
+                ag_proxy_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
 main() {
     check_root
-    
+
     # 命令行参数支持
     if [ "$1" = "-i" ] || [ "$1" = "--install" ]; then
         install_xanmod_kernel

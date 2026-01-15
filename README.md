@@ -1,9 +1,9 @@
-# BBR v3 优化脚本 - Ultimate Edition v4.2.1
+# BBR v3 优化脚本 - Ultimate Edition v4.3.0
 
-🚀 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**  
-一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 38+ 实用工具，优化你的 VPS 服务器。
+🚀 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
+一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 39+ 实用工具，优化你的 VPS 服务器。
 
-> **版本**: v4.2.1 (安全下载校验与规则保护版)  
+> **版本**: v4.3.0 (新增 Antigravity Claude Proxy 一键部署)
 > **快速上手**: [📖 快速使用指南](QUICK_START.md)
 
 ---
@@ -163,6 +163,11 @@ chmod +x net-tcp-tune.sh
 |------|---------|------|
 | **37** | NS论坛CAKE调优 | 队列算法优化，提升网络性能 |
 | **38** | 科技lion高性能模式 | 高性能内核参数优化 |
+
+### 🤖 Antigravity Claude Proxy
+| 编号 | 功能名称 | 说明 |
+|------|---------|------|
+| **39** | **Antigravity Claude Proxy 部署管理** | ⭐ **推荐**，一键部署 Claude Code 反代服务，支持 systemd 托管、自动重启、端口管理 |
 
 ---
 
