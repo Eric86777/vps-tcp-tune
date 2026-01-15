@@ -14025,18 +14025,45 @@ ag_proxy_install_deps() {
     fi
 
     # 检查并安装编译工具（better-sqlite3 需要）
-    if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
-        echo "正在安装编译工具（make, g++）..."
-        if command -v apt-get &>/dev/null; then
-            apt-get update -qq && apt-get install -y build-essential python3 >/dev/null 2>&1
-        elif command -v dnf &>/dev/null; then
-            dnf install -y make gcc-c++ python3 >/dev/null 2>&1
-        elif command -v yum &>/dev/null; then
-            yum install -y make gcc-c++ python3 >/dev/null 2>&1
-        fi
-        echo -e "${gl_lv}✅ 编译工具安装完成${gl_bai}"
+    echo "检测编译工具..."
+    local need_build_tools=false
+
+    if ! command -v make &>/dev/null; then
+        echo "  make: 未安装"
+        need_build_tools=true
+    else
+        echo "  make: 已安装"
     fi
 
+    if ! command -v g++ &>/dev/null; then
+        echo "  g++: 未安装"
+        need_build_tools=true
+    else
+        echo "  g++: 已安装"
+    fi
+
+    if [ "$need_build_tools" = true ]; then
+        echo ""
+        echo "正在安装编译工具（make, g++, python3）..."
+        if command -v apt-get &>/dev/null; then
+            apt-get update -qq
+            apt-get install -y build-essential python3
+        elif command -v dnf &>/dev/null; then
+            dnf install -y make gcc-c++ python3
+        elif command -v yum &>/dev/null; then
+            yum install -y make gcc-c++ python3
+        fi
+
+        # 验证安装
+        if command -v make &>/dev/null && command -v g++ &>/dev/null; then
+            echo -e "${gl_lv}✅ 编译工具安装成功${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 编译工具安装失败，请手动安装: apt install build-essential${gl_bai}"
+            return 1
+        fi
+    fi
+
+    echo ""
     # 安装依赖，显示进度
     echo "正在执行 npm install（可能需要几分钟）..."
     npm install --production 2>&1 | tail -20
