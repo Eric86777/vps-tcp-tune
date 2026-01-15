@@ -14877,22 +14877,36 @@ open_webui_deploy() {
     echo ""
     echo "正在启动 Open WebUI..."
 
-    local docker_cmd="docker run -d -p ${port}:8080"
-    docker_cmd="$docker_cmd --add-host=host.docker.internal:host-gateway"
+    # 停止并删除可能存在的旧容器
+    docker stop "$OPEN_WEBUI_CONTAINER_NAME" 2>/dev/null
+    docker rm "$OPEN_WEBUI_CONTAINER_NAME" 2>/dev/null
 
-    if [ -n "$api_url" ]; then
-        docker_cmd="$docker_cmd -e OPENAI_API_BASE_URL=\"$api_url\""
+    # 根据是否有 API 配置选择不同的启动方式
+    if [ -n "$api_url" ] && [ -n "$api_key" ]; then
+        docker run -d -p ${port}:8080 \
+            --add-host=host.docker.internal:host-gateway \
+            -e OPENAI_API_BASE_URL="$api_url" \
+            -e OPENAI_API_KEY="$api_key" \
+            -v open-webui:/app/backend/data \
+            --name "$OPEN_WEBUI_CONTAINER_NAME" \
+            --restart always \
+            "$OPEN_WEBUI_IMAGE"
+    elif [ -n "$api_key" ]; then
+        docker run -d -p ${port}:8080 \
+            --add-host=host.docker.internal:host-gateway \
+            -e OPENAI_API_KEY="$api_key" \
+            -v open-webui:/app/backend/data \
+            --name "$OPEN_WEBUI_CONTAINER_NAME" \
+            --restart always \
+            "$OPEN_WEBUI_IMAGE"
+    else
+        docker run -d -p ${port}:8080 \
+            --add-host=host.docker.internal:host-gateway \
+            -v open-webui:/app/backend/data \
+            --name "$OPEN_WEBUI_CONTAINER_NAME" \
+            --restart always \
+            "$OPEN_WEBUI_IMAGE"
     fi
-    if [ -n "$api_key" ]; then
-        docker_cmd="$docker_cmd -e OPENAI_API_KEY=\"$api_key\""
-    fi
-
-    docker_cmd="$docker_cmd -v open-webui:/app/backend/data"
-    docker_cmd="$docker_cmd --name $OPEN_WEBUI_CONTAINER_NAME"
-    docker_cmd="$docker_cmd --restart always"
-    docker_cmd="$docker_cmd $OPEN_WEBUI_IMAGE"
-
-    eval $docker_cmd
 
     if [ $? -ne 0 ]; then
         echo -e "${gl_hong}❌ 容器启动失败${gl_bai}"
