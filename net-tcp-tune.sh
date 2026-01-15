@@ -13930,17 +13930,17 @@ ag_proxy_install_nodejs() {
 
     if command -v node &>/dev/null; then
         local node_version=$(node -v | sed 's/v//' | cut -d. -f1)
-        if [ "$node_version" -ge 18 ]; then
+        if [ "$node_version" -ge 20 ]; then
             echo -e "${gl_lv}✅ Node.js $(node -v) 已安装${gl_bai}"
             return 0
         else
-            echo -e "${gl_huang}⚠ Node.js 版本过低 ($(node -v))，需要 18+${gl_bai}"
+            echo -e "${gl_huang}⚠ Node.js 版本过低 ($(node -v))，需要 20+${gl_bai}"
         fi
     else
         echo -e "${gl_huang}⚠ Node.js 未安装${gl_bai}"
     fi
 
-    echo "正在安装 Node.js 18..."
+    echo "正在安装 Node.js 20..."
 
     # 检测系统类型
     if [ -f /etc/os-release ]; then
@@ -13949,17 +13949,17 @@ ag_proxy_install_nodejs() {
     fi
 
     if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]]; then
-        curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
         apt-get install -y nodejs >/dev/null 2>&1
     elif [[ "$os_id" == "centos" || "$os_id" == "rhel" || "$os_id" == "fedora" || "$os_id" == "rocky" || "$os_id" == "alma" ]]; then
-        curl -fsSL https://rpm.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
+        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
         if command -v dnf &>/dev/null; then
             dnf install -y nodejs >/dev/null 2>&1
         else
             yum install -y nodejs >/dev/null 2>&1
         fi
     else
-        echo -e "${gl_hong}❌ 不支持的系统，请手动安装 Node.js 18+${gl_bai}"
+        echo -e "${gl_hong}❌ 不支持的系统，请手动安装 Node.js 20+${gl_bai}"
         return 1
     fi
 
@@ -14066,7 +14066,7 @@ ag_proxy_install_deps() {
     echo ""
     # 安装依赖，显示进度
     echo "正在执行 npm install（可能需要几分钟）..."
-    npm install --production 2>&1 | tail -20
+    npm install 2>&1 | tail -30
 
     if [ ${PIPESTATUS[0]} -eq 0 ]; then
         echo -e "${gl_lv}✅ 依赖安装成功${gl_bai}"
