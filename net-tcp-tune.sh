@@ -14304,6 +14304,62 @@ ag_proxy_deploy() {
     break_end
 }
 
+# 查看配置指引
+ag_proxy_show_config() {
+    clear
+
+    if [ ! -d "$AG_PROXY_INSTALL_DIR" ]; then
+        echo -e "${gl_hong}❌ 项目未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 获取服务器 IP 和端口
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+    local port=$(ag_proxy_get_port)
+
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Claude Code 本地配置指引${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【第一步】添加 Google 账号${gl_bai}"
+    echo "  打开上面的地址 → Accounts → Add Account → 完成 Google 授权"
+    echo ""
+    echo -e "${gl_kjlan}【第二步】配置本地 Claude Code${gl_bai}"
+    echo "  编辑文件: ~/.claude/settings.json"
+    echo ""
+    echo "  添加以下内容（推荐配置）："
+    echo -e "${gl_huang}  {${gl_bai}"
+    echo -e "${gl_huang}    \"env\": {${gl_bai}"
+    echo -e "${gl_huang}      \"ANTHROPIC_AUTH_TOKEN\": \"test\",${gl_bai}"
+    echo -e "${gl_huang}      \"ANTHROPIC_BASE_URL\": \"http://${server_ip}:${port}\",${gl_bai}"
+    echo -e "${gl_huang}      \"ANTHROPIC_MODEL\": \"claude-opus-4-5-thinking\",${gl_bai}"
+    echo -e "${gl_huang}      \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-5-thinking\",${gl_bai}"
+    echo -e "${gl_huang}      \"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"claude-sonnet-4-5-thinking\",${gl_bai}"
+    echo -e "${gl_huang}      \"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"gemini-3-flash\",${gl_bai}"
+    echo -e "${gl_huang}      \"CLAUDE_CODE_SUBAGENT_MODEL\": \"claude-sonnet-4-5-thinking\"${gl_bai}"
+    echo -e "${gl_huang}    }${gl_bai}"
+    echo -e "${gl_huang}  }${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}说明: Opus=主力模型, Sonnet=子代理, Haiku用Gemini省额度${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【第三步】重启 Claude Code${gl_bai}"
+    echo "  关闭并重新打开终端，然后运行 claude 即可"
+    echo ""
+    echo -e "${gl_zi}提示: 更多模型选项请访问 WebUI 的 Settings 页面${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: systemctl status $AG_PROXY_SERVICE_NAME"
+    echo "  日志: journalctl -u $AG_PROXY_SERVICE_NAME -f"
+    echo "  重启: systemctl restart $AG_PROXY_SERVICE_NAME"
+    echo ""
+
+    break_end
+}
+
 # 更新项目
 ag_proxy_update() {
     clear
@@ -14585,10 +14641,13 @@ manage_ag_proxy() {
         echo "8. 修改端口"
         echo -e "${gl_hong}9. 卸载（删除服务+代码）${gl_bai}"
         echo ""
+        echo -e "${gl_kjlan}[帮助]${gl_bai}"
+        echo "10. 查看 Claude Code 配置指引"
+        echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-9]: " choice
+        read -e -p "请选择操作 [0-10]: " choice
 
         case $choice in
             1)
@@ -14617,6 +14676,9 @@ manage_ag_proxy() {
                 ;;
             9)
                 ag_proxy_uninstall
+                ;;
+            10)
+                ag_proxy_show_config
                 ;;
             0)
                 return
