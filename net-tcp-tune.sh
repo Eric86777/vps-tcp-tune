@@ -14024,6 +14024,19 @@ ag_proxy_install_deps() {
         return 1
     fi
 
+    # 检查并安装编译工具（better-sqlite3 需要）
+    if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
+        echo "正在安装编译工具（make, g++）..."
+        if command -v apt-get &>/dev/null; then
+            apt-get update -qq && apt-get install -y build-essential python3 >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y make gcc-c++ python3 >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y make gcc-c++ python3 >/dev/null 2>&1
+        fi
+        echo -e "${gl_lv}✅ 编译工具安装完成${gl_bai}"
+    fi
+
     # 安装依赖，显示进度
     echo "正在执行 npm install（可能需要几分钟）..."
     npm install --production 2>&1 | tail -20
