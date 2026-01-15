@@ -6981,6 +6981,9 @@ show_main_menu() {
     echo -e "${gl_kjlan}━━━━━━━━ Antigravity Claude Proxy ━━━━━━━━${gl_bai}"
     echo "39. Antigravity Claude Proxy 部署管理 ⭐ 推荐"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━ Open WebUI ━━━━━━━━${gl_bai}"
+    echo "40. Open WebUI 部署管理"
+    echo ""
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -7118,6 +7121,9 @@ show_main_menu() {
             ;;
         39)
             manage_ag_proxy
+            ;;
+        40)
+            manage_open_webui
             ;;
         99)
             uninstall_all
@@ -14721,6 +14727,539 @@ manage_ag_proxy() {
                 ;;
             10)
                 ag_proxy_show_config
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# =====================================================
+# Open WebUI 部署管理 (菜单40)
+# =====================================================
+
+# 常量定义
+OPEN_WEBUI_CONTAINER_NAME="open-webui"
+OPEN_WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
+OPEN_WEBUI_DEFAULT_PORT="8888"
+OPEN_WEBUI_PORT_FILE="/etc/open-webui-port"
+
+# 获取当前配置的端口
+open_webui_get_port() {
+    if [ -f "$OPEN_WEBUI_PORT_FILE" ]; then
+        cat "$OPEN_WEBUI_PORT_FILE"
+    else
+        echo "$OPEN_WEBUI_DEFAULT_PORT"
+    fi
+}
+
+# 检查 Open WebUI 状态
+open_webui_check_status() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${OPEN_WEBUI_CONTAINER_NAME}$"; then
+        echo "running"
+    elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${OPEN_WEBUI_CONTAINER_NAME}$"; then
+        echo "stopped"
+    else
+        echo "not_installed"
+    fi
+}
+
+# 检查端口是否可用
+open_webui_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 安装 Docker
+open_webui_install_docker() {
+    if command -v docker &>/dev/null; then
+        echo -e "${gl_lv}✅ Docker 已安装${gl_bai}"
+        return 0
+    fi
+
+    echo "正在安装 Docker..."
+    curl -fsSL https://get.docker.com | sh
+
+    if [ $? -eq 0 ]; then
+        systemctl enable docker
+        systemctl start docker
+        echo -e "${gl_lv}✅ Docker 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ Docker 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 一键部署
+open_webui_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 Open WebUI${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检查是否已安装
+    local status=$(open_webui_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ Open WebUI 已安装${gl_bai}"
+        read -e -p "是否重新部署？(y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        # 删除现有容器
+        docker stop "$OPEN_WEBUI_CONTAINER_NAME" 2>/dev/null
+        docker rm "$OPEN_WEBUI_CONTAINER_NAME" 2>/dev/null
+    fi
+
+    # 安装 Docker
+    echo ""
+    open_webui_install_docker || { break_end; return 1; }
+
+    # 配置端口
+    echo ""
+    local port="$OPEN_WEBUI_DEFAULT_PORT"
+    read -e -p "请输入访问端口 [$OPEN_WEBUI_DEFAULT_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        port="$input_port"
+    fi
+
+    # 检查端口是否可用
+    while ! open_webui_check_port "$port"; do
+        echo -e "${gl_hong}⚠️ 端口 $port 已被占用，请换一个${gl_bai}"
+        read -e -p "请输入访问端口: " port
+    done
+    echo -e "${gl_lv}✅ 端口 $port 可用${gl_bai}"
+
+    # 询问是否配置 API
+    echo ""
+    local api_url=""
+    local api_key=""
+    read -e -p "是否现在配置 API？(y/n) [y]: " config_api
+    if [ "$config_api" != "n" ] && [ "$config_api" != "N" ]; then
+        echo ""
+        echo "API 类型："
+        echo "1. OpenAI 官方"
+        echo "2. 自定义地址（反代/中转）"
+        echo ""
+        read -e -p "请选择 [1]: " api_type
+
+        if [ "$api_type" = "2" ]; then
+            read -e -p "请输入 API 地址: " api_url
+            read -e -p "请输入 API 密钥: " api_key
+        else
+            api_url="https://api.openai.com/v1"
+            read -e -p "请输入 OpenAI API 密钥: " api_key
+        fi
+    fi
+
+    # 拉取镜像
+    echo ""
+    echo "正在拉取 Open WebUI 镜像..."
+    docker pull "$OPEN_WEBUI_IMAGE"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 镜像拉取失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 启动容器
+    echo ""
+    echo "正在启动 Open WebUI..."
+
+    local docker_cmd="docker run -d -p ${port}:8080"
+    docker_cmd="$docker_cmd --add-host=host.docker.internal:host-gateway"
+
+    if [ -n "$api_url" ]; then
+        docker_cmd="$docker_cmd -e OPENAI_API_BASE_URL=\"$api_url\""
+    fi
+    if [ -n "$api_key" ]; then
+        docker_cmd="$docker_cmd -e OPENAI_API_KEY=\"$api_key\""
+    fi
+
+    docker_cmd="$docker_cmd -v open-webui:/app/backend/data"
+    docker_cmd="$docker_cmd --name $OPEN_WEBUI_CONTAINER_NAME"
+    docker_cmd="$docker_cmd --restart always"
+    docker_cmd="$docker_cmd $OPEN_WEBUI_IMAGE"
+
+    eval $docker_cmd
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 容器启动失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 保存端口配置
+    echo "$port" > "$OPEN_WEBUI_PORT_FILE"
+
+    # 等待启动
+    echo ""
+    echo "等待服务启动..."
+    sleep 5
+
+    # 获取服务器 IP
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}首次访问需要注册管理员账户${gl_bai}"
+    echo ""
+    if [ -z "$api_url" ]; then
+        echo -e "${gl_huang}提示: API 未配置，请在网页 Admin Panel → Settings → Connections 中设置${gl_bai}"
+        echo ""
+    fi
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: docker ps | grep $OPEN_WEBUI_CONTAINER_NAME"
+    echo "  日志: docker logs $OPEN_WEBUI_CONTAINER_NAME -f"
+    echo "  重启: docker restart $OPEN_WEBUI_CONTAINER_NAME"
+    echo ""
+
+    break_end
+}
+
+# 更新镜像
+open_webui_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 Open WebUI${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(open_webui_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Open WebUI 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在拉取最新镜像..."
+    docker pull "$OPEN_WEBUI_IMAGE"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "正在重启容器..."
+        docker stop "$OPEN_WEBUI_CONTAINER_NAME"
+        docker rm "$OPEN_WEBUI_CONTAINER_NAME"
+
+        # 获取保存的端口
+        local port=$(open_webui_get_port)
+
+        # 重新创建容器
+        docker run -d -p ${port}:8080 \
+            --add-host=host.docker.internal:host-gateway \
+            -v open-webui:/app/backend/data \
+            --name "$OPEN_WEBUI_CONTAINER_NAME" \
+            --restart always \
+            "$OPEN_WEBUI_IMAGE"
+
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo -e "${gl_lv}✅ 更新完成${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ 镜像拉取失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+open_webui_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Open WebUI 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(open_webui_check_status)
+    local port=$(open_webui_get_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    case "$status" in
+        "running")
+            echo -e "状态: ${gl_lv}✅ 运行中${gl_bai}"
+            echo -e "端口: ${gl_huang}$port${gl_bai}"
+            echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+            echo ""
+            echo "容器详情:"
+            docker ps --filter "name=$OPEN_WEBUI_CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            ;;
+        "stopped")
+            echo -e "状态: ${gl_hong}❌ 已停止${gl_bai}"
+            echo ""
+            echo "请使用「启动服务」选项启动"
+            ;;
+        "not_installed")
+            echo -e "状态: ${gl_hui}未安装${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」选项安装"
+            ;;
+    esac
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+open_webui_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Open WebUI 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}按 Ctrl+C 退出日志查看${gl_bai}"
+    echo ""
+
+    docker logs "$OPEN_WEBUI_CONTAINER_NAME" -f --tail 100
+}
+
+# 启动服务
+open_webui_start() {
+    echo ""
+    echo "正在启动 Open WebUI..."
+    docker start "$OPEN_WEBUI_CONTAINER_NAME"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 启动成功${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+
+    sleep 2
+}
+
+# 停止服务
+open_webui_stop() {
+    echo ""
+    echo "正在停止 Open WebUI..."
+    docker stop "$OPEN_WEBUI_CONTAINER_NAME"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+    fi
+
+    sleep 2
+}
+
+# 重启服务
+open_webui_restart() {
+    echo ""
+    echo "正在重启 Open WebUI..."
+    docker restart "$OPEN_WEBUI_CONTAINER_NAME"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 重启成功${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    sleep 2
+}
+
+# 修改端口
+open_webui_change_port() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  修改 Open WebUI 端口${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(open_webui_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Open WebUI 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local current_port=$(open_webui_get_port)
+    echo -e "当前端口: ${gl_huang}$current_port${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新端口: " new_port
+
+    if [ -z "$new_port" ]; then
+        echo "未输入端口，取消修改"
+        break_end
+        return 0
+    fi
+
+    # 检查端口是否可用
+    if ! open_webui_check_port "$new_port"; then
+        echo -e "${gl_hong}❌ 端口 $new_port 已被占用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    # 停止并删除旧容器
+    docker stop "$OPEN_WEBUI_CONTAINER_NAME"
+    docker rm "$OPEN_WEBUI_CONTAINER_NAME"
+
+    # 用新端口创建容器
+    docker run -d -p ${new_port}:8080 \
+        --add-host=host.docker.internal:host-gateway \
+        -v open-webui:/app/backend/data \
+        --name "$OPEN_WEBUI_CONTAINER_NAME" \
+        --restart always \
+        "$OPEN_WEBUI_IMAGE"
+
+    if [ $? -eq 0 ]; then
+        echo "$new_port" > "$OPEN_WEBUI_PORT_FILE"
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 端口修改成功${gl_bai}"
+        echo -e "新访问地址: ${gl_huang}http://${server_ip}:${new_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 端口修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 卸载
+open_webui_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  卸载 Open WebUI${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(open_webui_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Open WebUI 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_hong}⚠️ 此操作将删除 Open WebUI 容器${gl_bai}"
+    echo ""
+    read -e -p "是否同时删除数据卷？(y/n) [n]: " delete_volume
+    echo ""
+    read -e -p "确认卸载？(y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消卸载"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 停止并删除容器
+    docker stop "$OPEN_WEBUI_CONTAINER_NAME" 2>/dev/null
+    docker rm "$OPEN_WEBUI_CONTAINER_NAME" 2>/dev/null
+
+    # 删除数据卷
+    if [ "$delete_volume" = "y" ] || [ "$delete_volume" = "Y" ]; then
+        docker volume rm open-webui 2>/dev/null
+        echo -e "${gl_lv}✅ 容器和数据已删除${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ 容器已删除，数据保留${gl_bai}"
+    fi
+
+    # 删除端口配置文件
+    rm -f "$OPEN_WEBUI_PORT_FILE"
+
+    break_end
+}
+
+# Open WebUI 管理主菜单
+manage_open_webui() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Open WebUI 部署管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(open_webui_check_status)
+        local port=$(open_webui_get_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: $port)"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新镜像"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置与卸载]${gl_bai}"
+        echo "8. 修改端口"
+        echo -e "${gl_hong}9. 卸载（删除容器）${gl_bai}"
+        echo ""
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-9]: " choice
+
+        case $choice in
+            1)
+                open_webui_deploy
+                ;;
+            2)
+                open_webui_update
+                ;;
+            3)
+                open_webui_status
+                ;;
+            4)
+                open_webui_logs
+                ;;
+            5)
+                open_webui_start
+                ;;
+            6)
+                open_webui_stop
+                ;;
+            7)
+                open_webui_restart
+                ;;
+            8)
+                open_webui_change_port
+                ;;
+            9)
+                open_webui_uninstall
                 ;;
             0)
                 return
