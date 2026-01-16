@@ -14272,10 +14272,7 @@ ag_proxy_deploy() {
     echo ""
     ag_proxy_start_service || { break_end; return 1; }
 
-    # 保存端口配置
-    echo "$AG_PROXY_PORT" > "$AG_PROXY_PORT_FILE"
-
-    # 获取服务器 IP
+    # 获取服务器 IP (端口配置已在 ag_proxy_handle_port_conflict 中保存)
     local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
     local port=$(ag_proxy_get_port)
 
