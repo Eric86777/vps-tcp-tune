@@ -17289,16 +17289,76 @@ caddy_install() {
     echo ""
     echo -e "${gl_kjlan}[4/6] 下载并安装 Caddy...${gl_bai}"
 
-    # 下载 Caddy
-    if ! curl -fsSL https://caddyserver.com/api/download?os=linux&arch=amd64 -o /usr/bin/caddy 2>/dev/null; then
-        echo -e "${gl_hong}❌ 下载 Caddy 失败${gl_bai}"
-        echo "请检查网络连接或手动安装"
+    # 定义 Caddy 版本和下载源
+    local CADDY_VERSION="2.7.6"
+    local download_success=false
+
+    # 下载源列表(按优先级)
+    declare -a download_urls=(
+        "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+        "https://caddyserver.com/api/download?os=linux&arch=amd64"
+        "https://ghproxy.com/https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+    )
+
+    # 尝试多个下载源
+    for url in "${download_urls[@]}"; do
+        echo "尝试下载: $url"
+
+        if [[ "$url" == *.tar.gz ]]; then
+            # 下载 tar.gz 格式
+            if curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o /tmp/caddy.tar.gz 2>/dev/null; then
+                echo "解压 Caddy..."
+                if tar -xzf /tmp/caddy.tar.gz -C /tmp/ caddy 2>/dev/null; then
+                    mv /tmp/caddy /usr/bin/caddy
+                    chmod +x /usr/bin/caddy
+                    rm -f /tmp/caddy.tar.gz
+                    download_success=true
+                    break
+                fi
+            fi
+        else
+            # 直接下载二进制文件
+            if curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o /usr/bin/caddy 2>/dev/null; then
+                # 验证文件是否有效(检查文件大小)
+                if [ -f /usr/bin/caddy ] && [ -s /usr/bin/caddy ]; then
+                    local file_size=$(stat -f%z /usr/bin/caddy 2>/dev/null || stat -c%s /usr/bin/caddy 2>/dev/null)
+                    # Caddy 二进制文件应该大于 10MB
+                    if [ "$file_size" -gt 10485760 ]; then
+                        chmod +x /usr/bin/caddy
+                        download_success=true
+                        break
+                    else
+                        echo "文件大小异常,尝试下一个源..."
+                        rm -f /usr/bin/caddy
+                    fi
+                fi
+            fi
+        fi
+    done
+
+    # 检查下载结果
+    if [ "$download_success" = false ]; then
+        echo -e "${gl_hong}❌ 所有下载源均失败${gl_bai}"
+        echo ""
+        echo "请手动安装 Caddy:"
+        echo "  wget https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+        echo "  tar -xzf caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+        echo "  mv caddy /usr/bin/caddy"
+        echo "  chmod +x /usr/bin/caddy"
+        echo ""
         break_end
         return 1
     fi
 
-    chmod +x /usr/bin/caddy
+    # 验证安装
+    if ! /usr/bin/caddy version &>/dev/null; then
+        echo -e "${gl_hong}❌ Caddy 安装验证失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
     echo -e "${gl_lv}✅ Caddy 下载完成${gl_bai}"
+    echo "版本: $(/usr/bin/caddy version 2>/dev/null | head -1)"
 
     echo ""
     echo -e "${gl_kjlan}[5/6] 配置 Caddy...${gl_bai}"
