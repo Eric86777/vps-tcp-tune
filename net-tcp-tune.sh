@@ -17577,7 +17577,12 @@ caddy_add_domain() {
 
 # ${domain} - 添加于 $(date '+%Y-%m-%d %H:%M:%S')
 ${domain} {
-    reverse_proxy ${backend}
+    reverse_proxy ${backend} {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
 }
 EOF
 
