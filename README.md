@@ -1,9 +1,9 @@
-# BBR v3 优化脚本 - Ultimate Edition v4.4.0
+# BBR v3 优化脚本 - Ultimate Edition v4.5.0
 
 🚀 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
-一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 41+ 实用工具，优化你的 VPS 服务器。
+一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 42+ 实用工具，优化你的 VPS 服务器。
 
-> **版本**: v4.4.0 (新增 Claude Relay Service 一键部署)
+> **版本**: v4.5.0 (新增 Fuclaude 一键部署)
 > **快速上手**: [📖 快速使用指南](QUICK_START.md)
 
 ---
@@ -178,6 +178,11 @@ chmod +x net-tcp-tune.sh
 | 编号 | 功能名称 | 说明 |
 |------|---------|------|
 | **41** | **CRS 部署管理** | ⭐ **推荐**，Claude API 多账户中转/拼车服务，支持 Claude Code、Gemini CLI、Codex CLI |
+
+### 🌐 Fuclaude
+| 编号 | 功能名称 | 说明 |
+|------|---------|------|
+| **42** | **Fuclaude 部署管理** | Claude 网页版共享工具，支持 Session Token 登录，多人共用 Claude Pro |
 
 ---
 

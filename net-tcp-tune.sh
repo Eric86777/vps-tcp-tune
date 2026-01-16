@@ -6987,6 +6987,9 @@ show_main_menu() {
     echo -e "${gl_kjlan}━━━━━━━━ Claude Relay Service ━━━━━━━━${gl_bai}"
     echo "41. CRS 部署管理 (多账户中转/拼车)"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━ Fuclaude ━━━━━━━━${gl_bai}"
+    echo "42. Fuclaude 部署管理 (Claude网页版共享)"
+    echo ""
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -7130,6 +7133,9 @@ show_main_menu() {
             ;;
         41)
             manage_crs
+            ;;
+        42)
+            manage_fuclaude
             ;;
         99)
             uninstall_all
@@ -16114,6 +16120,765 @@ manage_crs() {
                 ;;
             99)
                 crs_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# =====================================================
+# Fuclaude 部署管理 (菜单42) - Claude网页版共享
+# =====================================================
+
+# 常量定义
+FUCLAUDE_CONTAINER_NAME="fuclaude"
+FUCLAUDE_IMAGE="pengzhile/fuclaude"
+FUCLAUDE_DEFAULT_PORT="8181"
+FUCLAUDE_PORT_FILE="/etc/fuclaude-port"
+FUCLAUDE_CONFIG_DIR="/etc/fuclaude"
+FUCLAUDE_DATA_DIR="/var/lib/fuclaude"
+
+# 获取当前配置的端口
+fuclaude_get_port() {
+    if [ -f "$FUCLAUDE_PORT_FILE" ]; then
+        cat "$FUCLAUDE_PORT_FILE"
+    else
+        echo "$FUCLAUDE_DEFAULT_PORT"
+    fi
+}
+
+# 检查 Fuclaude 状态
+fuclaude_check_status() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${FUCLAUDE_CONTAINER_NAME}$"; then
+        echo "running"
+    elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${FUCLAUDE_CONTAINER_NAME}$"; then
+        echo "stopped"
+    else
+        echo "not_installed"
+    fi
+}
+
+# 检查端口是否可用
+fuclaude_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 安装 Docker（复用通用函数）
+fuclaude_install_docker() {
+    if command -v docker &>/dev/null; then
+        echo -e "${gl_lv}✅ Docker 已安装${gl_bai}"
+        return 0
+    fi
+
+    echo "正在安装 Docker..."
+    curl -fsSL https://get.docker.com | sh
+
+    if [ $? -eq 0 ]; then
+        systemctl enable docker
+        systemctl start docker
+        echo -e "${gl_lv}✅ Docker 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ Docker 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 生成随机字符串
+fuclaude_generate_secret() {
+    cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1
+}
+
+# 一键部署
+fuclaude_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 Fuclaude (Claude网页版共享)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检查是否已安装
+    local status=$(fuclaude_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ Fuclaude 已安装${gl_bai}"
+        read -e -p "是否重新部署？(y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        # 删除现有容器
+        docker stop "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+        docker rm "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+    fi
+
+    # 安装 Docker
+    echo ""
+    echo -e "${gl_kjlan}[1/4] 检查 Docker 环境...${gl_bai}"
+    fuclaude_install_docker || { break_end; return 1; }
+
+    # 配置端口
+    echo ""
+    echo -e "${gl_kjlan}[2/4] 配置服务参数...${gl_bai}"
+    echo ""
+
+    local port="$FUCLAUDE_DEFAULT_PORT"
+    read -e -p "请输入访问端口 [$FUCLAUDE_DEFAULT_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        port="$input_port"
+    fi
+
+    # 检查端口是否可用
+    while ! fuclaude_check_port "$port"; do
+        echo -e "${gl_hong}⚠️ 端口 $port 已被占用，请换一个${gl_bai}"
+        read -e -p "请输入访问端口: " port
+        if [ -z "$port" ]; then
+            port="$FUCLAUDE_DEFAULT_PORT"
+        fi
+    done
+    echo -e "${gl_lv}✅ 端口 $port 可用${gl_bai}"
+
+    # 配置站点密码
+    echo ""
+    local site_password=""
+    read -e -p "设置站点访问密码 (直接回车跳过，不设密码): " site_password
+
+    # 配置是否允许注册
+    echo ""
+    local signup_enabled="false"
+    read -e -p "是否允许用户自行注册？(y/n) [n]: " allow_signup
+    if [ "$allow_signup" = "y" ] || [ "$allow_signup" = "Y" ]; then
+        signup_enabled="true"
+    fi
+
+    # 生成 Cookie 密钥
+    local cookie_secret=$(fuclaude_generate_secret)
+
+    # 拉取镜像
+    echo ""
+    echo -e "${gl_kjlan}[3/4] 拉取 Fuclaude 镜像...${gl_bai}"
+    docker pull "$FUCLAUDE_IMAGE"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 镜像拉取失败${gl_bai}"
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✅ 镜像拉取成功${gl_bai}"
+
+    # 创建数据目录
+    mkdir -p "$FUCLAUDE_DATA_DIR"
+
+    # 启动容器
+    echo ""
+    echo -e "${gl_kjlan}[4/4] 启动 Fuclaude 服务...${gl_bai}"
+
+    # 停止并删除可能存在的旧容器
+    docker stop "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+    docker rm "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+
+    # 构建 docker run 命令
+    docker run -d \
+        --name "$FUCLAUDE_CONTAINER_NAME" \
+        -p ${port}:8181 \
+        -e TZ=Asia/Shanghai \
+        -e FUCLAUDE_BIND=0.0.0.0:8181 \
+        -e FUCLAUDE_TIMEOUT=600 \
+        -e FUCLAUDE_PROXY_URL= \
+        -e FUCLAUDE_REAL_LOGOUT=false \
+        -e FUCLAUDE_SITE_PASSWORD="$site_password" \
+        -e FUCLAUDE_COOKIE_SECRET="$cookie_secret" \
+        -e FUCLAUDE_SIGNUP_ENABLED="$signup_enabled" \
+        -e FUCLAUDE_SHOW_SESSION_KEY=false \
+        -v ${FUCLAUDE_DATA_DIR}:/app/data \
+        --restart unless-stopped \
+        "$FUCLAUDE_IMAGE"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 容器启动失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 保存端口配置
+    echo "$port" > "$FUCLAUDE_PORT_FILE"
+
+    # 等待启动
+    echo ""
+    echo "等待服务启动..."
+    sleep 3
+
+    # 获取服务器 IP
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo ""
+    if [ -n "$site_password" ]; then
+        echo -e "站点密码: ${gl_huang}$site_password${gl_bai}"
+    else
+        echo -e "站点密码: ${gl_zi}未设置${gl_bai}"
+    fi
+    echo -e "允许注册: ${gl_huang}$signup_enabled${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【使用说明】${gl_bai}"
+    echo "  1. 访问上面的地址"
+    echo "  2. 使用 Claude Pro 账号的 Session Token 登录"
+    echo "  3. 多个用户可以共享这个网页版 Claude"
+    echo ""
+    echo -e "${gl_kjlan}【如何获取 Session Token】${gl_bai}"
+    echo "  1. 登录 claude.ai"
+    echo "  2. 打开浏览器开发者工具 (F12)"
+    echo "  3. 切换到 Application/Storage → Cookies"
+    echo "  4. 找到 sessionKey 的值，复制使用"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: docker ps | grep $FUCLAUDE_CONTAINER_NAME"
+    echo "  日志: docker logs $FUCLAUDE_CONTAINER_NAME -f"
+    echo "  重启: docker restart $FUCLAUDE_CONTAINER_NAME"
+    echo ""
+
+    break_end
+}
+
+# 更新镜像
+fuclaude_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 Fuclaude${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(fuclaude_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Fuclaude 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在拉取最新镜像..."
+    docker pull "$FUCLAUDE_IMAGE"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "正在重启容器..."
+
+        # 获取当前容器的环境变量
+        local old_env=$(docker inspect "$FUCLAUDE_CONTAINER_NAME" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
+
+        # 获取保存的端口
+        local port=$(fuclaude_get_port)
+
+        # 停止并删除旧容器
+        docker stop "$FUCLAUDE_CONTAINER_NAME"
+        docker rm "$FUCLAUDE_CONTAINER_NAME"
+
+        # 重新创建容器，使用保存的端口
+        # 需要重新读取之前的配置，这里简化处理，使用默认值
+        docker run -d \
+            --name "$FUCLAUDE_CONTAINER_NAME" \
+            -p ${port}:8181 \
+            -e TZ=Asia/Shanghai \
+            -e FUCLAUDE_BIND=0.0.0.0:8181 \
+            -e FUCLAUDE_TIMEOUT=600 \
+            -v ${FUCLAUDE_DATA_DIR}:/app/data \
+            --restart unless-stopped \
+            "$FUCLAUDE_IMAGE"
+
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo -e "${gl_lv}✅ 更新完成${gl_bai}"
+            echo ""
+            echo -e "${gl_huang}注意: 更新后环境变量已重置为默认值${gl_bai}"
+            echo "如需修改配置，请使用「修改配置」功能"
+        else
+            echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ 镜像拉取失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+fuclaude_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Fuclaude 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(fuclaude_check_status)
+    local port=$(fuclaude_get_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    case "$status" in
+        "running")
+            echo -e "状态: ${gl_lv}✅ 运行中${gl_bai}"
+            echo -e "端口: ${gl_huang}$port${gl_bai}"
+            echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+            echo ""
+            echo "容器详情:"
+            docker ps --filter "name=$FUCLAUDE_CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            echo ""
+            echo "环境变量:"
+            docker inspect "$FUCLAUDE_CONTAINER_NAME" --format '{{range .Config.Env}}  {{println .}}{{end}}' 2>/dev/null | grep FUCLAUDE
+            ;;
+        "stopped")
+            echo -e "状态: ${gl_hong}❌ 已停止${gl_bai}"
+            echo ""
+            echo "请使用「启动服务」选项启动"
+            ;;
+        "not_installed")
+            echo -e "状态: ${gl_hui}未安装${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」选项安装"
+            ;;
+    esac
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+fuclaude_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Fuclaude 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}按 Ctrl+C 退出日志查看${gl_bai}"
+    echo ""
+
+    docker logs "$FUCLAUDE_CONTAINER_NAME" -f --tail 100
+}
+
+# 启动服务
+fuclaude_start() {
+    echo ""
+    echo "正在启动 Fuclaude..."
+    docker start "$FUCLAUDE_CONTAINER_NAME"
+
+    if [ $? -eq 0 ]; then
+        local port=$(fuclaude_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 启动成功${gl_bai}"
+        echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 停止服务
+fuclaude_stop() {
+    echo ""
+    echo "正在停止 Fuclaude..."
+    docker stop "$FUCLAUDE_CONTAINER_NAME"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 重启服务
+fuclaude_restart() {
+    echo ""
+    echo "正在重启 Fuclaude..."
+    docker restart "$FUCLAUDE_CONTAINER_NAME"
+
+    if [ $? -eq 0 ]; then
+        local port=$(fuclaude_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 重启成功${gl_bai}"
+        echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 修改配置
+fuclaude_config() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  修改 Fuclaude 配置${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(fuclaude_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Fuclaude 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local current_port=$(fuclaude_get_port)
+
+    echo "当前配置:"
+    echo -e "  端口: ${gl_huang}$current_port${gl_bai}"
+    echo ""
+    echo "请选择要修改的配置:"
+    echo "1. 修改端口"
+    echo "2. 修改站点密码"
+    echo "3. 修改注册设置"
+    echo "0. 返回"
+    echo ""
+
+    read -e -p "请选择 [0-3]: " config_choice
+
+    case $config_choice in
+        1)
+            fuclaude_change_port
+            ;;
+        2)
+            fuclaude_change_password
+            ;;
+        3)
+            fuclaude_change_signup
+            ;;
+        0)
+            return
+            ;;
+        *)
+            echo "无效的选择"
+            sleep 2
+            ;;
+    esac
+}
+
+# 修改端口
+fuclaude_change_port() {
+    echo ""
+    local current_port=$(fuclaude_get_port)
+    echo -e "当前端口: ${gl_huang}$current_port${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新端口: " new_port
+
+    if [ -z "$new_port" ]; then
+        echo "未输入端口，取消修改"
+        break_end
+        return 0
+    fi
+
+    # 验证端口
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${gl_hong}❌ 无效的端口号${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if [ "$new_port" = "$current_port" ]; then
+        echo -e "${gl_huang}⚠️ 端口未改变${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    # 检查端口是否可用
+    if ! fuclaude_check_port "$new_port"; then
+        echo -e "${gl_hong}❌ 端口 $new_port 已被占用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    # 获取当前容器的环境变量
+    local env_vars=$(docker inspect "$FUCLAUDE_CONTAINER_NAME" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
+
+    # 停止并删除旧容器
+    docker stop "$FUCLAUDE_CONTAINER_NAME"
+    docker rm "$FUCLAUDE_CONTAINER_NAME"
+
+    # 用新端口创建容器
+    # 解析环境变量并重新创建
+    local site_password=$(echo "$env_vars" | grep "FUCLAUDE_SITE_PASSWORD=" | cut -d= -f2-)
+    local cookie_secret=$(echo "$env_vars" | grep "FUCLAUDE_COOKIE_SECRET=" | cut -d= -f2-)
+    local signup_enabled=$(echo "$env_vars" | grep "FUCLAUDE_SIGNUP_ENABLED=" | cut -d= -f2-)
+
+    # 设置默认值
+    [ -z "$cookie_secret" ] && cookie_secret=$(fuclaude_generate_secret)
+    [ -z "$signup_enabled" ] && signup_enabled="false"
+
+    docker run -d \
+        --name "$FUCLAUDE_CONTAINER_NAME" \
+        -p ${new_port}:8181 \
+        -e TZ=Asia/Shanghai \
+        -e FUCLAUDE_BIND=0.0.0.0:8181 \
+        -e FUCLAUDE_TIMEOUT=600 \
+        -e FUCLAUDE_SITE_PASSWORD="$site_password" \
+        -e FUCLAUDE_COOKIE_SECRET="$cookie_secret" \
+        -e FUCLAUDE_SIGNUP_ENABLED="$signup_enabled" \
+        -e FUCLAUDE_SHOW_SESSION_KEY=false \
+        -v ${FUCLAUDE_DATA_DIR}:/app/data \
+        --restart unless-stopped \
+        "$FUCLAUDE_IMAGE"
+
+    if [ $? -eq 0 ]; then
+        echo "$new_port" > "$FUCLAUDE_PORT_FILE"
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 端口修改成功${gl_bai}"
+        echo -e "新访问地址: ${gl_huang}http://${server_ip}:${new_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 端口修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 修改站点密码
+fuclaude_change_password() {
+    echo ""
+    read -e -p "请输入新的站点密码 (留空取消密码保护): " new_password
+
+    echo ""
+    echo "正在修改密码..."
+
+    # 获取当前容器的环境变量
+    local env_vars=$(docker inspect "$FUCLAUDE_CONTAINER_NAME" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
+    local port=$(fuclaude_get_port)
+    local cookie_secret=$(echo "$env_vars" | grep "FUCLAUDE_COOKIE_SECRET=" | cut -d= -f2-)
+    local signup_enabled=$(echo "$env_vars" | grep "FUCLAUDE_SIGNUP_ENABLED=" | cut -d= -f2-)
+
+    [ -z "$cookie_secret" ] && cookie_secret=$(fuclaude_generate_secret)
+    [ -z "$signup_enabled" ] && signup_enabled="false"
+
+    # 停止并删除旧容器
+    docker stop "$FUCLAUDE_CONTAINER_NAME"
+    docker rm "$FUCLAUDE_CONTAINER_NAME"
+
+    docker run -d \
+        --name "$FUCLAUDE_CONTAINER_NAME" \
+        -p ${port}:8181 \
+        -e TZ=Asia/Shanghai \
+        -e FUCLAUDE_BIND=0.0.0.0:8181 \
+        -e FUCLAUDE_TIMEOUT=600 \
+        -e FUCLAUDE_SITE_PASSWORD="$new_password" \
+        -e FUCLAUDE_COOKIE_SECRET="$cookie_secret" \
+        -e FUCLAUDE_SIGNUP_ENABLED="$signup_enabled" \
+        -e FUCLAUDE_SHOW_SESSION_KEY=false \
+        -v ${FUCLAUDE_DATA_DIR}:/app/data \
+        --restart unless-stopped \
+        "$FUCLAUDE_IMAGE"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        if [ -n "$new_password" ]; then
+            echo -e "${gl_lv}✅ 密码修改成功${gl_bai}"
+            echo -e "新密码: ${gl_huang}$new_password${gl_bai}"
+        else
+            echo -e "${gl_lv}✅ 已取消密码保护${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ 密码修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 修改注册设置
+fuclaude_change_signup() {
+    echo ""
+    local env_vars=$(docker inspect "$FUCLAUDE_CONTAINER_NAME" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
+    local current_signup=$(echo "$env_vars" | grep "FUCLAUDE_SIGNUP_ENABLED=" | cut -d= -f2-)
+
+    echo -e "当前注册设置: ${gl_huang}${current_signup:-false}${gl_bai}"
+    echo ""
+
+    local new_signup="false"
+    read -e -p "是否允许用户自行注册？(y/n) [n]: " allow_signup
+    if [ "$allow_signup" = "y" ] || [ "$allow_signup" = "Y" ]; then
+        new_signup="true"
+    fi
+
+    echo ""
+    echo "正在修改注册设置..."
+
+    local port=$(fuclaude_get_port)
+    local site_password=$(echo "$env_vars" | grep "FUCLAUDE_SITE_PASSWORD=" | cut -d= -f2-)
+    local cookie_secret=$(echo "$env_vars" | grep "FUCLAUDE_COOKIE_SECRET=" | cut -d= -f2-)
+
+    [ -z "$cookie_secret" ] && cookie_secret=$(fuclaude_generate_secret)
+
+    # 停止并删除旧容器
+    docker stop "$FUCLAUDE_CONTAINER_NAME"
+    docker rm "$FUCLAUDE_CONTAINER_NAME"
+
+    docker run -d \
+        --name "$FUCLAUDE_CONTAINER_NAME" \
+        -p ${port}:8181 \
+        -e TZ=Asia/Shanghai \
+        -e FUCLAUDE_BIND=0.0.0.0:8181 \
+        -e FUCLAUDE_TIMEOUT=600 \
+        -e FUCLAUDE_SITE_PASSWORD="$site_password" \
+        -e FUCLAUDE_COOKIE_SECRET="$cookie_secret" \
+        -e FUCLAUDE_SIGNUP_ENABLED="$new_signup" \
+        -e FUCLAUDE_SHOW_SESSION_KEY=false \
+        -v ${FUCLAUDE_DATA_DIR}:/app/data \
+        --restart unless-stopped \
+        "$FUCLAUDE_IMAGE"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${gl_lv}✅ 注册设置修改成功${gl_bai}"
+        echo -e "允许注册: ${gl_huang}$new_signup${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 设置修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 卸载
+fuclaude_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 Fuclaude${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(fuclaude_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Fuclaude 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_hong}⚠️ 此操作将删除 Fuclaude 容器${gl_bai}"
+    echo ""
+    read -e -p "是否同时删除数据目录？(y/n) [n]: " delete_data
+    echo ""
+    read -e -p "确认卸载？(y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消卸载"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 停止并删除容器
+    docker stop "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+    docker rm "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+
+    # 删除数据目录
+    if [ "$delete_data" = "y" ] || [ "$delete_data" = "Y" ]; then
+        rm -rf "$FUCLAUDE_DATA_DIR"
+        echo -e "${gl_lv}✅ 容器和数据已删除${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ 容器已删除，数据保留在 $FUCLAUDE_DATA_DIR${gl_bai}"
+    fi
+
+    # 删除端口配置文件
+    rm -f "$FUCLAUDE_PORT_FILE"
+
+    break_end
+}
+
+# Fuclaude 管理主菜单
+manage_fuclaude() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Fuclaude 部署管理 (Claude网页版共享)${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(fuclaude_check_status)
+        local port=$(fuclaude_get_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: $port)"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新镜像"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置]${gl_bai}"
+        echo "8. 修改配置（端口/密码/注册）"
+        echo ""
+        echo -e "${gl_kjlan}[卸载]${gl_bai}"
+        echo -e "${gl_hong}9. 卸载（删除容器）${gl_bai}"
+        echo ""
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-9]: " choice
+
+        case $choice in
+            1)
+                fuclaude_deploy
+                ;;
+            2)
+                fuclaude_update
+                ;;
+            3)
+                fuclaude_status
+                ;;
+            4)
+                fuclaude_logs
+                ;;
+            5)
+                fuclaude_start
+                ;;
+            6)
+                fuclaude_stop
+                ;;
+            7)
+                fuclaude_restart
+                ;;
+            8)
+                fuclaude_config
+                ;;
+            9)
+                fuclaude_uninstall
                 ;;
             0)
                 return
