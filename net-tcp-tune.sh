@@ -6984,6 +6984,9 @@ show_main_menu() {
     echo -e "${gl_kjlan}━━━━━━━━ Open WebUI ━━━━━━━━${gl_bai}"
     echo "40. Open WebUI 部署管理"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━ Claude Relay Service ━━━━━━━━${gl_bai}"
+    echo "41. CRS 部署管理 (多账户中转/拼车)"
+    echo ""
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -7124,6 +7127,9 @@ show_main_menu() {
             ;;
         40)
             manage_open_webui
+            ;;
+        41)
+            manage_crs
             ;;
         99)
             uninstall_all
@@ -15274,6 +15280,840 @@ manage_open_webui() {
                 ;;
             9)
                 open_webui_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# =====================================================
+# Claude Relay Service (CRS) 部署管理 (菜单41)
+# =====================================================
+
+# 常量定义
+CRS_DEFAULT_PORT="3000"
+CRS_PORT_FILE="/etc/crs-port"
+CRS_INSTALL_DIR_FILE="/etc/crs-install-dir"
+CRS_DEFAULT_INSTALL_DIR="/root/claude-relay-service"
+CRS_MANAGE_SCRIPT_URL="https://pincc.ai/manage.sh"
+
+# 获取安装目录
+crs_get_install_dir() {
+    if [ -f "$CRS_INSTALL_DIR_FILE" ]; then
+        cat "$CRS_INSTALL_DIR_FILE"
+    else
+        echo "$CRS_DEFAULT_INSTALL_DIR"
+    fi
+}
+
+# 获取当前配置的端口
+crs_get_port() {
+    if [ -f "$CRS_PORT_FILE" ]; then
+        cat "$CRS_PORT_FILE"
+    else
+        # 尝试从配置文件读取
+        local install_dir=$(crs_get_install_dir)
+        if [ -f "$install_dir/config/config.js" ]; then
+            local port=$(grep -oP 'port:\s*\K[0-9]+' "$install_dir/config/config.js" 2>/dev/null | head -1)
+            if [ -n "$port" ]; then
+                echo "$port"
+                return
+            fi
+        fi
+        echo "$CRS_DEFAULT_PORT"
+    fi
+}
+
+# 检查 CRS 状态
+crs_check_status() {
+    # 检查 crs 命令是否存在
+    if ! command -v crs &>/dev/null; then
+        # 检查安装目录是否存在
+        local install_dir=$(crs_get_install_dir)
+        if [ -d "$install_dir" ]; then
+            echo "installed_no_command"
+        else
+            echo "not_installed"
+        fi
+        return
+    fi
+
+    # 使用 crs status 检查
+    local status_output=$(crs status 2>&1)
+    if echo "$status_output" | grep -qi "running\|online\|started"; then
+        echo "running"
+    elif echo "$status_output" | grep -qi "stopped\|offline\|not running"; then
+        echo "stopped"
+    else
+        # 通过端口检测
+        local port=$(crs_get_port)
+        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+            echo "running"
+        else
+            echo "stopped"
+        fi
+    fi
+}
+
+# 检查端口是否可用
+crs_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 一键部署
+crs_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 Claude Relay Service (CRS)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检查是否已安装
+    local status=$(crs_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ CRS 已安装${gl_bai}"
+        read -e -p "是否重新部署？这将保留数据但重装服务 (y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        echo ""
+        echo "正在停止现有服务..."
+        crs stop 2>/dev/null
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}[1/4] 下载安装脚本...${gl_bai}"
+
+    # 创建临时目录
+    local temp_dir=$(mktemp -d)
+    cd "$temp_dir" || { echo -e "${gl_hong}❌ 创建临时目录失败${gl_bai}"; break_end; return 1; }
+
+    # 下载 manage.sh
+    if ! curl -fsSL "$CRS_MANAGE_SCRIPT_URL" -o manage.sh; then
+        echo -e "${gl_hong}❌ 下载安装脚本失败${gl_bai}"
+        rm -rf "$temp_dir"
+        break_end
+        return 1
+    fi
+    chmod +x manage.sh
+    echo -e "${gl_lv}✅ 下载完成${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[2/4] 配置安装参数...${gl_bai}"
+    echo ""
+
+    # 安装目录
+    local install_dir="$CRS_DEFAULT_INSTALL_DIR"
+    read -e -p "安装目录 [$CRS_DEFAULT_INSTALL_DIR]: " input_dir
+    if [ -n "$input_dir" ]; then
+        install_dir="$input_dir"
+    fi
+
+    # 端口配置
+    local port="$CRS_DEFAULT_PORT"
+    read -e -p "服务端口 [$CRS_DEFAULT_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        port="$input_port"
+    fi
+
+    # 检查端口是否可用
+    while ! crs_check_port "$port"; do
+        echo -e "${gl_hong}⚠️ 端口 $port 已被占用${gl_bai}"
+        read -e -p "请输入其他端口: " port
+        if [ -z "$port" ]; then
+            port="$CRS_DEFAULT_PORT"
+        fi
+    done
+    echo -e "${gl_lv}✅ 端口 $port 可用${gl_bai}"
+
+    # Redis 配置
+    echo ""
+    local redis_host="localhost"
+    local redis_port="6379"
+    local redis_password=""
+
+    read -e -p "Redis 地址 [localhost]: " input_redis_host
+    if [ -n "$input_redis_host" ]; then
+        redis_host="$input_redis_host"
+    fi
+
+    read -e -p "Redis 端口 [6379]: " input_redis_port
+    if [ -n "$input_redis_port" ]; then
+        redis_port="$input_redis_port"
+    fi
+
+    read -e -p "Redis 密码 (无密码直接回车): " redis_password
+
+    echo ""
+    echo -e "${gl_kjlan}[3/4] 执行安装...${gl_bai}"
+    echo ""
+    echo "安装目录: $install_dir"
+    echo "服务端口: $port"
+    echo "Redis: $redis_host:$redis_port"
+    echo ""
+
+    # 使用 expect 或直接执行安装（通过环境变量传递参数）
+    # CRS 的 manage.sh 支持交互式安装，这里我们传递参数
+    export CRS_INSTALL_DIR="$install_dir"
+    export CRS_PORT="$port"
+    export CRS_REDIS_HOST="$redis_host"
+    export CRS_REDIS_PORT="$redis_port"
+    export CRS_REDIS_PASSWORD="$redis_password"
+
+    # 执行安装脚本
+    echo ""
+    echo -e "${gl_huang}正在安装，请按提示操作...${gl_bai}"
+    echo -e "${gl_zi}（安装目录输入: $install_dir，端口输入: $port）${gl_bai}"
+    echo ""
+
+    ./manage.sh install
+
+    local install_result=$?
+
+    # 清理临时文件
+    cd /
+    rm -rf "$temp_dir"
+
+    if [ $install_result -ne 0 ]; then
+        echo ""
+        echo -e "${gl_hong}❌ 安装过程出现错误${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 保存配置
+    echo "$port" > "$CRS_PORT_FILE"
+    echo "$install_dir" > "$CRS_INSTALL_DIR_FILE"
+
+    echo ""
+    echo -e "${gl_kjlan}[4/4] 验证安装...${gl_bai}"
+
+    sleep 3
+
+    # 获取服务器 IP
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    # 检查服务状态
+    if command -v crs &>/dev/null; then
+        echo -e "${gl_lv}✅ crs 命令已安装${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "Web 管理面板: ${gl_huang}http://${server_ip}:${port}/web${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【管理员账号】${gl_bai}"
+    echo "  账号信息保存在: $install_dir/data/init.json"
+    echo "  使用菜单「8. 查看管理员账号」可以直接查看"
+    echo ""
+    echo -e "${gl_kjlan}【下一步操作】${gl_bai}"
+    echo "  1. 访问 Web 面板，使用管理员账号登录"
+    echo "  2. 添加 Claude 账户（OAuth 授权）"
+    echo "  3. 创建 API Key 分发给用户"
+    echo "  4. 配置本地 Claude Code 环境变量"
+    echo ""
+    echo -e "${gl_kjlan}【Claude Code 配置】${gl_bai}"
+    echo -e "  ${gl_huang}export ANTHROPIC_BASE_URL=\"http://${server_ip}:${port}/api/\"${gl_bai}"
+    echo -e "  ${gl_huang}export ANTHROPIC_AUTH_TOKEN=\"后台创建的API密钥\"${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}提示: 使用菜单「10. 查看配置指引」获取完整配置说明${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: crs status"
+    echo "  启动: crs start"
+    echo "  停止: crs stop"
+    echo "  重启: crs restart"
+    echo "  更新: crs update"
+    echo ""
+
+    break_end
+}
+
+# 更新服务
+crs_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 Claude Relay Service${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在更新..."
+    echo ""
+
+    if command -v crs &>/dev/null; then
+        crs update
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo -e "${gl_lv}✅ 更新完成${gl_bai}"
+        else
+            echo ""
+            echo -e "${gl_hong}❌ 更新失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ crs 命令不可用，请重新部署${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+crs_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Claude Relay Service 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(crs_check_status)
+    local port=$(crs_get_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+    local install_dir=$(crs_get_install_dir)
+
+    case "$status" in
+        "running")
+            echo -e "运行状态: ${gl_lv}✅ 运行中${gl_bai}"
+            echo -e "服务端口: ${gl_huang}$port${gl_bai}"
+            echo -e "Web 面板: ${gl_huang}http://${server_ip}:${port}/web${gl_bai}"
+            echo -e "安装目录: ${gl_huang}$install_dir${gl_bai}"
+            ;;
+        "stopped")
+            echo -e "运行状态: ${gl_hong}❌ 已停止${gl_bai}"
+            echo -e "服务端口: ${gl_huang}$port${gl_bai}"
+            echo -e "安装目录: ${gl_huang}$install_dir${gl_bai}"
+            ;;
+        "installed_no_command")
+            echo -e "运行状态: ${gl_huang}⚠️ 已安装但 crs 命令不可用${gl_bai}"
+            echo -e "安装目录: ${gl_huang}$install_dir${gl_bai}"
+            echo ""
+            echo "建议重新执行一键部署"
+            ;;
+        "not_installed")
+            echo -e "运行状态: ${gl_hui}未安装${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」选项安装"
+            ;;
+    esac
+
+    echo ""
+
+    # 如果 crs 命令可用，显示详细状态
+    if command -v crs &>/dev/null && [ "$status" != "not_installed" ]; then
+        echo -e "${gl_kjlan}详细状态:${gl_bai}"
+        echo ""
+        crs status
+    fi
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+crs_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Claude Relay Service 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}按 Ctrl+C 退出日志查看${gl_bai}"
+    echo ""
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if command -v crs &>/dev/null; then
+        crs logs
+    else
+        # 尝试查看日志文件
+        local install_dir=$(crs_get_install_dir)
+        if [ -d "$install_dir/logs" ]; then
+            tail -f "$install_dir/logs/"*.log 2>/dev/null || echo "无法读取日志文件"
+        else
+            echo "日志目录不存在"
+        fi
+    fi
+}
+
+# 启动服务
+crs_start() {
+    echo ""
+    echo "正在启动 CRS..."
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if command -v crs &>/dev/null; then
+        crs start
+        sleep 2
+        if [ "$(crs_check_status)" = "running" ]; then
+            local port=$(crs_get_port)
+            local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+            echo ""
+            echo -e "${gl_lv}✅ 服务已启动${gl_bai}"
+            echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}/web${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ crs 命令不可用${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 停止服务
+crs_stop() {
+    echo ""
+    echo "正在停止 CRS..."
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if command -v crs &>/dev/null; then
+        crs stop
+        sleep 2
+        if [ "$(crs_check_status)" != "running" ]; then
+            echo -e "${gl_lv}✅ 服务已停止${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ crs 命令不可用${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 重启服务
+crs_restart() {
+    echo ""
+    echo "正在重启 CRS..."
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if command -v crs &>/dev/null; then
+        crs restart
+        sleep 2
+        if [ "$(crs_check_status)" = "running" ]; then
+            local port=$(crs_get_port)
+            local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+            echo ""
+            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+            echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}/web${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+        fi
+    else
+        echo -e "${gl_hong}❌ crs 命令不可用${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看管理员账号
+crs_show_admin() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  CRS 管理员账号${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local install_dir=$(crs_get_install_dir)
+    local init_file="$install_dir/data/init.json"
+
+    if [ -f "$init_file" ]; then
+        echo -e "${gl_lv}管理员账号信息:${gl_bai}"
+        echo ""
+
+        # 解析 JSON 并显示
+        local username=$(grep -oP '"username"\s*:\s*"\K[^"]+' "$init_file" 2>/dev/null)
+        local password=$(grep -oP '"password"\s*:\s*"\K[^"]+' "$init_file" 2>/dev/null)
+
+        if [ -n "$username" ] && [ -n "$password" ]; then
+            local port=$(crs_get_port)
+            local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+            echo -e "  用户名: ${gl_huang}$username${gl_bai}"
+            echo -e "  密  码: ${gl_huang}$password${gl_bai}"
+            echo ""
+            echo -e "  登录地址: ${gl_huang}http://${server_ip}:${port}/web${gl_bai}"
+        else
+            echo "无法解析账号信息，原始内容:"
+            echo ""
+            cat "$init_file"
+        fi
+    else
+        echo -e "${gl_huang}⚠️ 未找到账号信息文件${gl_bai}"
+        echo ""
+        echo "文件路径: $init_file"
+        echo ""
+        echo "可能原因:"
+        echo "  1. 服务尚未完成初始化"
+        echo "  2. 使用了环境变量预设账号"
+        echo ""
+        echo "如果使用环境变量设置了账号，请查看安装时的配置"
+    fi
+
+    echo ""
+    break_end
+}
+
+# 修改端口
+crs_change_port() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  修改 CRS 端口${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local current_port=$(crs_get_port)
+    local install_dir=$(crs_get_install_dir)
+    echo -e "当前端口: ${gl_huang}$current_port${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新端口 (1-65535): " new_port
+
+    # 验证端口
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${gl_hong}❌ 无效的端口号${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if [ "$new_port" = "$current_port" ]; then
+        echo -e "${gl_huang}⚠️ 端口未改变${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    # 检查端口是否被占用
+    if ! crs_check_port "$new_port"; then
+        echo -e "${gl_hong}❌ 端口 $new_port 已被占用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    # 停止服务
+    if command -v crs &>/dev/null; then
+        crs stop 2>/dev/null
+    fi
+
+    # 修改配置文件
+    local config_file="$install_dir/config/config.js"
+    if [ -f "$config_file" ]; then
+        # 使用 sed 修改端口
+        sed -i "s/port:\s*[0-9]\+/port: $new_port/" "$config_file"
+        echo -e "${gl_lv}✅ 配置文件已更新${gl_bai}"
+    else
+        echo -e "${gl_huang}⚠️ 配置文件不存在，仅更新端口记录${gl_bai}"
+    fi
+
+    # 保存端口配置
+    echo "$new_port" > "$CRS_PORT_FILE"
+
+    # 重启服务
+    if command -v crs &>/dev/null; then
+        crs start
+        sleep 2
+
+        if [ "$(crs_check_status)" = "running" ]; then
+            local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+            echo ""
+            echo -e "${gl_lv}✅ 端口已修改为 $new_port${gl_bai}"
+            echo -e "新访问地址: ${gl_huang}http://${server_ip}:${new_port}/web${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 服务启动失败，请检查配置${gl_bai}"
+        fi
+    fi
+
+    break_end
+}
+
+# 查看配置指引
+crs_show_config() {
+    clear
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local port=$(crs_get_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Claude Relay Service 配置指引${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "Web 管理面板: ${gl_huang}http://${server_ip}:${port}/web${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【第一步】添加 Claude 账户${gl_bai}"
+    echo "  1. 登录 Web 管理面板"
+    echo "  2. 点击「Claude账户」标签"
+    echo "  3. 点击「添加账户」→「生成授权链接」"
+    echo "  4. 在新页面完成 Claude 登录授权"
+    echo "  5. 复制 Authorization Code 粘贴回页面"
+    echo ""
+    echo -e "${gl_kjlan}【第二步】创建 API Key${gl_bai}"
+    echo "  1. 点击「API Keys」标签"
+    echo "  2. 点击「创建新Key」"
+    echo "  3. 设置名称和限制（可选）"
+    echo "  4. 保存并记录生成的 Key"
+    echo ""
+    echo -e "${gl_kjlan}【第三步】配置 Claude Code${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}方式一：环境变量配置${gl_bai}"
+    echo ""
+    echo "  # 使用标准 Claude 账号池"
+    echo -e "  ${gl_lv}export ANTHROPIC_BASE_URL=\"http://${server_ip}:${port}/api/\"${gl_bai}"
+    echo -e "  ${gl_lv}export ANTHROPIC_AUTH_TOKEN=\"你的API密钥\"${gl_bai}"
+    echo ""
+    echo "  # 或使用 Antigravity 账号池"
+    echo -e "  ${gl_lv}export ANTHROPIC_BASE_URL=\"http://${server_ip}:${port}/antigravity/api/\"${gl_bai}"
+    echo -e "  ${gl_lv}export ANTHROPIC_AUTH_TOKEN=\"你的API密钥\"${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}方式二：settings.json 配置${gl_bai}"
+    echo ""
+    echo "  编辑 ~/.claude/settings.json:"
+    echo ""
+    echo -e "  ${gl_lv}{"
+    echo -e "    \"env\": {"
+    echo -e "      \"ANTHROPIC_BASE_URL\": \"http://${server_ip}:${port}/api/\","
+    echo -e "      \"ANTHROPIC_AUTH_TOKEN\": \"你的API密钥\""
+    echo -e "    }"
+    echo -e "  }${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【Gemini CLI 配置】${gl_bai}"
+    echo ""
+    echo -e "  ${gl_lv}export CODE_ASSIST_ENDPOINT=\"http://${server_ip}:${port}/gemini\"${gl_bai}"
+    echo -e "  ${gl_lv}export GOOGLE_CLOUD_ACCESS_TOKEN=\"你的API密钥\"${gl_bai}"
+    echo -e "  ${gl_lv}export GOOGLE_GENAI_USE_GCA=\"true\"${gl_bai}"
+    echo -e "  ${gl_lv}export GEMINI_MODEL=\"gemini-2.5-pro\"${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【Codex CLI 配置】${gl_bai}"
+    echo ""
+    echo "  编辑 ~/.codex/config.toml 添加:"
+    echo ""
+    echo -e "  ${gl_lv}model_provider = \"crs\""
+    echo -e "  [model_providers.crs]"
+    echo -e "  name = \"crs\""
+    echo -e "  base_url = \"http://${server_ip}:${port}/openai\""
+    echo -e "  wire_api = \"responses\""
+    echo -e "  requires_openai_auth = true"
+    echo -e "  env_key = \"CRS_OAI_KEY\"${gl_bai}"
+    echo ""
+    echo "  然后设置环境变量:"
+    echo -e "  ${gl_lv}export CRS_OAI_KEY=\"你的API密钥\"${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}提示: 所有客户端使用相同的 API 密钥，系统根据路由自动选择账号类型${gl_bai}"
+    echo ""
+
+    break_end
+}
+
+# 卸载
+crs_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 Claude Relay Service${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(crs_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CRS 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local install_dir=$(crs_get_install_dir)
+
+    echo -e "${gl_hong}⚠️ 警告: 此操作将删除 CRS 服务和所有数据！${gl_bai}"
+    echo ""
+    echo "安装目录: $install_dir"
+    echo ""
+
+    read -e -p "确认卸载？(输入 yes 确认): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "已取消"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 使用 crs uninstall 命令
+    if command -v crs &>/dev/null; then
+        crs uninstall
+    else
+        # 手动卸载
+        echo "正在停止服务..."
+        # 尝试停止 pm2 进程
+        pm2 stop crs 2>/dev/null
+        pm2 delete crs 2>/dev/null
+
+        echo "正在删除文件..."
+        rm -rf "$install_dir"
+    fi
+
+    # 删除配置文件
+    rm -f "$CRS_PORT_FILE"
+    rm -f "$CRS_INSTALL_DIR_FILE"
+
+    # 删除 crs 命令
+    rm -f /usr/local/bin/crs 2>/dev/null
+
+    echo ""
+    echo -e "${gl_lv}✅ 卸载完成${gl_bai}"
+
+    break_end
+}
+
+# CRS 主菜单
+manage_crs() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Claude Relay Service (CRS) 部署管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(crs_check_status)
+        local port=$(crs_get_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: $port)"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "installed_no_command")
+                echo -e "当前状态: ${gl_huang}⚠️ 已安装但命令不可用${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新服务"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置与信息]${gl_bai}"
+        echo "8. 查看管理员账号"
+        echo "9. 修改端口"
+        echo "10. 查看配置指引"
+        echo ""
+        echo -e "${gl_kjlan}[卸载]${gl_bai}"
+        echo -e "${gl_hong}99. 卸载（删除服务+数据）${gl_bai}"
+        echo ""
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-10, 99]: " choice
+
+        case $choice in
+            1)
+                crs_deploy
+                ;;
+            2)
+                crs_update
+                ;;
+            3)
+                crs_status
+                ;;
+            4)
+                crs_logs
+                ;;
+            5)
+                crs_start
+                ;;
+            6)
+                crs_stop
+                ;;
+            7)
+                crs_restart
+                ;;
+            8)
+                crs_show_admin
+                ;;
+            9)
+                crs_change_port
+                ;;
+            10)
+                crs_show_config
+                ;;
+            99)
+                crs_uninstall
                 ;;
             0)
                 return
