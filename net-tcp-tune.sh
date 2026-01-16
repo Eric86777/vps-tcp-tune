@@ -17367,7 +17367,8 @@ caddy_install() {
     mkdir -p "$CADDY_CONFIG_DIR"
     mkdir -p "$CADDY_CONFIG_BACKUP_DIR"
     mkdir -p /var/log/caddy
-    mkdir -p /var/lib/caddy
+    mkdir -p /var/lib/caddy/.local/share/caddy
+    mkdir -p /var/lib/caddy/.config/caddy
 
     # 创建 Caddy 用户
     if ! id -u caddy &>/dev/null; then
@@ -17388,7 +17389,7 @@ caddy_install() {
 {
     # 全局配置
     admin off
-    email noreply@example.com
+    email caddy@localhost
 }
 
 # 反代配置将在下方自动添加
@@ -17408,6 +17409,7 @@ Requires=network-online.target
 Type=notify
 User=caddy
 Group=caddy
+Environment="HOME=/var/lib/caddy"
 ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
 TimeoutStopSec=5s
