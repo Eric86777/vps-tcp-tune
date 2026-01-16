@@ -17609,11 +17609,11 @@ EOF
         return 1
     fi
 
-    # 重载 Caddy
-    systemctl reload caddy
+    # 重启 Caddy
+    systemctl restart caddy
 
     if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+        echo -e "${gl_lv}✅ Caddy 重启成功${gl_bai}"
 
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -17633,10 +17633,10 @@ EOF
         echo "  - 证书由 Let's Encrypt 签发，自动续期"
         echo ""
     else
-        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+        echo -e "${gl_hong}❌ Caddy 重启失败${gl_bai}"
         echo "正在恢复备份..."
         cp "$backup_file" "$CADDY_CONFIG_FILE"
-        systemctl reload caddy
+        systemctl restart caddy
 
         # 从域名列表中删除
         if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
@@ -17814,18 +17814,18 @@ caddy_delete_domain() {
         return 1
     fi
 
-    # 重载 Caddy
-    systemctl reload caddy
+    # 重启 Caddy
+    systemctl restart caddy
 
     if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+        echo -e "${gl_lv}✅ Caddy 重启成功${gl_bai}"
         echo ""
         echo -e "${gl_lv}✅ 域名 $domain_to_delete 已删除${gl_bai}"
     else
-        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+        echo -e "${gl_hong}❌ Caddy 重启失败${gl_bai}"
         echo "正在恢复备份..."
         cp "$backup_file" "$CADDY_CONFIG_FILE"
-        systemctl reload caddy
+        systemctl restart caddy
     fi
 
     break_end
@@ -17860,12 +17860,12 @@ caddy_reload() {
     echo ""
 
     echo "正在重载 Caddy..."
-    systemctl reload caddy
+    systemctl restart caddy
 
     if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+        echo -e "${gl_lv}✅ Caddy 重启成功${gl_bai}"
     else
-        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+        echo -e "${gl_hong}❌ Caddy 重启失败${gl_bai}"
         echo ""
         echo "查看错误日志: journalctl -u caddy -n 50"
     fi
