@@ -17361,6 +17361,41 @@ caddy_install() {
     echo "版本: $(/usr/bin/caddy version 2>/dev/null | head -1)"
 
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_huang}📧 配置 SSL 证书联系邮箱${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "用途: Let's Encrypt 会发送证书过期提醒到此邮箱"
+    echo "说明: 邮箱不需要真实存在,但格式必须正确"
+    echo "示例: admin@yourdomain.com"
+    echo ""
+
+    local ssl_email=""
+    while true; do
+        read -e -p "请输入联系邮箱 [回车使用 caddy@localhost]: " ssl_email
+
+        # 如果为空,使用默认值
+        if [ -z "$ssl_email" ]; then
+            ssl_email="caddy@localhost"
+            break
+        fi
+
+        # 验证邮箱格式
+        if echo "$ssl_email" | grep -qE '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+            # 检查是否是被禁止的域名
+            if echo "$ssl_email" | grep -qE '@example\.(com|org|net)$'; then
+                echo -e "${gl_hong}❌ 不能使用 example.com 等示例域名${gl_bai}"
+                continue
+            fi
+            break
+        else
+            echo -e "${gl_hong}❌ 邮箱格式不正确,请重新输入${gl_bai}"
+        fi
+    done
+
+    echo -e "${gl_lv}✅ 邮箱: $ssl_email${gl_bai}"
+
+    echo ""
     echo -e "${gl_kjlan}[5/6] 配置 Caddy...${gl_bai}"
 
     # 创建配置目录
@@ -17382,14 +17417,14 @@ caddy_install() {
 
     # 创建初始 Caddyfile
     if [ ! -f "$CADDY_CONFIG_FILE" ]; then
-        cat > "$CADDY_CONFIG_FILE" << 'EOF'
+        cat > "$CADDY_CONFIG_FILE" << EOF
 # Caddy 多域名反代配置
 # 使用脚本菜单添加反代域名
 
 {
     # 全局配置
     admin off
-    email caddy@localhost
+    email ${ssl_email}
 }
 
 # 反代配置将在下方自动添加
