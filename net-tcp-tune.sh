@@ -41,6 +41,7 @@ gl_huang='\033[33m'
 gl_bai='\033[0m'
 gl_kjlan='\033[96m'
 gl_zi='\033[35m'
+gl_hui='\033[90m'
 
 # GitHub 代理设置
 gh_proxy="https://"
@@ -6990,6 +6991,9 @@ show_main_menu() {
     echo -e "${gl_kjlan}━━━━━━━━ Fuclaude ━━━━━━━━${gl_bai}"
     echo "42. Fuclaude 部署管理 (Claude网页版共享)"
     echo ""
+    echo -e "${gl_kjlan}━━━━━━━━ Caddy 反向代理 ━━━━━━━━${gl_bai}"
+    echo "43. Caddy 多域名反代 🚀 ⭐ 推荐"
+    echo ""
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}[完全卸载]${gl_bai}"
@@ -7136,6 +7140,9 @@ show_main_menu() {
             ;;
         42)
             manage_fuclaude
+            ;;
+        43)
+            manage_caddy
             ;;
         99)
             uninstall_all
@@ -16919,6 +16926,1175 @@ manage_fuclaude() {
     done
 }
 
+# =====================================================
+# Caddy 多域名反代管理 (菜单43)
+# =====================================================
+
+# 常量定义
+CADDY_SERVICE_NAME="caddy"
+CADDY_CONFIG_FILE="/etc/caddy/Caddyfile"
+CADDY_CONFIG_DIR="/etc/caddy"
+CADDY_CONFIG_BACKUP_DIR="/etc/caddy/backups"
+CADDY_DOMAIN_LIST_FILE="/etc/caddy/.domain-list"
+CADDY_INSTALL_SCRIPT="https://caddyserver.com/api/download?os=linux&arch=amd64"
+
+# 获取服务器 IP
+caddy_get_server_ip() {
+    local ip=$(curl -s4 --max-time 5 ip.sb 2>/dev/null)
+    if [ -z "$ip" ]; then
+        ip=$(curl -s6 --max-time 5 ip.sb 2>/dev/null)
+    fi
+    if [ -z "$ip" ]; then
+        ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    echo "$ip"
+}
+
+# 检查 Caddy 状态
+caddy_check_status() {
+    if ! command -v caddy &>/dev/null; then
+        echo "not_installed"
+        return
+    fi
+
+    if systemctl is-active "$CADDY_SERVICE_NAME" &>/dev/null; then
+        echo "running"
+    elif systemctl is-enabled "$CADDY_SERVICE_NAME" &>/dev/null; then
+        echo "stopped"
+    else
+        echo "installed_no_service"
+    fi
+}
+
+# 检查端口是否被占用
+caddy_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1  # 端口被占用
+    fi
+    return 0  # 端口可用
+}
+
+# 检查并处理端口占用
+caddy_handle_port_conflict() {
+    local port=$1
+    local port_name=$2
+
+    echo -e "${gl_kjlan}检测端口 ${port} (${port_name}) 占用情况...${gl_bai}"
+
+    if caddy_check_port "$port"; then
+        echo -e "${gl_lv}✅ 端口 ${port} 可用${gl_bai}"
+        return 0
+    fi
+
+    # 端口被占用,查找占用进程
+    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
+
+    if [ -z "$pid" ]; then
+        echo -e "${gl_hong}❌ 端口 ${port} 被占用，但无法获取进程信息${gl_bai}"
+        return 1
+    fi
+
+    local proc_comm=$(cat /proc/$pid/comm 2>/dev/null || echo "未知进程")
+    local proc_cwd=$(readlink -f /proc/$pid/cwd 2>/dev/null || echo "未知路径")
+
+    echo -e "${gl_hong}⚠️ 端口 ${port} 被占用${gl_bai}"
+    echo ""
+    echo -e "占用进程信息："
+    echo -e "  PID: ${pid}"
+    echo -e "  程序: ${proc_comm}"
+    echo -e "  路径: ${proc_cwd}"
+    echo ""
+
+    # 检查是否是 Caddy 自己
+    if [[ "$proc_comm" == "caddy" ]]; then
+        echo -e "${gl_huang}⚠️ 端口被现有 Caddy 进程占用${gl_bai}"
+        echo "部署过程会自动停止旧服务并重启"
+        return 0
+    fi
+
+    echo -e "${gl_huang}请选择操作：${gl_bai}"
+    echo "1. 停止占用进程并继续部署（需谨慎）"
+    echo "2. 取消部署（推荐，请手动处理端口占用）"
+    echo ""
+    read -e -p "请选择 [1-2]: " conflict_choice
+
+    case "$conflict_choice" in
+        1)
+            echo ""
+            echo "正在停止进程 ${pid}..."
+            kill "$pid" 2>/dev/null
+            sleep 2
+
+            if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+                echo "进程未响应，强制终止..."
+                kill -9 "$pid" 2>/dev/null
+                sleep 1
+            fi
+
+            if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+                echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
+                return 1
+            fi
+
+            echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
+            return 0
+            ;;
+        2|*)
+            echo "取消部署"
+            return 1
+            ;;
+    esac
+}
+
+# 检查防火墙并配置
+caddy_check_firewall() {
+    echo ""
+    echo -e "${gl_kjlan}检查防火墙配置...${gl_bai}"
+
+    local firewall_type="none"
+    local need_config=false
+
+    # 检测防火墙类型
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        firewall_type="ufw"
+    elif command -v firewall-cmd &>/dev/null && systemctl is-active firewalld &>/dev/null; then
+        firewall_type="firewalld"
+    elif command -v iptables &>/dev/null; then
+        # 检查是否有 iptables 规则
+        if iptables -L -n 2>/dev/null | grep -qE "Chain INPUT.*policy (DROP|REJECT)"; then
+            firewall_type="iptables"
+        fi
+    fi
+
+    if [ "$firewall_type" = "none" ]; then
+        echo -e "${gl_lv}✅ 未检测到活动防火墙${gl_bai}"
+        return 0
+    fi
+
+    echo -e "检测到防火墙: ${gl_huang}$firewall_type${gl_bai}"
+
+    # 检查端口是否已开放
+    case "$firewall_type" in
+        ufw)
+            if ! ufw status 2>/dev/null | grep -qE "80/tcp.*ALLOW|80.*ALLOW"; then
+                need_config=true
+            fi
+            if ! ufw status 2>/dev/null | grep -qE "443/tcp.*ALLOW|443.*ALLOW"; then
+                need_config=true
+            fi
+            ;;
+        firewalld)
+            if ! firewall-cmd --list-ports 2>/dev/null | grep -q "80/tcp"; then
+                need_config=true
+            fi
+            if ! firewall-cmd --list-ports 2>/dev/null | grep -q "443/tcp"; then
+                need_config=true
+            fi
+            ;;
+        iptables)
+            if ! iptables -L INPUT -n 2>/dev/null | grep -q "dpt:80"; then
+                need_config=true
+            fi
+            if ! iptables -L INPUT -n 2>/dev/null | grep -q "dpt:443"; then
+                need_config=true
+            fi
+            ;;
+    esac
+
+    if [ "$need_config" = false ]; then
+        echo -e "${gl_lv}✅ 端口 80/443 已开放${gl_bai}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${gl_huang}⚠️ 需要开放端口 80 和 443${gl_bai}"
+    echo "  端口 80: Let's Encrypt 证书验证"
+    echo "  端口 443: HTTPS 服务"
+    echo ""
+    read -e -p "是否自动配置防火墙? (y/n) [y]: " auto_config
+
+    if [ "$auto_config" = "n" ] || [ "$auto_config" = "N" ]; then
+        echo -e "${gl_huang}⚠️ 请手动开放端口 80 和 443${gl_bai}"
+        return 0
+    fi
+
+    echo ""
+    echo "正在配置防火墙..."
+
+    case "$firewall_type" in
+        ufw)
+            ufw allow 80/tcp >/dev/null 2>&1
+            ufw allow 443/tcp >/dev/null 2>&1
+            echo -e "${gl_lv}✅ UFW 防火墙配置完成${gl_bai}"
+            ;;
+        firewalld)
+            firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1
+            firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1
+            firewall-cmd --reload >/dev/null 2>&1
+            echo -e "${gl_lv}✅ Firewalld 防火墙配置完成${gl_bai}"
+            ;;
+        iptables)
+            iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+            iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+            # 尝试保存规则
+            if command -v iptables-save &>/dev/null; then
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+            fi
+            echo -e "${gl_lv}✅ Iptables 防火墙配置完成${gl_bai}"
+            ;;
+    esac
+
+    return 0
+}
+
+# 检查域名解析
+caddy_check_dns() {
+    local domain=$1
+    local server_ip=$(caddy_get_server_ip)
+
+    echo -e "${gl_kjlan}检查域名解析...${gl_bai}"
+    echo "域名: $domain"
+    echo "本机IP: $server_ip"
+    echo ""
+
+    # 使用多个方法检查域名解析
+    local resolved_ip=""
+
+    # 方法1: dig
+    if command -v dig &>/dev/null; then
+        resolved_ip=$(dig +short "$domain" A 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+    fi
+
+    # 方法2: nslookup (fallback)
+    if [ -z "$resolved_ip" ] && command -v nslookup &>/dev/null; then
+        resolved_ip=$(nslookup "$domain" 2>/dev/null | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | head -1)
+    fi
+
+    # 方法3: host (fallback)
+    if [ -z "$resolved_ip" ] && command -v host &>/dev/null; then
+        resolved_ip=$(host "$domain" 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
+    fi
+
+    if [ -z "$resolved_ip" ]; then
+        echo -e "${gl_hong}⚠️ 无法解析域名 $domain${gl_bai}"
+        echo ""
+        echo "可能原因:"
+        echo "  1. 域名尚未添加 DNS 记录"
+        echo "  2. DNS 记录还在传播中（通常需要几分钟）"
+        echo "  3. DNS 查询工具未安装"
+        echo ""
+        echo -e "${gl_huang}建议：${gl_bai}"
+        echo "  请确保在 DNS 服务商添加 A 记录："
+        echo "  类型: A"
+        echo "  名称: $domain"
+        echo "  内容: $server_ip"
+        echo ""
+        read -e -p "是否继续部署? (y/n) [y]: " continue_anyway
+        if [ "$continue_anyway" = "n" ] || [ "$continue_anyway" = "N" ]; then
+            return 1
+        fi
+        return 0
+    fi
+
+    echo "解析结果: $resolved_ip"
+    echo ""
+
+    if [ "$resolved_ip" = "$server_ip" ]; then
+        echo -e "${gl_lv}✅ 域名解析正确${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 域名解析不匹配${gl_bai}"
+        echo ""
+        echo "期望: $server_ip"
+        echo "实际: $resolved_ip"
+        echo ""
+        echo -e "${gl_huang}请检查 DNS 配置：${gl_bai}"
+        echo "  1. 确认 A 记录指向: $server_ip"
+        echo "  2. 等待 DNS 传播完成（可能需要几分钟到几小时）"
+        echo "  3. 如果使用 Cloudflare，请关闭橙色云朵（仅 DNS 模式）"
+        echo ""
+        read -e -p "是否继续部署? (y/n) [n]: " continue_anyway
+        if [ "$continue_anyway" = "y" ] || [ "$continue_anyway" = "Y" ]; then
+            return 0
+        fi
+        return 1
+    fi
+}
+
+# 安装 Caddy
+caddy_install() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 Caddy${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检查是否已安装
+    local status=$(caddy_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ Caddy 已安装${gl_bai}"
+        echo ""
+        read -e -p "是否重新安装/更新? (y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+
+        echo ""
+        echo "正在停止现有服务..."
+        systemctl stop "$CADDY_SERVICE_NAME" 2>/dev/null
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}[1/6] 检查端口占用...${gl_bai}"
+
+    # 检查 443 端口
+    if ! caddy_handle_port_conflict 443 "HTTPS"; then
+        break_end
+        return 1
+    fi
+
+    # 检查 80 端口
+    if ! caddy_handle_port_conflict 80 "HTTP"; then
+        break_end
+        return 1
+    fi
+
+    # 检查防火墙
+    echo ""
+    echo -e "${gl_kjlan}[2/6] 检查防火墙配置...${gl_bai}"
+    if ! caddy_check_firewall; then
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}[3/6] 安装必要工具...${gl_bai}"
+
+    # 安装 curl 和 dig (用于域名解析检查)
+    if ! command -v curl &>/dev/null || ! command -v dig &>/dev/null; then
+        echo "正在安装工具..."
+        if command -v apt-get &>/dev/null; then
+            apt-get update -qq 2>/dev/null
+            apt-get install -y curl dnsutils >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y curl bind-utils >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y curl bind-utils >/dev/null 2>&1
+        fi
+    fi
+    echo -e "${gl_lv}✅ 工具检查完成${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[4/6] 下载并安装 Caddy...${gl_bai}"
+
+    # 下载 Caddy
+    if ! curl -fsSL https://caddyserver.com/api/download?os=linux&arch=amd64 -o /usr/bin/caddy 2>/dev/null; then
+        echo -e "${gl_hong}❌ 下载 Caddy 失败${gl_bai}"
+        echo "请检查网络连接或手动安装"
+        break_end
+        return 1
+    fi
+
+    chmod +x /usr/bin/caddy
+    echo -e "${gl_lv}✅ Caddy 下载完成${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[5/6] 配置 Caddy...${gl_bai}"
+
+    # 创建配置目录
+    mkdir -p "$CADDY_CONFIG_DIR"
+    mkdir -p "$CADDY_CONFIG_BACKUP_DIR"
+    mkdir -p /var/log/caddy
+    mkdir -p /var/lib/caddy
+
+    # 创建 Caddy 用户
+    if ! id -u caddy &>/dev/null; then
+        useradd -r -s /bin/false caddy 2>/dev/null || true
+    fi
+
+    # 设置权限
+    chown -R caddy:caddy "$CADDY_CONFIG_DIR"
+    chown -R caddy:caddy /var/log/caddy
+    chown -R caddy:caddy /var/lib/caddy
+
+    # 创建初始 Caddyfile
+    if [ ! -f "$CADDY_CONFIG_FILE" ]; then
+        cat > "$CADDY_CONFIG_FILE" << 'EOF'
+# Caddy 多域名反代配置
+# 使用脚本菜单添加反代域名
+
+{
+    # 全局配置
+    admin off
+    email noreply@example.com
+}
+
+# 反代配置将在下方自动添加
+EOF
+        chown caddy:caddy "$CADDY_CONFIG_FILE"
+    fi
+
+    # 创建 systemd 服务
+    cat > /etc/systemd/system/caddy.service << 'EOF'
+[Unit]
+Description=Caddy Web Server
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+LimitNPROC=512
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo -e "${gl_lv}✅ 配置完成${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[6/6] 启动 Caddy 服务...${gl_bai}"
+
+    systemctl daemon-reload
+    systemctl enable caddy >/dev/null 2>&1
+    systemctl start caddy
+
+    sleep 2
+
+    if systemctl is-active caddy &>/dev/null; then
+        echo -e "${gl_lv}✅ Caddy 启动成功${gl_bai}"
+
+        local server_ip=$(caddy_get_server_ip)
+
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_lv}🎉 Caddy 部署成功!${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "服务器 IP: $server_ip"
+        echo "配置文件: $CADDY_CONFIG_FILE"
+        echo ""
+        echo -e "${gl_huang}下一步:${gl_bai}"
+        echo "  请使用菜单 [2. 添加反代域名] 来配置反向代理"
+        echo ""
+    else
+        echo -e "${gl_hong}❌ Caddy 启动失败${gl_bai}"
+        echo ""
+        echo "查看错误日志:"
+        echo "  journalctl -u caddy -n 50 --no-pager"
+        echo ""
+    fi
+
+    break_end
+}
+
+# 添加反代域名
+caddy_add_domain() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  添加反代域名${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检查 Caddy 是否已安装
+    local status=$(caddy_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Caddy 未安装${gl_bai}"
+        echo "请先使用 [1. 一键部署 Caddy]"
+        break_end
+        return 1
+    fi
+
+    if [ "$status" != "running" ]; then
+        echo -e "${gl_huang}⚠️ Caddy 未运行${gl_bai}"
+        read -e -p "是否启动 Caddy? (y/n) [y]: " start_caddy
+        if [ "$start_caddy" != "n" ] && [ "$start_caddy" != "N" ]; then
+            systemctl start caddy
+            sleep 2
+            if ! systemctl is-active caddy &>/dev/null; then
+                echo -e "${gl_hong}❌ Caddy 启动失败${gl_bai}"
+                break_end
+                return 1
+            fi
+        else
+            break_end
+            return 1
+        fi
+    fi
+
+    echo -e "${gl_huang}配置示例:${gl_bai}"
+    echo "  域名: vox.moe"
+    echo "  后端: 123.45.67.89:8181"
+    echo ""
+
+    # 输入域名
+    read -e -p "请输入域名: " domain
+
+    if [ -z "$domain" ]; then
+        echo -e "${gl_hong}❌ 域名不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 简单验证域名格式
+    if ! echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'; then
+        echo -e "${gl_hong}❌ 域名格式不正确${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 检查域名是否已存在
+    if [ -f "$CADDY_DOMAIN_LIST_FILE" ] && grep -q "^${domain}|" "$CADDY_DOMAIN_LIST_FILE" 2>/dev/null; then
+        echo -e "${gl_hong}❌ 域名 $domain 已存在${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+
+    # 检查域名解析
+    if ! caddy_check_dns "$domain"; then
+        break_end
+        return 1
+    fi
+
+    echo ""
+
+    # 输入后端地址
+    read -e -p "请输入后端地址 (IP:端口): " backend
+
+    if [ -z "$backend" ]; then
+        echo -e "${gl_hong}❌ 后端地址不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 验证后端地址格式
+    if ! echo "$backend" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$'; then
+        echo -e "${gl_hong}❌ 后端地址格式不正确 (应为 IP:端口)${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo "域名: $domain"
+    echo "后端: $backend"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    read -e -p "确认添加? (y/n) [y]: " confirm
+
+    if [ "$confirm" = "n" ] || [ "$confirm" = "N" ]; then
+        echo "取消添加"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}[1/3] 备份配置文件...${gl_bai}"
+
+    # 备份当前配置
+    local backup_file="$CADDY_CONFIG_BACKUP_DIR/Caddyfile.$(date +%Y%m%d_%H%M%S)"
+    cp "$CADDY_CONFIG_FILE" "$backup_file"
+    echo -e "${gl_lv}✅ 已备份到: $backup_file${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[2/3] 添加配置...${gl_bai}"
+
+    # 添加配置到 Caddyfile
+    cat >> "$CADDY_CONFIG_FILE" << EOF
+
+# ${domain} - 添加于 $(date '+%Y-%m-%d %H:%M:%S')
+${domain} {
+    reverse_proxy ${backend}
+}
+EOF
+
+    echo -e "${gl_lv}✅ 配置已添加${gl_bai}"
+
+    # 记录到域名列表
+    echo "${domain}|${backend}|$(date +%s)" >> "$CADDY_DOMAIN_LIST_FILE"
+
+    echo ""
+    echo -e "${gl_kjlan}[3/3] 重载 Caddy...${gl_bai}"
+
+    # 先测试配置
+    if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
+        echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
+        echo "正在恢复备份..."
+        cp "$backup_file" "$CADDY_CONFIG_FILE"
+
+        # 从域名列表中删除
+        if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
+            sed -i "/^${domain}|/d" "$CADDY_DOMAIN_LIST_FILE"
+        fi
+
+        break_end
+        return 1
+    fi
+
+    # 重载 Caddy
+    systemctl reload caddy
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_lv}🎉 反代配置成功!${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "访问地址: https://${domain}"
+        echo "后端服务: ${backend}"
+        echo ""
+        echo -e "${gl_huang}说明:${gl_bai}"
+        echo "  ⏳ Caddy 正在自动申请 SSL 证书..."
+        echo "  ⏳ 首次访问可能需要等待几秒钟"
+        echo "  ✅ 证书申请成功后即可通过 HTTPS 访问"
+        echo ""
+        echo -e "${gl_huang}提示:${gl_bai}"
+        echo "  - 使用 [7. 查看 Caddy 日志] 可查看证书申请状态"
+        echo "  - 证书由 Let's Encrypt 签发，自动续期"
+        echo ""
+    else
+        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+        echo "正在恢复备份..."
+        cp "$backup_file" "$CADDY_CONFIG_FILE"
+        systemctl reload caddy
+
+        # 从域名列表中删除
+        if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
+            sed -i "/^${domain}|/d" "$CADDY_DOMAIN_LIST_FILE"
+        fi
+    fi
+
+    break_end
+}
+
+# 查看已配置域名
+caddy_list_domains() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  已配置域名列表${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ ! -f "$CADDY_DOMAIN_LIST_FILE" ] || [ ! -s "$CADDY_DOMAIN_LIST_FILE" ]; then
+        echo -e "${gl_huang}暂无配置的域名${gl_bai}"
+        echo ""
+        echo "请使用 [2. 添加反代域名] 来添加配置"
+        break_end
+        return 0
+    fi
+
+    local count=1
+    echo -e "${gl_kjlan}序号  域名                    后端地址               添加时间${gl_bai}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    while IFS='|' read -r domain backend timestamp; do
+        if [ -n "$domain" ]; then
+            local add_time=$(date -d "@$timestamp" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$timestamp" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "未知")
+            printf "%-6s%-24s%-23s%s\n" "$count" "$domain" "$backend" "$add_time"
+            count=$((count + 1))
+        fi
+    done < "$CADDY_DOMAIN_LIST_FILE"
+
+    echo ""
+    echo "总计: $((count - 1)) 个域名"
+    echo ""
+
+    break_end
+}
+
+# 删除反代域名
+caddy_delete_domain() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  删除反代域名${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ ! -f "$CADDY_DOMAIN_LIST_FILE" ] || [ ! -s "$CADDY_DOMAIN_LIST_FILE" ]; then
+        echo -e "${gl_huang}暂无配置的域名${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    # 显示域名列表
+    local count=1
+    declare -a domains
+    declare -a backends
+
+    echo -e "${gl_kjlan}序号  域名                    后端地址${gl_bai}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    while IFS='|' read -r domain backend timestamp; do
+        if [ -n "$domain" ]; then
+            printf "%-6s%-24s%s\n" "$count" "$domain" "$backend"
+            domains[$count]="$domain"
+            backends[$count]="$backend"
+            count=$((count + 1))
+        fi
+    done < "$CADDY_DOMAIN_LIST_FILE"
+
+    echo ""
+    read -e -p "请输入要删除的序号 (0 取消): " choice
+
+    if [ -z "$choice" ] || [ "$choice" = "0" ]; then
+        echo "取消删除"
+        break_end
+        return 0
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -ge "$count" ]; then
+        echo -e "${gl_hong}❌ 无效的序号${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local domain_to_delete="${domains[$choice]}"
+    local backend_to_delete="${backends[$choice]}"
+
+    echo ""
+    echo -e "${gl_hong}确认删除:${gl_bai}"
+    echo "  域名: $domain_to_delete"
+    echo "  后端: $backend_to_delete"
+    echo ""
+    read -e -p "确认删除? (y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消删除"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}[1/3] 备份配置文件...${gl_bai}"
+
+    # 备份当前配置
+    local backup_file="$CADDY_CONFIG_BACKUP_DIR/Caddyfile.$(date +%Y%m%d_%H%M%S)"
+    cp "$CADDY_CONFIG_FILE" "$backup_file"
+    echo -e "${gl_lv}✅ 已备份到: $backup_file${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[2/3] 删除配置...${gl_bai}"
+
+    # 从 Caddyfile 中删除配置块
+    # 使用临时文件
+    local temp_file=$(mktemp)
+    local in_block=false
+    local skip_next_blank=false
+
+    while IFS= read -r line; do
+        # 检查是否是要删除的域名开始
+        if echo "$line" | grep -q "^${domain_to_delete} {"; then
+            in_block=true
+            skip_next_blank=true
+            continue
+        fi
+
+        # 如果在要删除的块中
+        if [ "$in_block" = true ]; then
+            # 检查是否是块结束
+            if echo "$line" | grep -q "^}"; then
+                in_block=false
+                continue
+            fi
+            continue
+        fi
+
+        # 跳过注释行（域名配置的注释）
+        if [ "$skip_next_blank" = true ]; then
+            if echo "$line" | grep -q "^# ${domain_to_delete}"; then
+                continue
+            fi
+            if [ -z "$line" ]; then
+                skip_next_blank=false
+                continue
+            fi
+            skip_next_blank=false
+        fi
+
+        echo "$line" >> "$temp_file"
+    done < "$CADDY_CONFIG_FILE"
+
+    mv "$temp_file" "$CADDY_CONFIG_FILE"
+    chown caddy:caddy "$CADDY_CONFIG_FILE"
+
+    echo -e "${gl_lv}✅ 配置已删除${gl_bai}"
+
+    # 从域名列表中删除
+    sed -i "/^${domain_to_delete}|/d" "$CADDY_DOMAIN_LIST_FILE"
+
+    echo ""
+    echo -e "${gl_kjlan}[3/3] 重载 Caddy...${gl_bai}"
+
+    # 验证配置
+    if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
+        echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
+        echo "正在恢复备份..."
+        cp "$backup_file" "$CADDY_CONFIG_FILE"
+        break_end
+        return 1
+    fi
+
+    # 重载 Caddy
+    systemctl reload caddy
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+        echo ""
+        echo -e "${gl_lv}✅ 域名 $domain_to_delete 已删除${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+        echo "正在恢复备份..."
+        cp "$backup_file" "$CADDY_CONFIG_FILE"
+        systemctl reload caddy
+    fi
+
+    break_end
+}
+
+# 重载 Caddy 配置
+caddy_reload() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  重载 Caddy 配置${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(caddy_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Caddy 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在验证配置文件..."
+    if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
+        echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
+        echo ""
+        echo "请检查配置文件: $CADDY_CONFIG_FILE"
+        echo "查看详细错误: caddy validate --config $CADDY_CONFIG_FILE"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_lv}✅ 配置文件验证通过${gl_bai}"
+    echo ""
+
+    echo "正在重载 Caddy..."
+    systemctl reload caddy
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+        echo ""
+        echo "查看错误日志: journalctl -u caddy -n 50"
+    fi
+
+    break_end
+}
+
+# 查看 Caddy 状态
+caddy_show_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Caddy 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(caddy_check_status)
+
+    case "$status" in
+        "running")
+            echo -e "服务状态: ${gl_lv}✅ 运行中${gl_bai}"
+            ;;
+        "stopped")
+            echo -e "服务状态: ${gl_hong}❌ 已停止${gl_bai}"
+            ;;
+        "not_installed")
+            echo -e "服务状态: ${gl_hui}未安装${gl_bai}"
+            break_end
+            return 0
+            ;;
+        *)
+            echo -e "服务状态: ${gl_huang}⚠️ 未知${gl_bai}"
+            ;;
+    esac
+
+    echo ""
+
+    # 显示版本
+    if command -v caddy &>/dev/null; then
+        local version=$(caddy version 2>/dev/null | head -1)
+        echo "Caddy 版本: $version"
+    fi
+
+    echo ""
+
+    # 显示端口监听
+    echo -e "${gl_kjlan}端口监听:${gl_bai}"
+    if ss -lntp 2>/dev/null | grep -q ":443 "; then
+        echo -e "  443/tcp: ${gl_lv}✅ 监听中${gl_bai}"
+    else
+        echo -e "  443/tcp: ${gl_hong}❌ 未监听${gl_bai}"
+    fi
+
+    if ss -lntp 2>/dev/null | grep -q ":80 "; then
+        echo -e "  80/tcp: ${gl_lv}✅ 监听中${gl_bai}"
+    else
+        echo -e "  80/tcp: ${gl_hong}❌ 未监听${gl_bai}"
+    fi
+
+    echo ""
+
+    # 显示配置的域名数量
+    if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
+        local domain_count=$(wc -l < "$CADDY_DOMAIN_LIST_FILE" 2>/dev/null || echo 0)
+        echo "配置域名: $domain_count 个"
+    else
+        echo "配置域名: 0 个"
+    fi
+
+    echo ""
+    echo "配置文件: $CADDY_CONFIG_FILE"
+
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    read -e -p "是否查看详细服务状态? (y/n) [n]: " show_detail
+    if [ "$show_detail" = "y" ] || [ "$show_detail" = "Y" ]; then
+        echo ""
+        systemctl status caddy --no-pager -l
+    fi
+
+    break_end
+}
+
+# 查看 Caddy 日志
+caddy_show_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Caddy 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(caddy_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Caddy 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "1. 查看最近 50 行日志"
+    echo "2. 查看最近 100 行日志"
+    echo "3. 实时查看日志（Ctrl+C 退出）"
+    echo "4. 查看错误日志"
+    echo "0. 返回"
+    echo ""
+    read -e -p "请选择 [0-4]: " log_choice
+
+    echo ""
+
+    case "$log_choice" in
+        1)
+            journalctl -u caddy -n 50 --no-pager
+            ;;
+        2)
+            journalctl -u caddy -n 100 --no-pager
+            ;;
+        3)
+            echo "按 Ctrl+C 退出..."
+            echo ""
+            journalctl -u caddy -f
+            ;;
+        4)
+            journalctl -u caddy -p err -n 50 --no-pager
+            ;;
+        0|*)
+            return 0
+            ;;
+    esac
+
+    break_end
+}
+
+# 卸载 Caddy
+caddy_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 Caddy${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(caddy_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Caddy 未安装${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    echo -e "${gl_hong}⚠️ 此操作将删除 Caddy 及其配置${gl_bai}"
+    echo ""
+    echo "将要删除:"
+    echo "  - Caddy 程序"
+    echo "  - systemd 服务"
+    echo "  - 配置文件"
+    echo "  - SSL 证书"
+    echo ""
+    read -e -p "是否保留配置备份？(y/n) [y]: " keep_backup
+    echo ""
+    read -e -p "确认卸载? (y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消卸载"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+    echo ""
+
+    # 停止并禁用服务
+    echo "停止服务..."
+    systemctl stop caddy 2>/dev/null
+    systemctl disable caddy 2>/dev/null
+
+    # 删除 systemd 服务文件
+    echo "删除服务..."
+    rm -f /etc/systemd/system/caddy.service
+    systemctl daemon-reload
+
+    # 删除 Caddy 程序
+    echo "删除程序..."
+    rm -f /usr/bin/caddy
+
+    # 删除配置
+    if [ "$keep_backup" = "n" ] || [ "$keep_backup" = "N" ]; then
+        echo "删除配置..."
+        rm -rf "$CADDY_CONFIG_DIR"
+        rm -rf /var/lib/caddy
+        rm -rf /var/log/caddy
+    else
+        echo "保留配置备份..."
+        # 只删除主配置文件
+        rm -f "$CADDY_CONFIG_FILE"
+        rm -f "$CADDY_DOMAIN_LIST_FILE"
+        echo "配置备份保留在: $CADDY_CONFIG_BACKUP_DIR"
+    fi
+
+    # 删除用户
+    if id -u caddy &>/dev/null; then
+        userdel caddy 2>/dev/null
+    fi
+
+    echo ""
+    echo -e "${gl_lv}✅ Caddy 已卸载${gl_bai}"
+
+    break_end
+}
+
+# Caddy 管理主菜单
+manage_caddy() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Caddy 多域名反代 🚀${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(caddy_check_status)
+        local server_ip=$(caddy_get_server_ip)
+
+        case "$status" in
+            "running")
+                echo -e "服务状态: ${gl_lv}✅ 运行中${gl_bai}"
+                ;;
+            "stopped")
+                echo -e "服务状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "服务状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+            *)
+                echo -e "服务状态: ${gl_huang}⚠️ 未知${gl_bai}"
+                ;;
+        esac
+
+        echo -e "服务器IP: ${gl_huang}${server_ip}${gl_bai}"
+
+        # 显示域名数量
+        if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
+            local domain_count=$(wc -l < "$CADDY_DOMAIN_LIST_FILE" 2>/dev/null || echo 0)
+            echo -e "配置域名: ${gl_huang}${domain_count}${gl_bai} 个"
+        fi
+
+        echo ""
+        echo "1. 一键部署 Caddy"
+        echo "2. 添加反代域名"
+        echo "3. 查看已配置域名"
+        echo "4. 删除反代域名"
+        echo "5. 重载 Caddy 配置"
+        echo "6. 查看 Caddy 状态"
+        echo "7. 查看 Caddy 日志"
+        echo "8. 卸载 Caddy"
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-8]: " choice
+
+        case $choice in
+            1)
+                caddy_install
+                ;;
+            2)
+                caddy_add_domain
+                ;;
+            3)
+                caddy_list_domains
+                ;;
+            4)
+                caddy_delete_domain
+                ;;
+            5)
+                caddy_reload
+                ;;
+            6)
+                caddy_show_status
+                ;;
+            7)
+                caddy_show_logs
+                ;;
+            8)
+                caddy_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
 main() {
     check_root
 
@@ -16931,7 +18107,7 @@ main() {
         fi
         exit 0
     fi
-    
+
     # 交互式菜单
     while true; do
         show_main_menu
