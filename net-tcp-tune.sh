@@ -16286,25 +16286,56 @@ fuclaude_deploy() {
     docker stop "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
     docker rm "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
 
-    # 构建 docker run 命令
-    docker run -d \
-        --name "$FUCLAUDE_CONTAINER_NAME" \
-        -p ${port}:8181 \
-        -e TZ=Asia/Shanghai \
-        -e FUCLAUDE_BIND=0.0.0.0:8181 \
-        -e FUCLAUDE_TIMEOUT=600 \
-        -e FUCLAUDE_PROXY_URL= \
-        -e FUCLAUDE_REAL_LOGOUT=false \
-        -e FUCLAUDE_SITE_PASSWORD="$site_password" \
-        -e FUCLAUDE_COOKIE_SECRET="$cookie_secret" \
-        -e FUCLAUDE_SIGNUP_ENABLED="$signup_enabled" \
-        -e FUCLAUDE_SHOW_SESSION_KEY=false \
-        -v ${FUCLAUDE_DATA_DIR}:/app/data \
-        --restart unless-stopped \
-        "$FUCLAUDE_IMAGE"
+    # 构建 docker run 命令的函数
+    run_fuclaude_container() {
+        docker run -d \
+            --name "$FUCLAUDE_CONTAINER_NAME" \
+            -p ${port}:8181 \
+            -e TZ=Asia/Shanghai \
+            -e FUCLAUDE_BIND=0.0.0.0:8181 \
+            -e FUCLAUDE_TIMEOUT=600 \
+            -e FUCLAUDE_PROXY_URL= \
+            -e FUCLAUDE_REAL_LOGOUT=false \
+            -e FUCLAUDE_SITE_PASSWORD="$site_password" \
+            -e FUCLAUDE_COOKIE_SECRET="$cookie_secret" \
+            -e FUCLAUDE_SIGNUP_ENABLED="$signup_enabled" \
+            -e FUCLAUDE_SHOW_SESSION_KEY=false \
+            -v ${FUCLAUDE_DATA_DIR}:/app/data \
+            --restart unless-stopped \
+            "$FUCLAUDE_IMAGE" 2>&1
+    }
 
-    if [ $? -ne 0 ]; then
+    # 第一次尝试启动
+    local run_output=$(run_fuclaude_container)
+    local run_result=$?
+
+    # 检查是否是 iptables/网络错误
+    if [ $run_result -ne 0 ]; then
+        if echo "$run_output" | grep -qiE "iptables|chain|network|connectivity"; then
+            echo -e "${gl_huang}⚠️ 检测到 Docker 网络问题，正在自动修复...${gl_bai}"
+            echo ""
+
+            # 清理失败的容器
+            docker rm -f "$FUCLAUDE_CONTAINER_NAME" 2>/dev/null
+
+            # 重启 Docker 服务
+            echo "重启 Docker 服务..."
+            systemctl restart docker
+            sleep 3
+
+            echo "重新启动容器..."
+            run_output=$(run_fuclaude_container)
+            run_result=$?
+        fi
+    fi
+
+    if [ $run_result -ne 0 ]; then
+        echo "$run_output"
+        echo ""
         echo -e "${gl_hong}❌ 容器启动失败${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}提示: 可尝试手动执行以下命令后重试:${gl_bai}"
+        echo "  systemctl restart docker"
         break_end
         return 1
     fi
