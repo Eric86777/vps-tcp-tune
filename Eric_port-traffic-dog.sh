@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.11 更新: 修复pipefail下grep空匹配秒退，优化在线更新与通知模块备份 (by Eric86777)
 # v1.9.10 更新: 修复邮件通知入/出流量显示与计费模式不一致 (by Eric86777)
 # v1.9.9 更新: 修复恢复监控时重复追加规则 (by Eric86777)
 # v1.9.8 更新: 修复定时任务北京时间换算为系统时区 (by Eric86777)
 # v1.9.7 更新: 检测结果框再次微调对齐 (by Eric86777)
-# v1.9.6 更新: 规则数量不足改为基于计数器/配额规则检查 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.10"
+readonly SCRIPT_VERSION="1.9.11"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -33,6 +33,7 @@ readonly TRAFFIC_DATA_FILE="$CONFIG_DIR/traffic_data.json"
 readonly BACKUP_DIR="$CONFIG_DIR/backups"
 readonly BACKUP_CONFIG_FILE="$CONFIG_DIR/backup_config.json"
 readonly MAX_BACKUPS=7  # 保留最近7个备份
+readonly NOTIFICATION_BACKUP_KEEP=3  # 通知模块备份保留数量
 
 readonly RED='\033[0;31m'
 readonly YELLOW='\033[0;33m'
@@ -240,18 +241,34 @@ ensure_local_script_for_cron() {
     temp_file=$(mktemp) || true
     if [ -n "$temp_file" ] && download_with_sources "$script_url" "$temp_file"; then
         if verify_downloaded_dog_script "$temp_file"; then
-            local backup_path=""
+            local new_version=""
+            local current_version=""
+            new_version=$(grep -m1 'SCRIPT_VERSION=' "$temp_file" 2>/dev/null | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p')
             if [ -f "$local_script" ]; then
-                backup_path="${local_script}.bak.$(date +%Y%m%d_%H%M%S)"
-                cp "$local_script" "$backup_path" 2>/dev/null || true
+                current_version=$(grep -m1 'SCRIPT_VERSION=' "$local_script" 2>/dev/null | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p')
             fi
 
-            if mv "$temp_file" "$local_script"; then
-                chmod +x "$local_script" 2>/dev/null || true
-            else
-                echo -e "${YELLOW}更新脚本失败，保留旧版本${NC}"
-                [ -n "$backup_path" ] && cp "$backup_path" "$local_script" 2>/dev/null || true
+            local should_update=true
+            if [ -n "$current_version" ] && [ -n "$new_version" ] && [ "$current_version" = "$new_version" ]; then
+                should_update=false
+            fi
+
+            if [ "$should_update" = false ]; then
                 rm -f "$temp_file" 2>/dev/null || true
+            else
+                local backup_path=""
+                if [ -f "$local_script" ]; then
+                    backup_path="${local_script}.bak.$(date +%Y%m%d_%H%M%S)"
+                    cp "$local_script" "$backup_path" 2>/dev/null || true
+                fi
+
+                if mv "$temp_file" "$local_script"; then
+                    chmod +x "$local_script" 2>/dev/null || true
+                else
+                    echo -e "${YELLOW}更新脚本失败，保留旧版本${NC}"
+                    [ -n "$backup_path" ] && cp "$backup_path" "$local_script" 2>/dev/null || true
+                    rm -f "$temp_file" 2>/dev/null || true
+                fi
             fi
         else
             echo -e "${YELLOW}脚本校验失败，已跳过更新${NC}"
@@ -269,9 +286,6 @@ ensure_local_script_for_cron() {
 
 init_config() {
     mkdir -p "$CONFIG_DIR" "$(dirname "$LOG_FILE")"
-
-    # 静默下载通知模块，避免影响主流程
-    download_notification_modules >/dev/null 2>&1 || true
 
     if [ ! -f "$CONFIG_FILE" ]; then
         cat > "$CONFIG_FILE" << 'EOF'
@@ -725,7 +739,7 @@ restore_monitoring_if_needed() {
         local rules_insufficient=false
         if [ "$counter_missing" = false ]; then
             local counter_rules
-            counter_rules=$(echo "$all_rules" | grep "counter name \"port_${port_safe}_" | wc -l)
+            counter_rules=$(echo "$all_rules" | grep -c "counter name \"port_${port_safe}_" 2>/dev/null || true)
 
             local expected_counter_rules=8
             if is_port_group "$port"; then
@@ -852,7 +866,7 @@ restore_all_monitoring_rules() {
         fi
 
         local counter_rules
-        counter_rules=$(echo "$all_rules" | grep "counter name \"port_${port_safe}_" | wc -l)
+        counter_rules=$(echo "$all_rules" | grep -c "counter name \"port_${port_safe}_" 2>/dev/null || true)
         local expected_counter_rules=8
         if is_port_group "$port"; then
             local group_ports=($(get_group_ports "$port"))
@@ -4061,9 +4075,6 @@ import_config() {
         fi
     done
 
-    echo "正在更新通知模块..."
-    download_notification_modules >/dev/null 2>&1 || true
-
     rm -rf "$temp_dir"
 
     echo
@@ -4133,6 +4144,7 @@ download_notification_modules() {
 
         if mv "$new_dir" "$notifications_dir"; then
             chmod +x "$notifications_dir"/*.sh 2>/dev/null || true
+            cleanup_notification_backups
             rm -rf "$temp_dir"
             return 0
         fi
@@ -4145,6 +4157,26 @@ download_notification_modules() {
 
     rm -rf "$temp_dir"
     return 1
+}
+
+cleanup_notification_backups() {
+    local keep=${1:-$NOTIFICATION_BACKUP_KEEP}
+    if ! [[ "$keep" =~ ^[0-9]+$ ]] || [ "$keep" -lt 0 ]; then
+        keep=$NOTIFICATION_BACKUP_KEEP
+    fi
+
+    local backups=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && backups+=("$line")
+    done < <(ls -dt "$CONFIG_DIR"/notifications.bak.* 2>/dev/null || true)
+
+    if [ ${#backups[@]} -le "$keep" ]; then
+        return 0
+    fi
+
+    for ((i=keep; i<${#backups[@]}; i++)); do
+        rm -rf "${backups[$i]}" 2>/dev/null || true
+    done
 }
 
 # 安装(更新)脚本
@@ -4529,7 +4561,7 @@ diagnose_port_config() {
         
         # 3. 检查流量统计规则（counter规则）
         echo -e "${YELLOW}[流量统计规则检查]${NC}"
-        local counter_rules=$(echo "$all_rules" | grep "counter name \"port_${port_safe}_" | wc -l)
+        local counter_rules=$(echo "$all_rules" | grep -c "counter name \"port_${port_safe}_" 2>/dev/null || true)
         echo "  counter规则总数: $counter_rules"
         
         # 判断端口类型并计算预期规则数
@@ -4574,7 +4606,7 @@ diagnose_port_config() {
                 quota_ok=false
             fi
             
-            local quota_drop_rules=$(echo "$all_rules" | grep "quota name \"port_${port_safe}_quota\" drop" | wc -l)
+            local quota_drop_rules=$(echo "$all_rules" | grep -c "quota name \"port_${port_safe}_quota\" drop" 2>/dev/null || true)
             
             # 获取计费模式以计算正确的预期规则数
             local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -6549,7 +6581,7 @@ manage_backup() {
             echo "最后备份时间: 从未备份"
         fi
         
-        local backup_count=$(ls "$BACKUP_DIR"/traffic_backup_*.json 2>/dev/null | wc -l)
+        local backup_count=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'traffic_backup_*.json' 2>/dev/null | wc -l)
         echo -e "备份数量: ${BLUE}$backup_count/$MAX_BACKUPS${NC}"
         
         echo
