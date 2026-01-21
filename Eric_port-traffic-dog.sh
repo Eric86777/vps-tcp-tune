@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.12 更新: 增强稳定性：添加并发锁、数组默认值、除零保护、配置文件权限等 (by Eric86777)
 # v1.9.11 更新: 修复pipefail下grep空匹配秒退，优化在线更新与通知模块备份 (by Eric86777)
 # v1.9.10 更新: 修复邮件通知入/出流量显示与计费模式不一致 (by Eric86777)
 # v1.9.9 更新: 修复恢复监控时重复追加规则 (by Eric86777)
 # v1.9.8 更新: 修复定时任务北京时间换算为系统时区 (by Eric86777)
-# v1.9.7 更新: 检测结果框再次微调对齐 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.11"
+readonly SCRIPT_VERSION="1.9.12"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -34,6 +34,14 @@ readonly BACKUP_DIR="$CONFIG_DIR/backups"
 readonly BACKUP_CONFIG_FILE="$CONFIG_DIR/backup_config.json"
 readonly MAX_BACKUPS=7  # 保留最近7个备份
 readonly NOTIFICATION_BACKUP_KEEP=3  # 通知模块备份保留数量
+readonly LOCK_FILE="/var/run/port-traffic-dog.lock"
+
+# Bash 版本检查：脚本使用了 nameref (local -n) 特性，需要 Bash 4.3+
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]] || [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -lt 3 ]]; then
+    echo "错误：此脚本需要 Bash 4.3 或更高版本"
+    echo "当前版本: ${BASH_VERSION}"
+    exit 1
+fi
 
 readonly RED='\033[0;31m'
 readonly YELLOW='\033[0;33m'
@@ -333,6 +341,8 @@ init_config() {
   }
 }
 EOF
+        # 保护配置文件权限（包含敏感信息如 API Key）
+        chmod 600 "$CONFIG_FILE"
     fi
 
     # 如果是在线运行模式，需要下载脚本到本地供 cron 任务使用
@@ -499,8 +509,16 @@ get_system_timezone() {
 
 update_config() {
     local jq_expression="$1"
-    jq "$jq_expression" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
-    mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    local tmp_file="${CONFIG_FILE}.tmp"
+
+    # 安全更新：只有 jq 执行成功且输出非空才覆盖原文件
+    if jq "$jq_expression" "$CONFIG_FILE" > "$tmp_file" 2>/dev/null && [ -s "$tmp_file" ]; then
+        mv "$tmp_file" "$CONFIG_FILE"
+    else
+        rm -f "$tmp_file"
+        echo -e "${RED}配置更新失败，保留原配置${NC}" >&2
+        return 1
+    fi
 }
 
 show_port_list() {
@@ -672,8 +690,8 @@ save_traffic_data() {
 
     for port in "${active_ports[@]}"; do
         local traffic_data=($(get_nftables_counter_data "$port"))
-        local current_input=${traffic_data[0]}
-        local current_output=${traffic_data[1]}
+        local current_input=${traffic_data[0]:-0}
+        local current_output=${traffic_data[1]:-0}
 
         # 只备份有意义的数据
         if [ $current_input -gt 0 ] || [ $current_output -gt 0 ]; then
@@ -692,7 +710,8 @@ save_traffic_data() {
 setup_exit_hooks() {
     # 进程退出时自动保存数据，避免重启丢失
     trap 'save_traffic_data_on_exit' EXIT
-    trap 'save_traffic_data_on_exit; exit 1' INT TERM
+    # HUP: 终端断开时也保存数据
+    trap 'save_traffic_data_on_exit; exit 1' INT TERM HUP
 }
 
 save_traffic_data_on_exit() {
@@ -1080,7 +1099,10 @@ get_port_status_label() {
         if [ "$monthly_limit" != "unlimited" ]; then
             local current_usage=$(get_port_monthly_usage "$port")
             local limit_bytes=$(parse_size_to_bytes "$monthly_limit")
-            local usage_percent=$((current_usage * 100 / limit_bytes))
+            local usage_percent=0
+            if [ "$limit_bytes" -gt 0 ]; then
+                usage_percent=$((current_usage * 100 / limit_bytes))
+            fi
 
             local quota_display="$monthly_limit"
             case "$billing_mode" in
@@ -1143,8 +1165,8 @@ get_port_status_label() {
 get_port_monthly_usage() {
     local port=$1
     local traffic_data=($(get_port_traffic "$port"))
-    local input_bytes=${traffic_data[0]}
-    local output_bytes=${traffic_data[1]}
+    local input_bytes=${traffic_data[0]:-0}
+    local output_bytes=${traffic_data[1]:-0}
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
     calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode"
@@ -1329,8 +1351,8 @@ get_daily_total_traffic() {
     local ports=($(get_active_ports))
     for port in "${ports[@]}"; do
         local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
+        local input_bytes=${traffic_data[0]:-0}
+        local output_bytes=${traffic_data[1]:-0}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local port_total=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         total_bytes=$(( total_bytes + port_total ))
@@ -1345,8 +1367,8 @@ format_port_list() {
 
     for port in "${active_ports[@]}"; do
         local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
+        local input_bytes=${traffic_data[0]:-0}
+        local output_bytes=${traffic_data[1]:-0}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
@@ -2353,8 +2375,8 @@ merge_ports_to_group() {
         local port=${single_ports[$i]}
         local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
         local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
+        local input_bytes=${traffic_data[0]:-0}
+        local output_bytes=${traffic_data[1]:-0}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
@@ -2420,8 +2442,8 @@ merge_ports_to_group() {
     local total_output=0
     for port in "${ports_to_merge[@]}"; do
         local traffic_data=($(get_port_traffic "$port"))
-        total_input=$((total_input + ${traffic_data[0]}))
-        total_output=$((total_output + ${traffic_data[1]}))
+        total_input=$((total_input + ${traffic_data[0]:-0}))
+        total_output=$((total_output + ${traffic_data[1]:-0}))
     done
     
     # 获取第一个端口的配置作为模板
@@ -3017,11 +3039,11 @@ set_port_update_expiration() {
                 
                 # 【修复BUG】清除租期后必须解封端口，但要保留历史流量数据
                 echo -e "${YELLOW}正在恢复端口服务...${NC}"
-                
+
                 # 1. 先保存当前流量数据
                 local traffic_data=($(get_port_traffic "$port"))
-                local saved_input=${traffic_data[0]}
-                local saved_output=${traffic_data[1]}
+                local saved_input=${traffic_data[0]:-0}
+                local saved_output=${traffic_data[1]:-0}
                 echo "保存当前流量: 上行=$(format_bytes $saved_input) 下行=$(format_bytes $saved_output)"
                 
                 # 2. 删除旧规则（包括可能的封锁规则）
@@ -3070,9 +3092,9 @@ set_port_update_expiration() {
             0) return ;;
             *) echo -e "${RED}无效选择${NC}"; sleep 1; continue ;;
         esac
-        
+
         # 如果不是手动输入，则计算日期
-        if [ -z "$new_date" ] && [ $duration_choice -le 4 ]; then
+        if [ -z "$new_date" ] && [ "$duration_choice" -ge 1 ] 2>/dev/null && [ "$duration_choice" -le 4 ] 2>/dev/null; then
             if [ "$is_renewal" = "false" ]; then
                 months_to_add=$(adjust_initial_expiration_months "$base_date" "$months_to_add" "$reset_day")
             fi
@@ -3085,11 +3107,11 @@ set_port_update_expiration() {
             
             # 【修复BUG】自动复活逻辑：必须先保存流量数据，避免续费时清空历史流量！
             echo -e "${YELLOW}正在恢复端口服务...${NC}"
-            
+
             # 1. 先保存当前流量数据
             local traffic_data=($(get_port_traffic "$port"))
-            local saved_input=${traffic_data[0]}
-            local saved_output=${traffic_data[1]}
+            local saved_input=${traffic_data[0]:-0}
+            local saved_output=${traffic_data[1]:-0}
             echo "保存当前流量: 上行=$(format_bytes $saved_input) 下行=$(format_bytes $saved_output)"
             
             # 2. 删除旧规则（包括可能的封锁规则）
@@ -3714,8 +3736,8 @@ immediate_reset() {
     local total_all_traffic=0
     for port in "${ports_to_reset[@]}"; do
         local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
+        local input_bytes=${traffic_data[0]:-0}
+        local output_bytes=${traffic_data[1]:-0}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
@@ -3734,8 +3756,8 @@ immediate_reset() {
         for port in "${ports_to_reset[@]}"; do
             # 获取当前流量用于记录
             local traffic_data=($(get_port_traffic "$port"))
-            local input_bytes=${traffic_data[0]}
-            local output_bytes=${traffic_data[1]}
+            local input_bytes=${traffic_data[0]:-0}
+            local output_bytes=${traffic_data[1]:-0}
             local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
             local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
 
@@ -3762,8 +3784,8 @@ auto_reset_port() {
     local port="$1"
 
     local traffic_data=($(get_port_traffic "$port"))
-    local input_bytes=${traffic_data[0]}
-    local output_bytes=${traffic_data[1]}
+    local input_bytes=${traffic_data[0]:-0}
+    local output_bytes=${traffic_data[1]:-0}
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
     local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
 
@@ -5431,9 +5453,9 @@ generate_port_html_card() {
     fi
     local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "double"')
     local traffic_data=($(get_port_traffic "$port"))
-    local input_bytes=${traffic_data[0]}
-    local output_bytes=${traffic_data[1]}
-    
+    local input_bytes=${traffic_data[0]:-0}
+    local output_bytes=${traffic_data[1]:-0}
+
     local total_traffic_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
     local total_traffic_str=$(format_bytes "$total_traffic_bytes")
     # 根据计费模式决定入站/出站显示是否×2（与终端显示逻辑一致）
@@ -6198,8 +6220,8 @@ perform_backup() {
     local first=true
     for port in "${active_ports[@]}"; do
         local traffic_data=($(get_nftables_counter_data "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
+        local input_bytes=${traffic_data[0]:-0}
+        local output_bytes=${traffic_data[1]:-0}
         local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         
@@ -7006,6 +7028,16 @@ manage_private_network() {
 
 main() {
     check_root
+
+    # 并发锁机制：防止多实例同时运行导致配置文件损坏
+    exec 200>"$LOCK_FILE"
+    if ! flock -n 200; then
+        echo -e "${RED}错误：另一个端口流量狗实例正在运行${NC}"
+        echo "如果确认没有其他实例运行，请删除锁文件后重试："
+        echo "  rm -f $LOCK_FILE"
+        exit 1
+    fi
+
     check_dependencies
     init_config
 
