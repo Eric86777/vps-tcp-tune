@@ -2,17 +2,17 @@
 # ============================================================================
 # 版本管理规则：每次更新版本时，只保留最新5条版本备注
 # ============================================================================
+# v1.9.13 更新: 新增配额预警邮件通知(80%预警+100%封锁)，每6小时自动检查 (by Eric86777)
 # v1.9.12 更新: 增强稳定性：添加并发锁、数组默认值、除零保护、配置文件权限等 (by Eric86777)
 # v1.9.11 更新: 修复pipefail下grep空匹配秒退，优化在线更新与通知模块备份 (by Eric86777)
 # v1.9.10 更新: 修复邮件通知入/出流量显示与计费模式不一致 (by Eric86777)
 # v1.9.9 更新: 修复恢复监控时重复追加规则 (by Eric86777)
-# v1.9.8 更新: 修复定时任务北京时间换算为系统时区 (by Eric86777)
 # 完整更新日志见: https://github.com/Eric86777/vps-tcp-tune
 
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.12"
+readonly SCRIPT_VERSION="1.9.13"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -322,7 +322,6 @@ init_config() {
       "resend_api_key": "",
       "email_from": "",
       "email_from_name": "",
-      "email_to": "",
       "server_name": "",
       "status_notifications": {
         "enabled": false,
@@ -1956,9 +1955,11 @@ quick_setup_port() {
                     if [ "$new_email" = "d" ] || [ "$new_email" = "delete" ]; then
                         update_config "del(.ports.\"$port\".email)"
                         echo -e "${YELLOW}已删除端口 $port 的邮箱配置${NC}"
+                        setup_quota_check_cron
                     elif [[ "$new_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
                         update_config ".ports.\"$port\".email = \"$new_email\""
                         echo -e "${GREEN}端口 $port 邮箱已设置为: $new_email${NC}"
+                        setup_quota_check_cron
                     else
                         echo -e "${RED}邮箱格式错误，未保存${NC}"
                     fi
@@ -1970,7 +1971,7 @@ quick_setup_port() {
             fi
         fi
     fi
-    
+
     # ==================== 完成 ====================
     echo
     echo -e "${GREEN}========================================${NC}"
@@ -2863,6 +2864,9 @@ set_port_quota_limit() {
 
     echo
     echo -e "${GREEN}成功设置 $success_count 个端口的流量配额${NC}"
+
+    # 更新配额检查定时任务
+    setup_quota_check_cron
 }
 
 manage_traffic_limits() {
@@ -4419,6 +4423,107 @@ check_all_ports_expiration() {
     done
 }
 
+# 检查所有端口配额使用情况 (用于每日Cron)
+# 功能：80%预警 + 100%封锁通知
+check_all_ports_quota() {
+    local active_ports=($(get_active_ports))
+    local today=$(get_beijing_time +%Y-%m-%d)
+
+    for port in "${active_ports[@]}"; do
+        local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // true" "$CONFIG_FILE")
+        local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+
+        # 只检查启用了配额且非无限制的端口
+        if [ "$quota_enabled" != "true" ] || [ "$monthly_limit" = "unlimited" ]; then
+            continue
+        fi
+
+        local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE")
+        # 无邮箱则跳过
+        if [ -z "$user_email" ] || [ "$user_email" = "null" ]; then
+            continue
+        fi
+
+        local current_usage=$(get_port_monthly_usage "$port" 2>/dev/null || echo "0")
+        local limit_bytes=$(parse_size_to_bytes "$monthly_limit" 2>/dev/null || echo "0")
+
+        if [ "$limit_bytes" -le 0 ]; then
+            continue
+        fi
+
+        local usage_percent=$((current_usage * 100 / limit_bytes))
+        local current_usage_str=$(format_bytes "$current_usage")
+
+        # 获取备注用于邮件标题
+        local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
+        local port_display="$port"
+        if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+            port_display="$port ($remark)"
+        fi
+
+        # 获取重置日和当前计费周期（两个检查都需要用到）
+        local reset_day=$(jq -r ".ports.\"$port\".quota.reset_day // 1" "$CONFIG_FILE")
+        local current_cycle_start=$(get_current_billing_cycle_start "$reset_day")
+
+        # 1. 检查是否达到100%（已封锁）
+        if [ $usage_percent -ge 100 ]; then
+            local last_quota_block_cycle=$(jq -r ".ports.\"$port\".last_quota_block_notify_cycle // \"\"" "$CONFIG_FILE")
+            # 每计费周期只发一次封锁通知
+            if [ "$last_quota_block_cycle" != "$current_cycle_start" ]; then
+                log_notification "[配额管理] 端口 $port 配额已用完 (${usage_percent}%)，发送封锁通知"
+                local title="【流量超限】端口 $port_display 已被暂停"
+                local body="<h1>⛔ 流量配额已用完</h1>
+                            <p>您好，</p>
+                            <p>您的端口 <strong>$port</strong> 本月流量配额已用完。</p>
+                            <p>已使用: <strong>${current_usage_str}</strong> / 配额: <strong>${monthly_limit}</strong> (${usage_percent}%)</p>
+                            <p>该端口目前已被暂停服务。如需继续使用，请联系管理员增加配额或等待下月重置。</p>"
+                if send_email_notification "$title" "$body" "$user_email" >/dev/null 2>&1; then
+                    update_config ".ports.\"$port\".last_quota_block_notify_cycle = \"$current_cycle_start\""
+                fi
+            fi
+        # 2. 检查是否达到80%预警线
+        elif [ $usage_percent -ge 80 ]; then
+            local last_quota_warning_cycle=$(jq -r ".ports.\"$port\".last_quota_warning_cycle // \"\"" "$CONFIG_FILE")
+            # 每计费周期只发一次80%预警
+            if [ "$last_quota_warning_cycle" != "$current_cycle_start" ]; then
+                log_notification "[配额预警] 端口 $port 配额使用达 ${usage_percent}%，发送预警"
+                local title="【流量预警】端口 $port_display 配额即将用完"
+                local body="<h1>⚠️ 流量预警</h1>
+                            <p>您好，</p>
+                            <p>您的端口 <strong>$port</strong> 本月流量配额已使用超过 80%。</p>
+                            <p>已使用: <strong>${current_usage_str}</strong> / 配额: <strong>${monthly_limit}</strong> (${usage_percent}%)</p>
+                            <p>请注意控制流量使用，超出配额后服务将被暂停。</p>"
+                if send_email_notification "$title" "$body" "$user_email" >/dev/null 2>&1; then
+                    # 记录本计费周期已发送预警
+                    update_config ".ports.\"$port\".last_quota_warning_cycle = \"$current_cycle_start\""
+                fi
+            fi
+        fi
+    done
+}
+
+# 获取当前计费周期起始日期（用于判断预警是否已发送）
+get_current_billing_cycle_start() {
+    local reset_day=${1:-1}
+    local today_day=$(get_beijing_time +%d | sed 's/^0//')
+    local year=$(get_beijing_time +%Y)
+    local month=$(get_beijing_time +%m)
+
+    if [ "$today_day" -ge "$reset_day" ]; then
+        # 当前周期从本月reset_day开始
+        printf "%s-%s-%02d" "$year" "$month" "$reset_day"
+    else
+        # 当前周期从上月reset_day开始
+        if [ "$month" = "01" ]; then
+            month="12"
+            year=$((year - 1))
+        else
+            month=$(printf "%02d" $((10#$month - 1)))
+        fi
+        printf "%s-%s-%02d" "$year" "$month" "$reset_day"
+    fi
+}
+
 # 当前流量狗配置检测 (完整详细版)
 diagnose_port_config() {
     clear
@@ -4956,6 +5061,7 @@ uninstall_script() {
         remove_telegram_notification_cron 2>/dev/null || true
         remove_wecom_notification_cron 2>/dev/null || true
         remove_email_notification_cron 2>/dev/null || true
+        remove_quota_check_cron 2>/dev/null || true
 
         rm -rf "$CONFIG_DIR" 2>/dev/null || true
         rm -f "/usr/local/bin/$SHORTCUT_COMMAND" 2>/dev/null || true
@@ -5206,6 +5312,57 @@ setup_email_notification_cron() {
         esac
     fi
 
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+# 配额预警检查 cron (北京时间每6小时执行一次: 0点、6点、12点、18点)
+setup_quota_check_cron() {
+    local script_path="$SCRIPT_PATH"
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗配额检查" > "$temp_cron" || true
+
+    # 检查是否有任何端口配置了邮箱且启用了配额
+    local has_quota_ports=false
+    local active_ports=($(get_active_ports 2>/dev/null)) || active_ports=()
+    for port in "${active_ports[@]}"; do
+        local user_email=$(jq -r ".ports.\"$port\".email // \"\"" "$CONFIG_FILE" 2>/dev/null)
+        local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // true" "$CONFIG_FILE" 2>/dev/null)
+        local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE" 2>/dev/null)
+        if [ -n "$user_email" ] && [ "$user_email" != "null" ] && \
+           [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
+            has_quota_ports=true
+            break
+        fi
+    done
+
+    # 只有存在需要检查的端口时才添加 cron
+    if [ "$has_quota_ports" = "true" ]; then
+        # 转换北京时间 0点、6点、12点、18点 为本地时间
+        local result_00=($(convert_beijing_to_local_time "00" "00"))
+        local result_06=($(convert_beijing_to_local_time "06" "00"))
+        local result_12=($(convert_beijing_to_local_time "12" "00"))
+        local result_18=($(convert_beijing_to_local_time "18" "00"))
+
+        local hour_00=${result_00[0]:-0}
+        local hour_06=${result_06[0]:-6}
+        local hour_12=${result_12[0]:-12}
+        local hour_18=${result_18[0]:-18}
+
+        # 添加4个cron任务（北京时间 0/6/12/18 点）
+        echo "0 $hour_00 * * * $script_path --check-quota >/dev/null 2>&1  # 端口流量狗配额检查" >> "$temp_cron"
+        echo "0 $hour_06 * * * $script_path --check-quota >/dev/null 2>&1  # 端口流量狗配额检查" >> "$temp_cron"
+        echo "0 $hour_12 * * * $script_path --check-quota >/dev/null 2>&1  # 端口流量狗配额检查" >> "$temp_cron"
+        echo "0 $hour_18 * * * $script_path --check-quota >/dev/null 2>&1  # 端口流量狗配额检查" >> "$temp_cron"
+    fi
+
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+remove_quota_check_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗配额检查" > "$temp_cron" || true
     crontab "$temp_cron"
     rm -f "$temp_cron"
 }
@@ -5625,18 +5782,10 @@ send_email_notification() {
     local email_from=$(jq -r '.notifications.email.email_from // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
     local email_from_name=$(jq -r '.notifications.email.email_from_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
     
-    # 如果没有指定收件人，尝试获取全局配置（兼容旧逻辑，虽然现在主要走分发）
     local email_to="${target_email}"
-    if [ -z "$email_to" ]; then
-        email_to=$(jq -r '.notifications.email.email_to // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
-    fi
 
     if [ -z "$api_key" ] || [ -z "$email_from" ] || [ -z "$email_to" ]; then
-        if [ -z "$target_email" ]; then
-            log_notification "[邮件通知] 未指定收件人，且无全局配置"
-        else
-            log_notification "[邮件通知] 配置不完整，缺少必要参数"
-        fi
+        log_notification "[邮件通知] 配置不完整，缺少必要参数 (api_key/email_from/收件人)"
         return 1
     fi
 
@@ -5956,9 +6105,8 @@ email_configure_info() {
         server_name="$default_name"
     fi
 
-    # 保存配置 (移除 email_to)
-    update_config "del(.notifications.email.email_to) | 
-        .notifications.email.resend_api_key = \"$api_key\" |
+    # 保存配置
+    update_config ".notifications.email.resend_api_key = \"$api_key\" |
         .notifications.email.email_from = \"$email_from\" |
         .notifications.email.email_from_name = \"$email_from_name\" |
         .notifications.email.server_name = \"$server_name\" |
@@ -6043,9 +6191,11 @@ email_configure_port_recipients() {
             if [ "$new_email" = "d" ] || [ "$new_email" = "delete" ]; then
                 update_config "del(.ports.\"$port\".email)"
                 echo -e "${YELLOW}已删除端口 $port 的邮箱配置${NC}"
+                setup_quota_check_cron
             elif [[ "$new_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
                 update_config ".ports.\"$port\".email = \"$new_email\""
                 echo -e "${GREEN}端口 $port 邮箱已设置为: $new_email${NC}"
+                setup_quota_check_cron
             else
                 echo -e "${RED}邮箱格式错误，未保存${NC}"
             fi
@@ -7094,6 +7244,11 @@ main() {
                 ;;
             --daily-check)
                 check_all_ports_expiration
+                check_all_ports_quota
+                exit 0
+                ;;
+            --check-quota)
+                check_all_ports_quota
                 exit 0
                 ;;
             --reset-port)
@@ -7135,6 +7290,7 @@ main() {
                 echo "  --send-telegram-status    发送Telegram状态通知"
                 echo "  --send-wecom-status       发送企业wx 状态通知"
                 echo "  --send-email-status       发送邮件状态通知"
+                echo "  --check-quota             检查配额预警 (80%/100%)"
                 echo "  --reset-port PORT         重置指定端口流量"
                 echo
                 echo -e "${GREEN}快捷命令: $SHORTCUT_COMMAND${NC}"
