@@ -4933,9 +4933,16 @@ diagnose_port_config() {
     else
         echo -e "  邮件通知: ${YELLOW}⚠️ 未配置${NC}"
     fi
-    
+
+    # 配额预警检查 cron 状态
+    if crontab -l 2>/dev/null | grep -q "# 端口流量狗配额检查"; then
+        echo -e "  流量超量预警: ${GREEN}✅ 已配置${NC}"
+    else
+        echo -e "  流量超量预警: ${YELLOW}⚠️ 未配置${NC}"
+    fi
+
     echo
-    
+
     # ========== 问题端口汇总 ==========
     echo -e "${BLUE}==================== 问题端口汇总 ====================${NC}"
     echo
