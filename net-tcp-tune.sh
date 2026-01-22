@@ -1744,23 +1744,44 @@ enable_realm_ipv4() {
         return 1
     fi
 
-    # 添加 resolve: ipv4 (在第一个 { 后插入)
-    if ! grep -q '"resolve"' "$temp_config"; then
-        sed -i '0,/{/s/{/{\n    "resolve": "ipv4",/' "$temp_config"
-        echo -e "${gl_lv}✅ 已添加 resolve: ipv4${gl_bai}"
-    else
-        echo -e "${gl_lv}✅ resolve 配置已存在${gl_bai}"
-    fi
+    # 优先使用 jq 安全修改 JSON，回退到 sed
+    if command -v jq &>/dev/null; then
+        # 使用 jq 安全地添加 resolve: ipv4
+        if ! jq -e '.resolve' "$temp_config" >/dev/null 2>&1; then
+            if jq '. + {"resolve": "ipv4"}' "$temp_config" > "${temp_config}.new" 2>/dev/null; then
+                mv "${temp_config}.new" "$temp_config"
+                echo -e "${gl_lv}✅ 已添加 resolve: ipv4 (jq)${gl_bai}"
+            fi
+        else
+            echo -e "${gl_lv}✅ resolve 配置已存在${gl_bai}"
+        fi
 
-    # 替换所有 ::: 为 0.0.0.0
-    local listen_count=$(grep ':::' "$temp_config" 2>/dev/null | wc -l)
-    listen_count=$(echo "$listen_count" | tr -d ' \n')
-
-    if [ "$listen_count" -gt 0 ]; then
-        sed -i 's/":::/"0.0.0.0:/g' "$temp_config"
-        echo -e "${gl_lv}✅ 已修改 ${listen_count} 个监听地址为 0.0.0.0${gl_bai}"
+        # 使用 jq 替换 ::: 为 0.0.0.0
+        local listen_count=$(grep -c ':::' "$temp_config" 2>/dev/null || echo 0)
+        if [ "$listen_count" -gt 0 ]; then
+            if jq 'walk(if type == "string" then gsub(":::"; "0.0.0.0:") else . end)' "$temp_config" > "${temp_config}.new" 2>/dev/null; then
+                mv "${temp_config}.new" "$temp_config"
+                echo -e "${gl_lv}✅ 已修改 ${listen_count} 个监听地址为 0.0.0.0 (jq)${gl_bai}"
+            fi
+        else
+            echo -e "${gl_lv}✅ 监听地址已经是 IPv4 格式${gl_bai}"
+        fi
     else
-        echo -e "${gl_lv}✅ 监听地址已经是 IPv4 格式${gl_bai}"
+        # 回退到 sed（兼容无 jq 环境）
+        if ! grep -q '"resolve"' "$temp_config"; then
+            sed -i '0,/{/s/{/{\n    "resolve": "ipv4",/' "$temp_config"
+            echo -e "${gl_lv}✅ 已添加 resolve: ipv4 (sed)${gl_bai}"
+        else
+            echo -e "${gl_lv}✅ resolve 配置已存在${gl_bai}"
+        fi
+
+        local listen_count=$(grep -c ':::' "$temp_config" 2>/dev/null || echo 0)
+        if [ "$listen_count" -gt 0 ]; then
+            sed -i 's/":::/"0.0.0.0:/g' "$temp_config"
+            echo -e "${gl_lv}✅ 已修改 ${listen_count} 个监听地址为 0.0.0.0 (sed)${gl_bai}"
+        else
+            echo -e "${gl_lv}✅ 监听地址已经是 IPv4 格式${gl_bai}"
+        fi
     fi
 
     # 验证 JSON 格式
