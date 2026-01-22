@@ -13973,11 +13973,40 @@ ag_proxy_install_nodejs() {
         local os_id="${ID,,}"
     fi
 
+    # 安全下载并执行设置脚本（避免 curl | bash 漏洞）
+    local setup_script=$(mktemp)
+    local script_url=""
+
     if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]]; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
+        script_url="https://deb.nodesource.com/setup_20.x"
+    elif [[ "$os_id" == "centos" || "$os_id" == "rhel" || "$os_id" == "fedora" || "$os_id" == "rocky" || "$os_id" == "alma" ]]; then
+        script_url="https://rpm.nodesource.com/setup_20.x"
+    fi
+
+    if [ -n "$script_url" ]; then
+        # 下载脚本
+        if ! curl -fsSL --connect-timeout 15 --max-time 60 "$script_url" -o "$setup_script" 2>/dev/null; then
+            echo -e "${gl_hong}❌ 下载 Node.js 设置脚本失败${gl_bai}"
+            rm -f "$setup_script"
+            return 1
+        fi
+
+        # 验证脚本格式（必须是 shell 脚本）
+        if ! head -1 "$setup_script" | grep -q "^#!"; then
+            echo -e "${gl_hong}❌ 脚本格式验证失败${gl_bai}"
+            rm -f "$setup_script"
+            return 1
+        fi
+
+        # 执行脚本
+        chmod +x "$setup_script"
+        bash "$setup_script" >/dev/null 2>&1
+        rm -f "$setup_script"
+    fi
+
+    if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]]; then
         apt-get install -y nodejs >/dev/null 2>&1
     elif [[ "$os_id" == "centos" || "$os_id" == "rhel" || "$os_id" == "fedora" || "$os_id" == "rocky" || "$os_id" == "alma" ]]; then
-        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
         if command -v dnf &>/dev/null; then
             dnf install -y nodejs >/dev/null 2>&1
         else
