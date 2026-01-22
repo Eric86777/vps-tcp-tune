@@ -8704,8 +8704,8 @@ write_config() {
     
     echo "$config_content" > "$xray_config_path"
     
-    # 修复：设置适当权限，确保 xray 用户可以读取
-    chmod 644 "$xray_config_path"
+    # 安全：敏感配置文件仅 root 可读写
+    chmod 600 "$xray_config_path"
     chown root:root "$xray_config_path"
 }
 
@@ -9909,10 +9909,10 @@ add_socks5_proxy() {
     # 备份原配置
     cp "$xray_config_path" "${xray_config_path}.bak.$(date +%s)"
     
-    # 保存配置
+    # 保存配置（安全权限）
     echo "$config" > "$xray_config_path"
-    chmod 644 "$xray_config_path"
-    
+    chmod 600 "$xray_config_path"
+
     success "✅ 已为节点 ${cyan}${selected_tag}${none} 配置 SOCKS5 链式代理"
     info "SOCKS5: ${cyan}${socks5_addr}:${socks5_port}${none}"
     
@@ -10079,10 +10079,10 @@ delete_socks5_proxy() {
     # 备份原配置
     cp "$xray_config_path" "${xray_config_path}.bak.$(date +%s)"
     
-    # 保存配置
+    # 保存配置（安全权限）
     echo "$config" > "$xray_config_path"
-    chmod 644 "$xray_config_path"
-    
+    chmod 600 "$xray_config_path"
+
     success "✅ 已删除节点 ${cyan}${inbound_tag}${none} 的链式代理配置"
     
     # 重启Xray
