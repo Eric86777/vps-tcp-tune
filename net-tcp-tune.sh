@@ -807,14 +807,22 @@ set_temp_socks5_proxy() {
         proxy_url="socks5://${proxy_ip}:${proxy_port}"
     fi
     
-    # 生成临时配置文件
+    # 生成临时配置文件（安全模式）
     local timestamp=$(date +%Y%m%d_%H%M%S)
-    local config_file="/tmp/socks5_proxy_${timestamp}.sh"
-    
+    # 优先使用用户私有目录，回退到 /tmp
+    local secure_tmp="${XDG_RUNTIME_DIR:-/tmp}"
+    local config_file="${secure_tmp}/socks5_proxy_${timestamp}.sh"
+
+    # 设置安全的 umask（仅所有者可读写）
+    local old_umask=$(umask)
+    umask 077
+
+    # 生成配置文件（不在文件中输出完整密码）
     cat > "$config_file" << PROXYEOF
 #!/bin/bash
 # SOCKS5 代理配置 - 生成于 $(date '+%Y-%m-%d %H:%M:%S')
 # 此配置仅对当前终端会话有效
+# 警告: 使用后请删除此文件 (rm $config_file)
 
 export http_proxy="${proxy_url}"
 export https_proxy="${proxy_url}"
@@ -822,12 +830,13 @@ export all_proxy="${proxy_url}"
 
 echo "SOCKS5 代理已启用："
 echo "  服务器: ${proxy_ip}:${proxy_port}"
-echo "  http_proxy=${proxy_url}"
-echo "  https_proxy=${proxy_url}"
-echo "  all_proxy=${proxy_url}"
+echo "  用户: ${proxy_user:-无}"
+echo "  (代理 URL 已设置到环境变量)"
 PROXYEOF
-    
-    chmod +x "$config_file"
+
+    # 恢复 umask 并确保文件权限安全
+    umask "$old_umask"
+    chmod 600 "$config_file"
     
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
