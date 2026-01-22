@@ -1408,8 +1408,12 @@ analyze_realm_connections() {
             echo "        按 Ctrl+C 退出"
             echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
             echo ""
-            
-            while true; do
+
+            # 设置信号处理，优雅退出监控循环
+            local monitor_running=true
+            trap 'echo -e "\n${gl_huang}监控已停止${gl_bai}"; monitor_running=false' INT TERM
+
+            while $monitor_running; do
                 echo "[$(date '+%H:%M:%S')]"
                 for source_ip in $all_source_ips; do
                     local conn_count=$(ss -tnp 2>/dev/null | grep "realm" | grep -c "${source_ip}")
@@ -1418,6 +1422,10 @@ analyze_realm_connections() {
                 echo ""
                 sleep 5
             done
+
+            # 清理 trap
+            trap - INT TERM
+            break_end
             ;;
         4)
             # 检测特定IP
