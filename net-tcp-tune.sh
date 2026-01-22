@@ -1459,13 +1459,17 @@ analyze_realm_connections() {
 # DNS 守护标记文件
 DNS_GUARD_MARKER="/root/.realm_backup/dns_guard.conf"
 
-# 检查 Cron 守护状态
+# 检查 Cron 守护状态（兼容旧版 crontab 方式和新版 cron.d 方式）
 check_cron_guard() {
+    # 新版: 检查 cron.d 文件
+    if [ -f "/etc/cron.d/net-tcp-tune-dns-guard" ]; then
+        return 0  # 已启用
+    fi
+    # 旧版兼容: 检查 crontab
     if crontab -l 2>/dev/null | grep -q "nameserver.*:.*resolv.conf"; then
         return 0  # 已启用
-    else
-        return 1  # 未启用
     fi
+    return 1  # 未启用
 }
 
 # 检查 systemd-resolved 守护状态
@@ -1477,6 +1481,9 @@ check_systemd_guard() {
     fi
 }
 
+# Cron.d 文件路径
+DNS_CRON_FILE="/etc/cron.d/net-tcp-tune-dns-guard"
+
 # 设置 Cron 守护
 setup_cron_guard() {
     echo -e "${gl_zi}正在设置 Cron DNS 守护...${gl_bai}"
@@ -1487,16 +1494,22 @@ setup_cron_guard() {
         return 0
     fi
 
-    # 添加 cron 任务（每分钟检查一次）
+    # 使用 cron.d 目录方式（更安全，不会覆盖用户其他 cron 任务）
     # 精确匹配 IPv6 nameserver（避免误删其他配置）
     # IPv6 格式: nameserver 后跟包含冒号的十六进制地址
-    local cron_job="* * * * * grep -qE '^nameserver[[:space:]]+[0-9a-fA-F]*:[0-9a-fA-F:]+' /etc/resolv.conf 2>/dev/null && sed -i '/^nameserver[[:space:]]\\+[0-9a-fA-F]*:[0-9a-fA-F:]\\+/d' /etc/resolv.conf"
+    local cron_command="grep -qE '^nameserver[[:space:]]+[0-9a-fA-F]*:[0-9a-fA-F:]+' /etc/resolv.conf 2>/dev/null && sed -i '/^nameserver[[:space:]]\\+[0-9a-fA-F]*:[0-9a-fA-F:]\\+/d' /etc/resolv.conf"
 
-    # 获取现有 crontab
-    local current_cron=$(crontab -l 2>/dev/null)
+    # 写入 cron.d 文件
+    cat > "$DNS_CRON_FILE" << EOF
+# net-tcp-tune.sh - IPv6 DNS 自动清理守护
+# 每分钟检查并删除 IPv6 nameserver
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-    # 添加新任务
-    (echo "$current_cron"; echo "$cron_job") | crontab -
+* * * * * root ${cron_command}
+EOF
+
+    chmod 644 "$DNS_CRON_FILE"
 
     # 记录守护类型
     echo "cron" >> "$DNS_GUARD_MARKER"
@@ -1553,8 +1566,18 @@ remove_cron_guard() {
 
     echo -e "${gl_zi}正在移除 Cron DNS 守护...${gl_bai}"
 
-    # 获取现有 crontab，删除相关任务
-    crontab -l 2>/dev/null | grep -v "nameserver.*:.*resolv.conf" | crontab -
+    # 新版: 删除 cron.d 文件
+    if [ -f "/etc/cron.d/net-tcp-tune-dns-guard" ]; then
+        rm -f "/etc/cron.d/net-tcp-tune-dns-guard"
+    fi
+
+    # 旧版兼容: 清理 crontab 中的旧任务（如果存在）
+    if crontab -l 2>/dev/null | grep -q "nameserver.*:.*resolv.conf"; then
+        local temp_cron=$(mktemp)
+        crontab -l 2>/dev/null | grep -v "nameserver.*:.*resolv.conf" > "$temp_cron"
+        crontab "$temp_cron"
+        rm -f "$temp_cron"
+    fi
 
     # 从标记文件中删除
     if [ -f "$DNS_GUARD_MARKER" ]; then
@@ -2105,7 +2128,16 @@ realm_ipv4_management() {
                 if check_cron_guard; then
                     echo "Cron 守护: ✅ 已启用"
                     echo "Cron 任务:"
-                    crontab -l 2>/dev/null | grep "nameserver.*:.*resolv.conf"
+                    # 显示 cron.d 文件内容（新版）
+                    if [ -f "/etc/cron.d/net-tcp-tune-dns-guard" ]; then
+                        echo "[cron.d 文件]"
+                        cat "/etc/cron.d/net-tcp-tune-dns-guard" | grep -v "^#" | grep -v "^$"
+                    fi
+                    # 显示 crontab 内容（旧版兼容）
+                    if crontab -l 2>/dev/null | grep -q "nameserver.*:.*resolv.conf"; then
+                        echo "[crontab 条目]"
+                        crontab -l 2>/dev/null | grep "nameserver.*:.*resolv.conf"
+                    fi
                 else
                     echo "Cron 守护: ❌ 未启用"
                 fi
