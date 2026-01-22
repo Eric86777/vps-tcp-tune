@@ -1270,9 +1270,15 @@ analyze_realm_connections() {
         # 判断协议类型（注意：::ffff: 开头的是 IPv4-mapped IPv6，本质是 IPv4）
         local protocol_type=""
         if [ $conn_count_v6_mapped -gt 0 ]; then
+            # IPv4-mapped IPv6 地址 (::ffff:x.x.x.x) 算作 IPv4
             protocol_type="✅ IPv4（IPv6映射格式）"
             ipv4_total=$((ipv4_total + conn_count))
+        elif echo "$source_ip" | grep -qE '^[0-9a-fA-F]*:[0-9a-fA-F:]+$'; then
+            # 纯 IPv6 地址（包含冒号且不是 IPv4 格式）
+            protocol_type="⚠️  纯IPv6"
+            ipv6_total=$((ipv6_total + conn_count))
         else
+            # 纯 IPv4 地址
             protocol_type="✅ 纯IPv4"
             ipv4_total=$((ipv4_total + conn_count))
         fi
