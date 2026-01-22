@@ -2362,10 +2362,11 @@ check_all_inbound_connections() {
     echo ""
     
     local source_num=1
-    echo "$connections" | sed 's/:[0-9]*$//' | sort | uniq -c | sort -rn | head -10 | while read count ip; do
+    # 使用 process substitution 替代管道，确保循环中的变量修改对父 shell 可见
+    while read count ip; do
         # 提取纯 IP（去除方括号）
         local clean_ip=$(echo "$ip" | sed 's/\[::ffff://; s/\]//')
-        
+
         # 判断协议类型
         local protocol_type=""
         local protocol_color=""
@@ -2380,11 +2381,11 @@ check_all_inbound_connections() {
             protocol_color="${gl_lv}"
             clean_ip="$ip"
         fi
-        
+
         # IP 归属查询
         local ip_location="查询中..."
         local ip_as="未知"
-        
+
         if command -v curl &>/dev/null; then
             local ip_info=$(timeout 2 curl -s "http://ip-api.com/json/${clean_ip}?lang=zh-CN&fields=country,regionName,city,isp,as" 2>/dev/null)
             if [ $? -eq 0 ] && [ -n "$ip_info" ]; then
@@ -2393,7 +2394,7 @@ check_all_inbound_connections() {
                 local city=$(echo "$ip_info" | grep -o '"city":"[^"]*"' | cut -d'"' -f4)
                 local isp=$(echo "$ip_info" | grep -o '"isp":"[^"]*"' | cut -d'"' -f4)
                 local as_num=$(echo "$ip_info" | grep -o '"as":"[^"]*"' | cut -d'"' -f4)
-                
+
                 ip_location="${country} ${region} ${city} ${isp}"
                 [ -n "$as_num" ] && ip_as="$as_num" || ip_as="未知"
             else
@@ -2404,7 +2405,7 @@ check_all_inbound_connections() {
             ip_location="需要 curl 命令"
             ip_as="未知"
         fi
-        
+
         # 美化显示
         echo -e "┌─────────────── 连接源 #${source_num} ───────────────┐"
         echo -e "│  源IP地址:   ${gl_huang}${clean_ip}${gl_bai}"
@@ -2414,9 +2415,9 @@ check_all_inbound_connections() {
         echo -e "│  协议类型:   ${protocol_color}✅ ${protocol_type}${gl_bai}"
         echo -e "└──────────────────────────────────────────┘"
         echo ""
-        
+
         source_num=$((source_num + 1))
-    done
+    done < <(echo "$connections" | sed 's/:[0-9]*$//' | sort | uniq -c | sort -rn | head -10)
     
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
@@ -2424,9 +2425,9 @@ check_all_inbound_connections() {
     # 显示监听端口
     echo -e "${gl_zi}本地监听端口（Top 5）：${gl_bai}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    ss -tln 2>/dev/null | awk 'NR>1 {print $4}' | sed 's/.*://' | sort | uniq -c | sort -rn | head -5 | while read count port; do
+    while read count port; do
         echo -e "  端口 ${gl_huang}${port}${gl_bai} - ${count} 个监听"
-    done
+    done < <(ss -tln 2>/dev/null | awk 'NR>1 {print $4}' | sed 's/.*://' | sort | uniq -c | sort -rn | head -5)
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
