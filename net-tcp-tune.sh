@@ -2387,8 +2387,9 @@ check_all_inbound_connections() {
         local ip_as="未知"
 
         if command -v curl &>/dev/null; then
-            local ip_info=$(timeout 2 curl -s "http://ip-api.com/json/${clean_ip}?lang=zh-CN&fields=country,regionName,city,isp,as" 2>/dev/null)
-            if [ $? -eq 0 ] && [ -n "$ip_info" ]; then
+            local ip_info
+            # 直接在 if 中检查命令返回值，避免 local 覆盖 $?
+            if ip_info=$(timeout 2 curl -s "http://ip-api.com/json/${clean_ip}?lang=zh-CN&fields=country,regionName,city,isp,as" 2>/dev/null) && [ -n "$ip_info" ]; then
                 local country=$(echo "$ip_info" | grep -o '"country":"[^"]*"' | cut -d'"' -f4)
                 local region=$(echo "$ip_info" | grep -o '"regionName":"[^"]*"' | cut -d'"' -f4)
                 local city=$(echo "$ip_info" | grep -o '"city":"[^"]*"' | cut -d'"' -f4)
