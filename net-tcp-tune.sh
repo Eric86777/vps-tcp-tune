@@ -14831,7 +14831,8 @@ open_webui_install_docker() {
     fi
 
     echo "正在安装 Docker..."
-    curl -fsSL https://get.docker.com | sh
+    # 使用安全下载模式替代 curl | sh
+    run_remote_script "https://get.docker.com" sh
 
     if [ $? -eq 0 ]; then
         systemctl enable docker
@@ -16214,7 +16215,8 @@ fuclaude_install_docker() {
     fi
 
     echo "正在安装 Docker..."
-    curl -fsSL https://get.docker.com | sh
+    # 使用安全下载模式替代 curl | sh
+    run_remote_script "https://get.docker.com" sh
 
     if [ $? -eq 0 ]; then
         systemctl enable docker
