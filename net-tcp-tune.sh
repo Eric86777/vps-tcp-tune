@@ -2625,7 +2625,13 @@ detect_path_mtu_multi_region() {
         ["欧洲-英国"]="131.111.8.46 163.1.0.1 212.58.244.20 193.136.1.1"       # Cambridge, Oxford, BBC, LINX
         ["澳洲"]="139.130.4.5 203.50.0.1 150.203.1.10 203.2.218.1"             # Telstra, Telstra-2, ANU, Optus
     )
-    
+
+    # 防御性验证：确保目标数组不为空
+    if [ ${#targets[@]} -eq 0 ]; then
+        echo -e "${gl_hong}❌ MTU 检测目标列表为空，无法继续${gl_bai}" >&2
+        return 1
+    fi
+
     # 定义显示顺序
     local regions_order=("香港" "日本-东京" "日本-大阪" "新加坡" "韩国" "美国-西海岸" "美国-东海岸" "欧洲-德国" "欧洲-英国" "澳洲")
     
