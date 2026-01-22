@@ -1245,8 +1245,15 @@ analyze_realm_connections() {
     # 处理IPv6地址
     local source_ips_v6=$(echo "$realm_connections" | awk '{print $5}' | grep "^\[" | sed 's/\]:.*/\]/' | sed 's/\[//' | sed 's/\]//' | sed 's/::ffff://' | sort | uniq)
     
-    # 合并
+    # 合并并去重 IP 列表
     local all_source_ips=$(echo -e "${source_ips}\n${source_ips_v6}" | grep -v "^$" | sort | uniq)
+
+    # 边界条件检查：确保有连接数据
+    if [ -z "$all_source_ips" ]; then
+        echo -e "${gl_huang}暂无检测到任何 Realm 连接${gl_bai}"
+        break_end
+        return 0
+    fi
 
     local total_sources=$(echo "$all_source_ips" | wc -l)
     local total_connections=$(echo "$realm_connections" | wc -l)
