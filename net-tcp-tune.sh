@@ -1479,7 +1479,9 @@ setup_cron_guard() {
     fi
 
     # 添加 cron 任务（每分钟检查一次）
-    local cron_job="* * * * * grep -q 'nameserver.*:' /etc/resolv.conf 2>/dev/null && sed -i '/nameserver.*:/d' /etc/resolv.conf"
+    # 精确匹配 IPv6 nameserver（避免误删其他配置）
+    # IPv6 格式: nameserver 后跟包含冒号的十六进制地址
+    local cron_job="* * * * * grep -qE '^nameserver[[:space:]]+[0-9a-fA-F]*:[0-9a-fA-F:]+' /etc/resolv.conf 2>/dev/null && sed -i '/^nameserver[[:space:]]\\+[0-9a-fA-F]*:[0-9a-fA-F:]\\+/d' /etc/resolv.conf"
 
     # 获取现有 crontab
     local current_cron=$(crontab -l 2>/dev/null)
@@ -1708,12 +1710,12 @@ enable_realm_ipv4() {
     echo -e "${gl_zi}[步骤 2/6] 修改 DNS 配置...${gl_bai}"
     
     if [ -f /etc/resolv.conf ]; then
-        # 删除 IPv6 DNS 服务器行
-        local ipv6_dns_count=$(grep 'nameserver.*:' /etc/resolv.conf 2>/dev/null | wc -l)
-        ipv6_dns_count=$(echo "$ipv6_dns_count" | tr -d ' \n')
+        # 删除 IPv6 DNS 服务器行（精确匹配 IPv6 地址格式）
+        # IPv6 格式: nameserver 后跟包含冒号的十六进制地址
+        local ipv6_dns_count=$(grep -cE '^nameserver[[:space:]]+[0-9a-fA-F]*:[0-9a-fA-F:]+' /etc/resolv.conf 2>/dev/null || echo 0)
 
         if [ "$ipv6_dns_count" -gt 0 ]; then
-            sed -i '/nameserver.*:/d' /etc/resolv.conf
+            sed -i '/^nameserver[[:space:]]\+[0-9a-fA-F]*:[0-9a-fA-F:]\+/d' /etc/resolv.conf
             echo -e "${gl_lv}✅ 已删除 ${ipv6_dns_count} 个 IPv6 DNS 服务器${gl_bai}"
         else
             echo -e "${gl_lv}✅ 未发现 IPv6 DNS 服务器${gl_bai}"
