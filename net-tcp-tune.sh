@@ -17793,39 +17793,29 @@ caddy_delete_domain() {
     echo -e "${gl_kjlan}[2/3] 删除配置...${gl_bai}"
 
     # 从 Caddyfile 中删除配置块
-    # 使用临时文件
     local temp_file=$(mktemp)
     local in_block=false
-    local skip_next_blank=false
 
     while IFS= read -r line; do
-        # 检查是否是要删除的域名开始
-        if echo "$line" | grep -q "^${domain_to_delete} {"; then
+        # 检查是否是要删除域名的注释行（格式：# domain.com - 添加于...）
+        # 注意：注释行在域名块之前，必须先检测
+        if [[ "$line" == "# ${domain_to_delete} - "* ]]; then
+            continue
+        fi
+
+        # 检查是否是要删除的域名块开始
+        if [[ "$line" == "${domain_to_delete} {" ]]; then
             in_block=true
-            skip_next_blank=true
             continue
         fi
 
         # 如果在要删除的块中
         if [ "$in_block" = true ]; then
             # 检查是否是块结束
-            if echo "$line" | grep -q "^}"; then
+            if [ "$line" = "}" ]; then
                 in_block=false
-                continue
             fi
             continue
-        fi
-
-        # 跳过注释行（域名配置的注释）
-        if [ "$skip_next_blank" = true ]; then
-            if echo "$line" | grep -q "^# ${domain_to_delete}"; then
-                continue
-            fi
-            if [ -z "$line" ]; then
-                skip_next_blank=false
-                continue
-            fi
-            skip_next_blank=false
         fi
 
         echo "$line" >> "$temp_file"
@@ -18035,6 +18025,41 @@ caddy_show_logs() {
     break_end
 }
 
+# 启动/停止 Caddy
+caddy_toggle_service() {
+    local status=$(caddy_check_status)
+
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Caddy 未安装${gl_bai}"
+        sleep 2
+        return 1
+    fi
+
+    if [ "$status" = "running" ]; then
+        # 当前运行中，执行停止
+        echo -e "${gl_huang}正在停止 Caddy...${gl_bai}"
+        systemctl stop caddy
+        sleep 1
+        if ! systemctl is-active caddy &>/dev/null; then
+            echo -e "${gl_lv}✅ Caddy 已停止${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+        fi
+    else
+        # 当前已停止，执行启动
+        echo -e "${gl_huang}正在启动 Caddy...${gl_bai}"
+        systemctl start caddy
+        sleep 1
+        if systemctl is-active caddy &>/dev/null; then
+            echo -e "${gl_lv}✅ Caddy 已启动${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+            echo "查看错误: journalctl -u caddy -n 20"
+        fi
+    fi
+    sleep 2
+}
+
 # 卸载 Caddy
 caddy_uninstall() {
     clear
@@ -18153,13 +18178,19 @@ manage_caddy() {
         echo "3. 查看已配置域名"
         echo "4. 删除反代域名"
         echo "5. 重载 Caddy 配置"
-        echo "6. 查看 Caddy 状态"
-        echo "7. 查看 Caddy 日志"
-        echo "8. 卸载 Caddy"
+        # 根据状态显示启动或停止
+        if [ "$status" = "running" ]; then
+            echo "6. 停止 Caddy ⏸️"
+        else
+            echo "6. 启动 Caddy ▶️"
+        fi
+        echo "7. 查看 Caddy 状态"
+        echo "8. 查看 Caddy 日志"
+        echo "9. 卸载 Caddy"
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-8]: " choice
+        read -e -p "请选择操作 [0-9]: " choice
 
         case $choice in
             1)
@@ -18178,12 +18209,15 @@ manage_caddy() {
                 caddy_reload
                 ;;
             6)
-                caddy_show_status
+                caddy_toggle_service
                 ;;
             7)
-                caddy_show_logs
+                caddy_show_status
                 ;;
             8)
+                caddy_show_logs
+                ;;
+            9)
                 caddy_uninstall
                 ;;
             0)
