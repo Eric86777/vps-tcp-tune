@@ -116,6 +116,39 @@ log_info()  { log "INFO" "$@"; }
 log_debug() { log "DEBUG" "$@"; }
 
 #=============================================================================
+# 错误处理
+#=============================================================================
+
+# 清理临时文件
+cleanup_temp_files() {
+    rm -f /tmp/net-tcp-tune.* 2>/dev/null || true
+    rm -f /tmp/caddy.tar.gz 2>/dev/null || true
+}
+
+# 全局错误处理器（可选启用）
+error_handler() {
+    local exit_code=$1
+    local line_no=$2
+    local command="$3"
+
+    log_error "脚本执行失败"
+    log_error "  退出码: $exit_code"
+    log_error "  行号: $line_no"
+    log_error "  命令: $command"
+
+    cleanup_temp_files
+}
+
+# 启用严格模式（用于调试）
+enable_strict_mode() {
+    set -euo pipefail
+    trap 'error_handler $? $LINENO "$BASH_COMMAND"' ERR
+}
+
+# 退出时清理
+trap cleanup_temp_files EXIT
+
+#=============================================================================
 # 工具函数
 #=============================================================================
 
