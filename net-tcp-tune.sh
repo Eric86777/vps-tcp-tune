@@ -5668,7 +5668,12 @@ DNSStubListener=yes
     fi
     
     echo -e "${gl_lv}  ✅ systemd-resolved 配置已重新加载并验证${gl_bai}"
-    
+
+    # 🔧 确保服务开机自启动（修复 #11：某些 Debian 版本服务状态为 static 时不会自启）
+    echo "  → 确保 systemd-resolved 开机自启动..."
+    systemctl enable systemd-resolved >/dev/null 2>&1 || true
+    echo -e "${gl_lv}  ✅ 已设置开机自启动${gl_bai}"
+
     # 🔒 检测 immutable 属性（云服务商保护机制）
     if [[ -e /etc/resolv.conf ]] && lsattr /etc/resolv.conf 2>/dev/null | grep -q 'i'; then
         echo ""
