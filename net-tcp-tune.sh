@@ -34,14 +34,23 @@
 # 
 #=============================================================================
 
-# 颜色定义
-gl_hong='\033[31m'
-gl_lv='\033[32m'
-gl_huang='\033[33m'
-gl_bai='\033[0m'
-gl_kjlan='\033[96m'
-gl_zi='\033[35m'
-gl_hui='\033[90m'
+# 颜色定义（保留中文变量名以兼容现有代码）
+gl_hong='\033[31m'      # 红色
+gl_lv='\033[32m'        # 绿色
+gl_huang='\033[33m'     # 黄色
+gl_bai='\033[0m'        # 重置
+gl_kjlan='\033[96m'     # 亮青色
+gl_zi='\033[35m'        # 紫色
+gl_hui='\033[90m'       # 灰色
+
+# 英文别名（供新代码使用）
+readonly COLOR_RED="$gl_hong"
+readonly COLOR_GREEN="$gl_lv"
+readonly COLOR_YELLOW="$gl_huang"
+readonly COLOR_RESET="$gl_bai"
+readonly COLOR_CYAN="$gl_kjlan"
+readonly COLOR_PURPLE="$gl_zi"
+readonly COLOR_GRAY="$gl_hui"
 
 # GitHub 代理设置
 gh_proxy="https://"
