@@ -12,7 +12,7 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-readonly SCRIPT_VERSION="1.9.13"
+readonly SCRIPT_VERSION="1.9.14"
 readonly SCRIPT_NAME="端口流量狗"
 # 修复：当通过 bash <(curl ...) 运行时，$0 会指向临时管道
 # 此时 realpath "$0" 返回类似 /proc/xxx/fd/pipe:xxx 的无效路径
@@ -1022,12 +1022,13 @@ get_port_running_status() {
         return
     fi
     
-    # 2. 检查是否配额超限封锁
+    # 2. 检查是否配额用尽（差1MB以内视为用尽，仅影响状态显示）
     local quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
     if [ "$quota_limit" != "unlimited" ]; then
         local current_usage=$(get_port_monthly_usage "$port" 2>/dev/null || echo "0")
         local limit_bytes=$(parse_size_to_bytes "$quota_limit" 2>/dev/null || echo "0")
-        if [ "$current_usage" -ge "$limit_bytes" ] && [ "$limit_bytes" -gt 0 ]; then
+        local threshold=$((limit_bytes - 1048576))
+        if [ "$current_usage" -ge "$threshold" ] && [ "$limit_bytes" -gt 0 ]; then
             echo "blocked_quota"
             return
         fi
@@ -1058,7 +1059,7 @@ format_running_status() {
             echo "🔴过期封锁"
             ;;
         "blocked_quota")
-            echo "🔴超额封锁"
+            echo "🔴配额用尽"
             ;;
         rate_limited:*)
             local rate="${status#rate_limited:}"
@@ -4652,7 +4653,7 @@ diagnose_port_config() {
                 ports_blocked+=("$port")
                 ;;
             "blocked_quota")
-                echo -e "  运行状态: ${RED}🔴 已封锁(配额超限)${NC}"
+                echo -e "  运行状态: ${RED}🔴 已封锁(配额用尽)${NC}"
                 ports_blocked+=("$port")
                 ;;
             "rate_limited:"*)
