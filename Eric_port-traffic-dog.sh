@@ -1050,7 +1050,7 @@ get_port_running_status() {
         fi
     fi
     
-    # 4. 正常运行中
+    # 5. 正常运行中
     echo "running"
 }
 
