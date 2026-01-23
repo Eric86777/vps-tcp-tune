@@ -75,6 +75,47 @@ readonly IP_CHECK_V6_URLS=(
 readonly IP_INFO_URL="https://ipinfo.io"
 
 #=============================================================================
+# 日志系统
+#=============================================================================
+
+readonly LOG_FILE="/var/log/net-tcp-tune.log"
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
+
+# 统一日志函数
+log() {
+    local level="$1"
+    shift
+    local message="$*"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # 写入日志文件（静默失败）
+    echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
+
+    # 根据级别输出到终端
+    case "$level" in
+        ERROR)
+            echo -e "${gl_hong}[ERROR] $message${gl_bai}" >&2
+            ;;
+        WARN)
+            echo -e "${gl_huang}[WARN] $message${gl_bai}"
+            ;;
+        INFO)
+            [ "$LOG_LEVEL" != "ERROR" ] && echo -e "${gl_lv}[INFO] $message${gl_bai}"
+            ;;
+        DEBUG)
+            [ "$LOG_LEVEL" = "DEBUG" ] && echo -e "${gl_hui}[DEBUG] $message${gl_bai}"
+            ;;
+    esac
+}
+
+# 便捷日志函数
+log_error() { log "ERROR" "$@"; }
+log_warn()  { log "WARN" "$@"; }
+log_info()  { log "INFO" "$@"; }
+log_debug() { log "DEBUG" "$@"; }
+
+#=============================================================================
 # 工具函数
 #=============================================================================
 
