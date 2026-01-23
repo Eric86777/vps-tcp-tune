@@ -3954,12 +3954,7 @@ bbr_configure_direct() {
     
     # 注释掉 /etc/sysctl.conf 中的 TCP 缓冲区配置（避免覆盖）
     if [ -f /etc/sysctl.conf ]; then
-        sed -i '/^net.ipv4.tcp_wmem/s/^/# /' /etc/sysctl.conf 2>/dev/null
-        sed -i '/^net.ipv4.tcp_rmem/s/^/# /' /etc/sysctl.conf 2>/dev/null
-        sed -i '/^net.core.rmem_max/s/^/# /' /etc/sysctl.conf 2>/dev/null
-        sed -i '/^net.core.wmem_max/s/^/# /' /etc/sysctl.conf 2>/dev/null
-        sed -i '/^net.core.default_qdisc/s/^/# /' /etc/sysctl.conf 2>/dev/null
-        sed -i '/^net.ipv4.tcp_congestion_control/s/^/# /' /etc/sysctl.conf 2>/dev/null
+        clean_sysctl_conf
         echo "已清理 /etc/sysctl.conf 中的冲突配置"
     fi
     
