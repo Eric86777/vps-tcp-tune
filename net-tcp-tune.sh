@@ -50,6 +50,31 @@ gh_proxy="https://"
 SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
 
 #=============================================================================
+# 常量定义（版本号、URL 等集中管理）
+#=============================================================================
+
+# 版本号
+readonly SCRIPT_VERSION="2.3"
+readonly CADDY_DEFAULT_VERSION="2.7.6"
+readonly SNELL_DEFAULT_VERSION="5.0.1"
+
+# IP 查询服务 URL（按优先级排序）
+readonly IP_CHECK_V4_URLS=(
+    "https://api.ipify.org"
+    "https://ip.sb"
+    "https://checkip.amazonaws.com"
+    "https://ipinfo.io/ip"
+)
+readonly IP_CHECK_V6_URLS=(
+    "https://api64.ipify.org"
+    "https://v6.ipinfo.io/ip"
+    "https://ip.sb"
+)
+
+# IP 信息查询
+readonly IP_INFO_URL="https://ipinfo.io"
+
+#=============================================================================
 # 工具函数
 #=============================================================================
 
@@ -17408,8 +17433,8 @@ caddy_install() {
     echo ""
     echo -e "${gl_kjlan}[4/6] 下载并安装 Caddy...${gl_bai}"
 
-    # 定义 Caddy 版本和下载源
-    local CADDY_VERSION="2.7.6"
+    # 使用全局定义的 Caddy 版本
+    local CADDY_VERSION="${CADDY_DEFAULT_VERSION}"
     local download_success=false
 
     # 下载源列表(按优先级)
