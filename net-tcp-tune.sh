@@ -18458,18 +18458,83 @@ manage_caddy() {
     done
 }
 
+# 显示帮助信息
+show_help() {
+    cat << EOF
+BBR v3 终极优化脚本 v${SCRIPT_VERSION}
+
+用法: $0 [选项]
+
+选项:
+  -h, --help      显示此帮助信息
+  -v, --version   显示版本号
+  -i, --install   直接安装 XanMod 内核（非交互）
+  --debug         启用调试模式（详细日志）
+  -q, --quiet     静默模式（仅显示错误）
+
+示例:
+  $0              启动交互式菜单
+  $0 -i           直接安装 BBR v3 内核
+  $0 --debug      调试模式运行
+
+日志文件: ${LOG_FILE}
+配置文件: ~/.net-tcp-tune.conf 或 /etc/net-tcp-tune.conf
+EOF
+}
+
+# 解析命令行参数
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                echo "net-tcp-tune.sh v${SCRIPT_VERSION}"
+                exit 0
+                ;;
+            -i|--install)
+                check_root
+                install_xanmod_kernel
+                if [ $? -eq 0 ]; then
+                    echo ""
+                    echo "安装完成后，请重启系统以加载新内核"
+                fi
+                exit 0
+                ;;
+            --debug)
+                LOG_LEVEL="DEBUG"
+                log_debug "调试模式已启用"
+                shift
+                ;;
+            -q|--quiet)
+                LOG_LEVEL="ERROR"
+                shift
+                ;;
+            -*)
+                echo "未知选项: $1"
+                echo "使用 -h 或 --help 查看帮助"
+                exit 1
+                ;;
+            *)
+                # 无参数时继续
+                break
+                ;;
+        esac
+    done
+}
+
 main() {
+    # 先解析参数
+    parse_args "$@"
+
+    # 检查 root 权限
     check_root
 
-    # 命令行参数支持
-    if [ "$1" = "-i" ] || [ "$1" = "--install" ]; then
-        install_xanmod_kernel
-        if [ $? -eq 0 ]; then
-            echo ""
-            echo "安装完成后，请重启系统以加载新内核"
-        fi
-        exit 0
-    fi
+    # 加载用户配置（如果存在）
+    [ -f "/etc/net-tcp-tune.conf" ] && source "/etc/net-tcp-tune.conf"
+    [ -f "$HOME/.net-tcp-tune.conf" ] && source "$HOME/.net-tcp-tune.conf"
 
     # 交互式菜单
     while true; do
