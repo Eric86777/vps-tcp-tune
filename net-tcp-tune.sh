@@ -285,7 +285,8 @@ verify_downloaded_script() {
         return 1
     fi
 
-    head -n 5 "$file" | grep -q '^#!'
+    # 检查 shebang，同时处理 UTF-8 BOM (ef bb bf) 开头的情况
+    head -n 5 "$file" | sed 's/^\xef\xbb\xbf//' | grep -q '^#!'
 }
 
 run_remote_script() {
