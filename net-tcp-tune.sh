@@ -340,7 +340,7 @@ check_swap() {
     
     if [ "$swap_total" -eq 0 ]; then
         echo -e "${gl_huang}检测到无虚拟内存，正在创建 1G SWAP...${gl_bai}"
-        fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
+        fallocate -l $((1025 * 1024 * 1024)) /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1025
         chmod 600 /swapfile
         mkswap /swapfile > /dev/null 2>&1
         swapon /swapfile
@@ -375,7 +375,7 @@ add_swap() {
     echo "正在创建 ${new_swap}MB 虚拟内存..."
     
     # 创建新的 swap 分区
-    fallocate -l ${new_swap}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=${new_swap}
+    fallocate -l $(( (new_swap + 1) * 1024 * 1024 )) /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$((new_swap + 1))
     chmod 600 /swapfile
     mkswap /swapfile > /dev/null 2>&1
     swapon /swapfile
