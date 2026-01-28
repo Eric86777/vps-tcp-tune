@@ -534,9 +534,38 @@ manage_swap() {
     done
 }
 
-set_ipv4_priority() {
+# 通用 IP 优先级设置函数
+# 参数: $1 = "ipv4" 或 "ipv6"
+set_ip_priority() {
+    local ip_type="$1"
+
+    # 参数校验
+    if [ "$ip_type" != "ipv4" ] && [ "$ip_type" != "ipv6" ]; then
+        echo -e "${gl_hong}错误：参数必须是 ipv4 或 ipv6${gl_bai}"
+        return 1
+    fi
+
+    # 根据类型设置变量
+    if [ "$ip_type" = "ipv4" ]; then
+        local title="IPv4"
+        local ipv4_precedence=100
+        local ipv6_precedence=10
+        local curl_flag="-4"
+        local secondary_flag="-6"
+        local primary="IPv4"
+        local secondary="IPv6"
+    else
+        local title="IPv6"
+        local ipv4_precedence=10
+        local ipv6_precedence=100
+        local curl_flag="-6"
+        local secondary_flag="-4"
+        local primary="IPv6"
+        local secondary="IPv4"
+    fi
+
     clear
-    echo -e "${gl_kjlan}=== 设置IPv4优先 ===${gl_bai}"
+    echo -e "${gl_kjlan}=== 设置${title}优先 ===${gl_bai}"
     echo ""
 
     # 备份原配置文件并记录原始状态
@@ -551,19 +580,19 @@ set_ipv4_priority() {
         echo "原先无配置文件，已记录原始状态"
     fi
 
-    echo "正在设置 IPv4 优先..."
+    echo "正在设置 ${title} 优先..."
 
-    # 创建完整的 IPv4 优先配置
-    cat > /etc/gai.conf << 'EOF'
+    # 创建配置文件
+    cat > /etc/gai.conf << EOF
 # Configuration for getaddrinfo(3).
 #
-# 设置 IPv4 优先
+# 设置 ${title} 优先
 
 # IPv4 addresses
-precedence ::ffff:0:0/96  100
+precedence ::ffff:0:0/96  ${ipv4_precedence}
 
 # IPv6 addresses
-precedence ::/0           10
+precedence ::/0           ${ipv6_precedence}
 
 # IPv4-mapped IPv6 addresses
 precedence ::1/128        50
@@ -589,93 +618,18 @@ EOF
         echo "已刷新 systemd-resolved DNS 缓存"
     fi
 
-    echo -e "${gl_lv}✅ IPv4 优先已设置${gl_bai}"
+    echo -e "${gl_lv}✅ ${title} 优先已设置${gl_bai}"
     echo ""
     echo "当前出口 IP 地址："
     echo "------------------------------------------------"
-    # 使用 -4 参数强制 IPv4
-    curl -4 ip.sb 2>/dev/null || curl ip.sb
+    curl ${curl_flag} ip.sb 2>/dev/null || curl ip.sb
     echo ""
     echo "------------------------------------------------"
     echo ""
     echo -e "${gl_huang}提示：${gl_bai}"
     echo "1. 配置已生效，无需重启系统"
-    echo "2. 新启动的程序将自动使用 IPv4 优先"
-    echo "3. 如需强制指定，可使用: curl -4 ip.sb (强制IPv4) 或 curl -6 ip.sb (强制IPv6)"
-    echo "4. 已运行的长连接服务（如Nginx、Docker容器）可能需要重启服务才能应用"
-    echo ""
-
-    break_end
-}
-
-set_ipv6_priority() {
-    clear
-    echo -e "${gl_kjlan}=== 设置IPv6优先 ===${gl_bai}"
-    echo ""
-
-    # 备份原配置文件并记录原始状态
-    if [ -f /etc/gai.conf ]; then
-        cp /etc/gai.conf /etc/gai.conf.bak.$(date +%Y%m%d_%H%M%S)
-        echo "已备份原配置文件到 /etc/gai.conf.bak.*"
-        # 记录原先存在文件
-        echo "existed" > /etc/gai.conf.original_state
-    else
-        # 记录原先不存在文件
-        echo "not_existed" > /etc/gai.conf.original_state
-        echo "原先无配置文件，已记录原始状态"
-    fi
-
-    echo "正在设置 IPv6 优先..."
-
-    # 创建完整的 IPv6 优先配置
-    cat > /etc/gai.conf << 'EOF'
-# Configuration for getaddrinfo(3).
-#
-# 设置 IPv6 优先
-
-# IPv6 addresses (highest priority)
-precedence ::/0           100
-
-# IPv4 addresses (lower priority)
-precedence ::ffff:0:0/96  10
-
-# IPv4-mapped IPv6 addresses
-precedence ::1/128        50
-
-# Link-local addresses
-precedence fe80::/10      1
-precedence fec0::/10      1
-precedence fc00::/7       1
-
-# Site-local addresses (deprecated)
-precedence 2002::/16      30
-EOF
-
-    # 刷新 nscd 缓存（如果安装了）
-    if command -v nscd &> /dev/null; then
-        systemctl restart nscd 2>/dev/null || service nscd restart 2>/dev/null || true
-        echo "已刷新 nscd DNS 缓存"
-    fi
-
-    # 刷新 systemd-resolved 缓存（如果使用）
-    if command -v resolvectl &> /dev/null; then
-        resolvectl flush-caches 2>/dev/null || true
-        echo "已刷新 systemd-resolved DNS 缓存"
-    fi
-
-    echo -e "${gl_lv}✅ IPv6 优先已设置${gl_bai}"
-    echo ""
-    echo "当前出口 IP 地址："
-    echo "------------------------------------------------"
-    # 使用 -6 参数强制 IPv6
-    curl -6 ip.sb 2>/dev/null || curl ip.sb
-    echo ""
-    echo "------------------------------------------------"
-    echo ""
-    echo -e "${gl_huang}提示：${gl_bai}"
-    echo "1. 配置已生效，无需重启系统"
-    echo "2. 新启动的程序将自动使用 IPv6 优先"
-    echo "3. 如需强制指定，可使用: curl -6 ip.sb (强制IPv6) 或 curl -4 ip.sb (强制IPv4)"
+    echo "2. 新启动的程序将自动使用 ${title} 优先"
+    echo "3. 如需强制指定，可使用: curl ${curl_flag} ip.sb (强制${primary}) 或 curl ${secondary_flag} ip.sb (强制${secondary})"
     echo "4. 已运行的长连接服务（如Nginx、Docker容器）可能需要重启服务才能应用"
     echo ""
 
@@ -698,10 +652,10 @@ manage_ip_priority() {
         
         case $ip_priority_choice in
             1)
-                set_ipv4_priority
+                set_ip_priority "ipv4"
                 ;;
             2)
-                set_ipv6_priority
+                set_ip_priority "ipv6"
                 ;;
             3)
                 restore_gai_conf
