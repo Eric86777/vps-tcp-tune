@@ -7100,6 +7100,55 @@ iperf3_single_thread_test() {
 }
 
 #=============================================================================
+# AI 代理服务子菜单
+#=============================================================================
+
+ai_proxy_menu() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  AI 代理服务工具箱${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "1. Antigravity Claude Proxy 部署管理"
+        echo "2. Open WebUI 部署管理"
+        echo "3. CRS 部署管理 (多账户中转/拼车)"
+        echo "4. Fuclaude 部署管理 (Claude网页版共享)"
+        echo "5. Caddy 多域名反代"
+        echo ""
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-5]: " choice
+
+        case $choice in
+            1)
+                manage_ag_proxy
+                ;;
+            2)
+                manage_open_webui
+                ;;
+            3)
+                manage_crs
+                ;;
+            4)
+                manage_fuclaude
+                ;;
+            5)
+                manage_caddy
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+#=============================================================================
 # 主菜单
 #=============================================================================
 
@@ -7125,17 +7174,14 @@ show_main_menu() {
     echo "6. Realm转发timeout修复 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 系统配置 ━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}[网络设置]${gl_bai}"
     echo "7. 设置IPv4/IPv6优先级"
     echo "8. IPv6管理（临时/永久禁用/取消）"
     echo "9. 设置临时SOCKS5代理"
-    echo ""
-    echo -e "${gl_kjlan}[系统管理]${gl_bai}"
     echo "10. 虚拟内存管理"
     echo "11. 查看系统详细状态"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 转发/代理配置 ━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}[Realm转发管理]${gl_bai}"
+    echo -e "${gl_kjlan}[Realm管理]${gl_bai}"
     echo "12. Realm转发连接分析"
     echo "13. Realm强制使用IPv4 ⭐ 推荐"
     echo "14. IPv4/IPv6连接检测"
@@ -7151,7 +7197,7 @@ show_main_menu() {
     echo "20. 禁止端口通过中国大陆直连"
     echo "21. 一键部署SOCKS5代理"
     echo "22. Sub-Store多实例管理"
-    echo "23. 一键反代 🎯 ⭐ 推荐"
+    echo "23. 一键反代 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━ 测试检测 ━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[IP质量检测]${gl_bai}"
@@ -7167,38 +7213,19 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[流媒体/AI检测]${gl_bai}"
     echo "31. IP媒体/AI解锁检测 ⭐ 推荐"
-    echo "32. NS一键检测脚本 ⭐ 推荐"
+    echo "32. NQ一键检测 ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━ 第三方工具 ━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}[脚本合集]${gl_bai}"
-    echo "33. zywe_realm转发脚本 ⭐ 推荐"
+    echo "33. zywe_realm转发脚本（查看原版仓库）"
     echo "34. F佬一键sing box脚本"
     echo "35. 科技lion脚本"
-    echo "36. 酷雪云脚本"
+    echo "36. NS论坛CAKE调优"
+    echo "37. 科技lion高性能模式"
     echo ""
-    echo -e "${gl_kjlan}━━━━━━━━━ 原注销脚本恢复 ━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
-    echo "37. NS论坛CAKE调优"
-    echo "38. 科技lion高性能模式"
-    echo ""
-    echo -e "${gl_kjlan}━━━━━━━━ Antigravity Claude Proxy ━━━━━━━━${gl_bai}"
-    echo "39. Antigravity Claude Proxy 部署管理 ⭐ 推荐"
-    echo ""
-    echo -e "${gl_kjlan}━━━━━━━━ Open WebUI ━━━━━━━━${gl_bai}"
-    echo "40. Open WebUI 部署管理"
-    echo ""
-    echo -e "${gl_kjlan}━━━━━━━━ Claude Relay Service ━━━━━━━━${gl_bai}"
-    echo "41. CRS 部署管理 (多账户中转/拼车)"
-    echo ""
-    echo -e "${gl_kjlan}━━━━━━━━ Fuclaude ━━━━━━━━${gl_bai}"
-    echo "42. Fuclaude 部署管理 (Claude网页版共享)"
-    echo ""
-    echo -e "${gl_kjlan}━━━━━━━━ Caddy 反向代理 ━━━━━━━━${gl_bai}"
-    echo "43. Caddy 多域名反代 🚀 ⭐ 推荐"
-    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━ AI 代理服务 ━━━━━━━━━${gl_bai}"
+    echo "38. AI代理工具箱 ▶ (Claude/WebUI/CRS/Fuclaude/Caddy) ⭐ 推荐"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_hong}[完全卸载]${gl_bai}"
     echo -e "${gl_hong}99. 完全卸载脚本（卸载所有内容）${gl_bai}"
     echo ""
     echo "0. 退出脚本"
@@ -7323,28 +7350,13 @@ show_main_menu() {
             run_kejilion_script
             ;;
         36)
-            run_kxy_script
-            ;;
-        37)
             startbbrcake
             ;;
-        38)
+        37)
             Kernel_optimize
             ;;
-        39)
-            manage_ag_proxy
-            ;;
-        40)
-            manage_open_webui
-            ;;
-        41)
-            manage_crs
-            ;;
-        42)
-            manage_fuclaude
-            ;;
-        43)
-            manage_caddy
+        38)
+            ai_proxy_menu
             ;;
         99)
             uninstall_all
@@ -7816,27 +7828,16 @@ run_unlock_check() {
 
 run_pf_realm() {
     clear
-    echo -e "${gl_kjlan}=== zywe_realm转发脚本 ===${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  zywe_realm 转发脚本${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
-    echo "正在运行 zywe_realm 转发脚本安装程序..."
-    echo "------------------------------------------------"
+    echo "本人已将 zywe 大佬的脚本二次修改并使用，"
+    echo "如需使用原版，请直接访问："
     echo ""
-
-    # 执行 zywe_realm 转发脚本
-    if run_remote_script "https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh" bash -s install; then
-        echo ""
-        echo -e "${gl_lv}✅ zywe_realm 脚本执行完成${gl_bai}"
-    else
-        echo ""
-        echo -e "${gl_hong}❌ zywe_realm 脚本执行失败${gl_bai}"
-        echo "可能原因："
-        echo "1. 网络连接问题（无法访问GitHub）"
-        echo "2. 脚本服务器不可用"
-        echo "3. 权限不足"
-    fi
-
+    echo -e "${gl_lv}👉 https://github.com/zywe03/realm-xwPF${gl_bai}"
     echo ""
-    echo "------------------------------------------------"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     break_end
 }
 
