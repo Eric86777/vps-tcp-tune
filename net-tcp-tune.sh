@@ -2928,18 +2928,35 @@ apply_mss_clamp_with_value() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
+    # 保存规则（确保持久化）
+    echo "保存规则（确保重启后生效）..."
+
+    # 检查并安装 iptables-persistent
+    if ! command -v netfilter-persistent &>/dev/null; then
+        echo -e "${gl_huang}未检测到 iptables-persistent，正在自动安装...${gl_bai}"
+        # 预设 iptables-persistent 安装时的交互式问题
+        echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null
+        echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
+
+        if install_package "iptables-persistent"; then
+            echo -e "${gl_lv}✅ iptables-persistent 安装成功${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ iptables-persistent 安装失败${gl_bai}"
+            echo -e "${gl_huang}⚠️  规则可能在重启后失效，请手动安装: apt install iptables-persistent${gl_bai}"
+        fi
+    fi
+
     # 保存规则
-    echo "保存规则（重启后生效）..."
     if command -v netfilter-persistent &>/dev/null; then
         netfilter-persistent save >/dev/null 2>&1
-        echo -e "${gl_lv}✅ 规则已持久化保存${gl_bai}"
+        echo -e "${gl_lv}✅ 规则已持久化保存（重启后自动生效）${gl_bai}"
     elif command -v iptables-save &>/dev/null; then
         mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null
-        echo -e "${gl_lv}✅ 规则已保存${gl_bai}"
+        echo -e "${gl_lv}✅ 规则已保存到 /etc/iptables/rules.v4${gl_bai}"
+        echo -e "${gl_huang}⚠️  建议安装 iptables-persistent 确保重启后自动加载${gl_bai}"
     else
-        echo -e "${gl_huang}⚠️  无法自动保存规则，重启后可能失效${gl_bai}"
-        echo -e "${gl_zi}建议手动安装: apt install iptables-persistent${gl_bai}"
+        echo -e "${gl_hong}❌ 无法保存规则，重启后将失效${gl_bai}"
     fi
     
     return 0
@@ -3089,12 +3106,18 @@ mtu_mss_optimization() {
                     echo "正在移除..."
                     iptables -t mangle -F OUTPUT 2>/dev/null
                     iptables -t mangle -F POSTROUTING 2>/dev/null
-                    
+
+                    # 持久化保存
                     if command -v netfilter-persistent &>/dev/null; then
                         netfilter-persistent save >/dev/null 2>&1
+                        echo -e "${gl_lv}✅ MSS Clamp 已移除并持久化保存${gl_bai}"
+                    elif command -v iptables-save &>/dev/null; then
+                        mkdir -p /etc/iptables
+                        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+                        echo -e "${gl_lv}✅ MSS Clamp 已移除${gl_bai}"
+                    else
+                        echo -e "${gl_lv}✅ MSS Clamp 已移除${gl_bai}"
                     fi
-                    
-                    echo -e "${gl_lv}✅ MSS Clamp 已移除${gl_bai}"
                 else
                     echo -e "${gl_huang}已取消${gl_bai}"
                 fi
