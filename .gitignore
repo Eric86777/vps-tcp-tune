@@ -1,0 +1,16 @@
+# IDE 配置
+.vscode/
+.idea/
+
+# Claude Code 配置
+.claude/
+
+# 计划文档（本地使用）
+docs/plans/
+
+# macOS
+.DS_Store
+
+# 临时文件
+*.tmp
+*.log
