@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -n:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: 新增 Antigravity Claude Proxy 一键部署功能 \\(39号\\)\n\n- 新增主菜单分类「Antigravity Claude Proxy」\n- 支持一键部署：自动安装 Node.js 18+、克隆项目、安装依赖、创建 systemd 服务\n- 支持服务管理：启动/停止/重启/查看状态/查看日志\n- 支持更新项目：git pull + npm install + 自动重启\n- 支持修改端口：动态更新 systemd 配置\n- 支持完全卸载：删除服务和项目文件\n- 自动处理端口冲突\n- 更新 README 版本至 v4.3.0\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(curl:*)",
+      "Bash(git reset:*)",
+      "Bash(git push:*)",
+      "Bash(ssh root@45.153.247.132 \"cat /etc/caddy/Caddyfile\")",
+      "Skill(superpowers:requesting-code-review)",
+      "Skill(superpowers:requesting-code-review:*)"
+    ]
+  }
+}
