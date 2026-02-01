@@ -10551,6 +10551,9 @@ check_cn_block_dependencies() {
 
         if command -v apt-get &> /dev/null; then
             apt-get update -qq
+            # 预设交互式问题答案
+            echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null
+            echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null
             apt-get install -y ipset iptables iptables-persistent
         elif command -v yum &> /dev/null; then
             yum install -y ipset iptables iptables-services
@@ -10561,6 +10564,78 @@ check_cn_block_dependencies() {
 
         echo -e "${gl_lv}✅ 依赖安装完成${gl_bai}"
     fi
+
+    # 确保持久化服务开机自启
+    if command -v netfilter-persistent &> /dev/null; then
+        systemctl enable netfilter-persistent 2>/dev/null || true
+    elif command -v systemctl &> /dev/null && [ -f /usr/lib/systemd/system/iptables.service ]; then
+        systemctl enable iptables 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+# ipset 持久化文件路径
+CN_IPSET_SAVE_FILE="/etc/iptables/ipsets.china-block"
+
+# 保存 ipset 数据
+save_cn_ipset() {
+    if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        mkdir -p /etc/iptables
+        ipset save "$CN_IPSET_NAME" > "$CN_IPSET_SAVE_FILE" 2>/dev/null
+    fi
+}
+
+# 恢复 ipset 数据
+restore_cn_ipset() {
+    # 如果 ipset 已存在且有数据，跳过恢复
+    if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        local ip_count=$(ipset list "$CN_IPSET_NAME" 2>/dev/null | grep -c '^[0-9]' || echo "0")
+        if [ "$ip_count" -gt 0 ]; then
+            return 0
+        fi
+    fi
+
+    # 尝试从保存文件恢复
+    if [ -f "$CN_IPSET_SAVE_FILE" ]; then
+        ipset restore < "$CN_IPSET_SAVE_FILE" 2>/dev/null && return 0
+    fi
+
+    # 尝试从系统默认位置恢复
+    if [ -f /etc/iptables/ipsets ]; then
+        grep -A 99999 "create $CN_IPSET_NAME" /etc/iptables/ipsets 2>/dev/null | \
+            sed "/^create [^$CN_IPSET_NAME]/q" | head -n -1 | \
+            ipset restore 2>/dev/null && return 0
+    fi
+
+    return 1
+}
+
+# 恢复 iptables 规则（针对已配置的端口）
+restore_cn_iptables_rules() {
+    # 检查 ipset 是否存在
+    if ! ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        return 1
+    fi
+
+    # 检查配置文件
+    if [ ! -f "$CN_BLOCK_CONFIG" ]; then
+        return 0
+    fi
+
+    # 获取已配置的端口并重新应用规则
+    local port
+    while IFS='|' read -r port _ _; do
+        [[ -z "$port" || "$port" =~ ^# ]] && continue
+
+        # 检查规则是否已存在，不存在则添加
+        if ! iptables -C INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null; then
+            iptables -I INPUT -p tcp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null
+        fi
+        if ! iptables -C INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null; then
+            iptables -I INPUT -p udp --dport "$port" -m set --match-set "$CN_IPSET_NAME" src -j DROP 2>/dev/null
+        fi
+    done < "$CN_BLOCK_CONFIG"
 
     return 0
 }
@@ -10575,6 +10650,23 @@ init_cn_block_config() {
 # 示例: 1234|2025-10-25 12:00:00|SS节点
 EOF
     fi
+
+    # 检查：如果 ipset 在内存中存在但保存文件不存在，自动保存一份（升级兼容）
+    if ipset list "$CN_IPSET_NAME" &>/dev/null; then
+        local ip_count=$(ipset list "$CN_IPSET_NAME" 2>/dev/null | grep -c '^[0-9]' || echo "0")
+        if [ "$ip_count" -gt 0 ] && [ ! -f "$CN_IPSET_SAVE_FILE" ]; then
+            echo -e "${gl_huang}检测到内存中有 IP 数据但未持久化，正在自动保存...${gl_bai}"
+            save_cn_ipset
+            echo -e "${gl_lv}✅ 已自动保存 $ip_count 条 IP 段，重启后将自动恢复${gl_bai}"
+            sleep 1
+        fi
+    else
+        # 重启后恢复 ipset 数据
+        restore_cn_ipset
+    fi
+
+    # 重启后恢复 iptables 规则
+    restore_cn_iptables_rules
 }
 
 # 下载中国 IP 段列表
@@ -10668,11 +10760,14 @@ update_china_ipset() {
     # 清理临时文件
     rm -f "$CN_IP_LIST_FILE"
 
-    # 保存 ipset
+    # 保存 ipset 到专用文件（确保重启后恢复）
+    save_cn_ipset
+
+    # 同时尝试保存到系统持久化服务
     if command -v ipset-persistent &> /dev/null; then
-        ipset-persistent save
+        ipset-persistent save 2>/dev/null || true
     elif command -v netfilter-persistent &> /dev/null; then
-        netfilter-persistent save
+        netfilter-persistent save 2>/dev/null || true
     fi
 
     # 清理 trap 和释放锁
