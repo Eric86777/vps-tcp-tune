@@ -17575,8 +17575,6 @@ ${domain} {
     reverse_proxy ${backend} {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
     }
 }
 EOF
@@ -17596,7 +17594,7 @@ EOF
 # 启用的域名软链接: ${CADDY_SITES_ENABLED}/
 
 {
-    admin off
+    admin localhost:2019
     email ${ssl_email}
 }
 
@@ -17826,8 +17824,7 @@ caddy_install() {
 # 使用脚本菜单添加反代域名
 
 {
-    # 全局配置
-    admin off
+    admin localhost:2019
     email ${ssl_email}
 }
 
@@ -18021,8 +18018,6 @@ ${domain} {
     reverse_proxy ${backend} {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
     }
 }
 EOF
