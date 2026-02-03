@@ -17468,22 +17468,22 @@ caddy_check_dns() {
     echo "本机IP: $server_ip"
     echo ""
 
-    # 使用多个方法检查域名解析
+    # 使用多个方法检查域名解析（优先使用公共 DNS 避免本地缓存问题）
     local resolved_ip=""
 
-    # 方法1: dig
+    # 方法1: dig @1.1.1.1 (Cloudflare DNS)
     if command -v dig &>/dev/null; then
-        resolved_ip=$(dig +short "$domain" A 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+        resolved_ip=$(dig +short @1.1.1.1 "$domain" A 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
     fi
 
-    # 方法2: nslookup (fallback)
+    # 方法2: nslookup 1.1.1.1 (fallback)
     if [ -z "$resolved_ip" ] && command -v nslookup &>/dev/null; then
-        resolved_ip=$(nslookup "$domain" 2>/dev/null | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | head -1)
+        resolved_ip=$(nslookup "$domain" 1.1.1.1 2>/dev/null | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | head -1)
     fi
 
-    # 方法3: host (fallback)
+    # 方法3: host (fallback，使用默认 DNS)
     if [ -z "$resolved_ip" ] && command -v host &>/dev/null; then
-        resolved_ip=$(host "$domain" 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
+        resolved_ip=$(host "$domain" 1.1.1.1 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
     fi
 
     if [ -z "$resolved_ip" ]; then
