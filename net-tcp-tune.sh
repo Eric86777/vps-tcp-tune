@@ -64,7 +64,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
 
 # 版本号
 readonly SCRIPT_VERSION="2.3"
-readonly CADDY_DEFAULT_VERSION="2.7.6"
+readonly CADDY_DEFAULT_VERSION="2.10.2"
 readonly SNELL_DEFAULT_VERSION="5.0.1"
 
 # IP 查询服务 URL（按优先级排序）
@@ -17954,11 +17954,11 @@ EOF
         return 1
     fi
 
-    # 重启 Caddy
-    systemctl restart caddy
+    # 重载 Caddy（零停机）
+    systemctl reload caddy
 
     if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重启成功${gl_bai}"
+        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
 
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -18100,34 +18100,69 @@ caddy_delete_domain() {
     echo ""
     echo -e "${gl_kjlan}[2/3] 删除配置...${gl_bai}"
 
-    # 从 Caddyfile 中删除配置块
+    # 从 Caddyfile 中删除配置块（改进版：支持嵌套大括号，清理空行）
     local temp_file=$(mktemp)
     local in_block=false
+    local brace_count=0
+    local prev_empty=false
 
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         # 检查是否是要删除域名的注释行（格式：# domain.com - 添加于...）
-        # 注意：注释行在域名块之前，必须先检测
-        if [[ "$line" == "# ${domain_to_delete} - "* ]]; then
+        # 使用正则匹配，允许空格变化
+        if [[ "$line" =~ ^#[[:space:]]*${domain_to_delete}[[:space:]]+-[[:space:]]+添加于 ]]; then
+            prev_empty=false
             continue
         fi
 
-        # 检查是否是要删除的域名块开始
-        if [[ "$line" == "${domain_to_delete} {" ]]; then
+        # 检查是否是要删除的域名块开始（允许域名后有空格）
+        if [[ "$line" =~ ^${domain_to_delete}[[:space:]]*\{[[:space:]]*$ ]]; then
             in_block=true
+            brace_count=1
+            prev_empty=false
             continue
         fi
 
         # 如果在要删除的块中
         if [ "$in_block" = true ]; then
-            # 检查是否是块结束
-            if [ "$line" = "}" ]; then
+            # 计算大括号数量（处理嵌套块）
+            local open_braces=$(echo "$line" | grep -o '{' | wc -l)
+            local close_braces=$(echo "$line" | grep -o '}' | wc -l)
+            brace_count=$((brace_count + open_braces - close_braces))
+
+            # 当大括号平衡时，块结束
+            if [ "$brace_count" -le 0 ]; then
                 in_block=false
+                brace_count=0
             fi
             continue
         fi
 
+        # 处理连续空行（只保留一个）
+        if [[ -z "${line// }" ]]; then
+            if [ "$prev_empty" = true ]; then
+                continue
+            fi
+            prev_empty=true
+        else
+            prev_empty=false
+        fi
+
         echo "$line" >> "$temp_file"
     done < "$CADDY_CONFIG_FILE"
+
+    # 删除文件末尾多余空行（只删除末尾的，保留中间的）
+    if [ -s "$temp_file" ]; then
+        # 使用 awk 删除末尾空行，保留中间空行
+        awk '
+            { lines[NR] = $0 }
+            /./ { last_non_empty = NR }
+            END {
+                for (i = 1; i <= last_non_empty; i++) {
+                    print lines[i]
+                }
+            }
+        ' "$temp_file" > "${temp_file}.clean" && mv "${temp_file}.clean" "$temp_file"
+    fi
 
     mv "$temp_file" "$CADDY_CONFIG_FILE"
     chown caddy:caddy "$CADDY_CONFIG_FILE"
@@ -18149,15 +18184,15 @@ caddy_delete_domain() {
         return 1
     fi
 
-    # 重启 Caddy
-    systemctl restart caddy
+    # 重载 Caddy（零停机）
+    systemctl reload caddy
 
     if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重启成功${gl_bai}"
+        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
         echo ""
         echo -e "${gl_lv}✅ 域名 $domain_to_delete 已删除${gl_bai}"
     else
-        echo -e "${gl_hong}❌ Caddy 重启失败${gl_bai}"
+        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
         echo "正在恢复备份..."
         cp "$backup_file" "$CADDY_CONFIG_FILE"
         systemctl restart caddy
@@ -18195,12 +18230,12 @@ caddy_reload() {
     echo ""
 
     echo "正在重载 Caddy..."
-    systemctl restart caddy
+    systemctl reload caddy
 
     if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重启成功${gl_bai}"
+        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
     else
-        echo -e "${gl_hong}❌ Caddy 重启失败${gl_bai}"
+        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
         echo ""
         echo "查看错误日志: journalctl -u caddy -n 50"
     fi
