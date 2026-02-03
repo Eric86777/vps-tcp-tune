@@ -63,7 +63,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
 #=============================================================================
 
 # 版本号
-readonly SCRIPT_VERSION="2.3"
+readonly SCRIPT_VERSION="2.4"
 readonly CADDY_DEFAULT_VERSION="2.10.2"
 readonly SNELL_DEFAULT_VERSION="5.0.1"
 
@@ -17244,6 +17244,8 @@ CADDY_CONFIG_FILE="/etc/caddy/Caddyfile"
 CADDY_CONFIG_DIR="/etc/caddy"
 CADDY_CONFIG_BACKUP_DIR="/etc/caddy/backups"
 CADDY_DOMAIN_LIST_FILE="/etc/caddy/.domain-list"
+CADDY_SITES_AVAILABLE="/etc/caddy/sites-available"
+CADDY_SITES_ENABLED="/etc/caddy/sites-enabled"
 CADDY_INSTALL_SCRIPT="https://caddyserver.com/api/download?os=linux&arch=amd64"
 
 # 获取服务器 IP
@@ -17530,6 +17532,65 @@ caddy_check_dns() {
     fi
 }
 
+# 迁移旧配置到新的 sites-available/sites-enabled 架构
+caddy_migrate_old_config() {
+    # 检查是否需要迁移（旧配置直接写在 Caddyfile 中）
+    if [ ! -f "$CADDY_CONFIG_FILE" ]; then
+        return 0
+    fi
+
+    # 检查是否已经是新架构（包含 import 语句）
+    if grep -q "^import.*sites-enabled" "$CADDY_CONFIG_FILE" 2>/dev/null; then
+        return 0
+    fi
+
+    # 检查是否有域名列表文件
+    if [ ! -f "$CADDY_DOMAIN_LIST_FILE" ] || [ ! -s "$CADDY_DOMAIN_LIST_FILE" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "${gl_huang}检测到旧版配置，正在迁移到新架构...${gl_bai}"
+
+    # 创建目录
+    mkdir -p "$CADDY_SITES_AVAILABLE"
+    mkdir -p "$CADDY_SITES_ENABLED"
+
+    # 从域名列表读取并创建独立配置文件
+    while IFS='|' read -r domain backend timestamp; do
+        if [ -n "$domain" ] && [ -n "$backend" ]; then
+            local conf_file="$CADDY_SITES_AVAILABLE/${domain}.conf"
+
+            # 创建独立配置文件
+            cat > "$conf_file" << EOF
+# ${domain} - 迁移于 $(date '+%Y-%m-%d %H:%M:%S')
+${domain} {
+    reverse_proxy ${backend} {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+EOF
+            chown caddy:caddy "$conf_file"
+
+            # 创建软链接到 sites-enabled（默认启用）
+            ln -sf "$conf_file" "$CADDY_SITES_ENABLED/${domain}.conf"
+
+            echo "  迁移: $domain → ${domain}.conf"
+        fi
+    done < "$CADDY_DOMAIN_LIST_FILE"
+
+    echo -e "${gl_lv}✅ 配置迁移完成${gl_bai}"
+}
+
+# 检查域名是否启用
+caddy_is_domain_enabled() {
+    local domain=$1
+    [ -L "$CADDY_SITES_ENABLED/${domain}.conf" ]
+}
+
 # 安装 Caddy
 caddy_install() {
     clear
@@ -17709,6 +17770,8 @@ caddy_install() {
     # 创建配置目录
     mkdir -p "$CADDY_CONFIG_DIR"
     mkdir -p "$CADDY_CONFIG_BACKUP_DIR"
+    mkdir -p "$CADDY_SITES_AVAILABLE"
+    mkdir -p "$CADDY_SITES_ENABLED"
     mkdir -p /var/log/caddy
     mkdir -p /var/lib/caddy/.local/share/caddy
     mkdir -p /var/lib/caddy/.config/caddy
@@ -17723,9 +17786,8 @@ caddy_install() {
     chown -R caddy:caddy /var/log/caddy
     chown -R caddy:caddy /var/lib/caddy
 
-    # 创建初始 Caddyfile
-    if [ ! -f "$CADDY_CONFIG_FILE" ]; then
-        cat > "$CADDY_CONFIG_FILE" << EOF
+    # 创建初始 Caddyfile（使用 import 导入启用的站点配置）
+    cat > "$CADDY_CONFIG_FILE" << EOF
 # Caddy 多域名反代配置
 # 使用脚本菜单添加反代域名
 
@@ -17735,10 +17797,13 @@ caddy_install() {
     email ${ssl_email}
 }
 
-# 反代配置将在下方自动添加
+# 导入所有启用的站点配置
+import ${CADDY_SITES_ENABLED}/*.conf
 EOF
-        chown caddy:caddy "$CADDY_CONFIG_FILE"
-    fi
+    chown caddy:caddy "$CADDY_CONFIG_FILE"
+
+    # 迁移旧配置（如果存在旧格式的配置）
+    caddy_migrate_old_config
 
     # 创建 systemd 服务
     cat > /etc/systemd/system/caddy.service << 'EOF'
@@ -17907,19 +17972,16 @@ caddy_add_domain() {
     fi
 
     echo ""
-    echo -e "${gl_kjlan}[1/3] 备份配置文件...${gl_bai}"
+    echo -e "${gl_kjlan}[1/3] 创建配置文件...${gl_bai}"
 
-    # 备份当前配置
-    local backup_file="$CADDY_CONFIG_BACKUP_DIR/Caddyfile.$(date +%Y%m%d_%H%M%S)"
-    cp "$CADDY_CONFIG_FILE" "$backup_file"
-    echo -e "${gl_lv}✅ 已备份到: $backup_file${gl_bai}"
+    # 确保目录存在
+    mkdir -p "$CADDY_SITES_AVAILABLE"
+    mkdir -p "$CADDY_SITES_ENABLED"
 
-    echo ""
-    echo -e "${gl_kjlan}[2/3] 添加配置...${gl_bai}"
+    local conf_file="$CADDY_SITES_AVAILABLE/${domain}.conf"
 
-    # 添加配置到 Caddyfile
-    cat >> "$CADDY_CONFIG_FILE" << EOF
-
+    # 创建独立配置文件
+    cat > "$conf_file" << EOF
 # ${domain} - 添加于 $(date '+%Y-%m-%d %H:%M:%S')
 ${domain} {
     reverse_proxy ${backend} {
@@ -17930,8 +17992,17 @@ ${domain} {
     }
 }
 EOF
+    chown caddy:caddy "$conf_file"
 
-    echo -e "${gl_lv}✅ 配置已添加${gl_bai}"
+    echo -e "${gl_lv}✅ 配置文件已创建: ${domain}.conf${gl_bai}"
+
+    echo ""
+    echo -e "${gl_kjlan}[2/3] 启用域名...${gl_bai}"
+
+    # 创建软链接到 sites-enabled
+    ln -sf "$conf_file" "$CADDY_SITES_ENABLED/${domain}.conf"
+
+    echo -e "${gl_lv}✅ 域名已启用${gl_bai}"
 
     # 记录到域名列表
     echo "${domain}|${backend}|$(date +%s)" >> "$CADDY_DOMAIN_LIST_FILE"
@@ -17942,8 +18013,11 @@ EOF
     # 先测试配置
     if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
         echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
-        echo "正在恢复备份..."
-        cp "$backup_file" "$CADDY_CONFIG_FILE"
+        echo "正在清理..."
+
+        # 删除配置文件和软链接
+        rm -f "$CADDY_SITES_ENABLED/${domain}.conf"
+        rm -f "$conf_file"
 
         # 从域名列表中删除
         if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
@@ -18009,19 +18083,30 @@ caddy_list_domains() {
     fi
 
     local count=1
-    echo -e "${gl_kjlan}序号  域名                    后端地址               添加时间${gl_bai}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local enabled_count=0
+    local disabled_count=0
+
+    echo -e "${gl_kjlan}序号  状态      域名                    后端地址               添加时间${gl_bai}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     while IFS='|' read -r domain backend timestamp; do
         if [ -n "$domain" ]; then
             local add_time=$(date -d "@$timestamp" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$timestamp" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "未知")
-            printf "%-6s%-24s%-23s%s\n" "$count" "$domain" "$backend" "$add_time"
+            local status_icon
+            if caddy_is_domain_enabled "$domain"; then
+                status_icon="${gl_lv}✅启用${gl_bai}"
+                enabled_count=$((enabled_count + 1))
+            else
+                status_icon="${gl_hong}❌禁用${gl_bai}"
+                disabled_count=$((disabled_count + 1))
+            fi
+            printf "%-6s%-10b%-24s%-23s%s\n" "$count" "$status_icon" "$domain" "$backend" "$add_time"
             count=$((count + 1))
         fi
     done < "$CADDY_DOMAIN_LIST_FILE"
 
     echo ""
-    echo "总计: $((count - 1)) 个域名"
+    echo "总计: $((count - 1)) 个域名 (${gl_lv}启用: $enabled_count${gl_bai}, ${gl_hong}禁用: $disabled_count${gl_bai})"
     echo ""
 
     break_end
@@ -18090,96 +18175,23 @@ caddy_delete_domain() {
     fi
 
     echo ""
-    echo -e "${gl_kjlan}[1/3] 备份配置文件...${gl_bai}"
+    echo -e "${gl_kjlan}[1/2] 删除配置文件...${gl_bai}"
 
-    # 备份当前配置
-    local backup_file="$CADDY_CONFIG_BACKUP_DIR/Caddyfile.$(date +%Y%m%d_%H%M%S)"
-    cp "$CADDY_CONFIG_FILE" "$backup_file"
-    echo -e "${gl_lv}✅ 已备份到: $backup_file${gl_bai}"
+    # 删除软链接和配置文件
+    rm -f "$CADDY_SITES_ENABLED/${domain_to_delete}.conf"
+    rm -f "$CADDY_SITES_AVAILABLE/${domain_to_delete}.conf"
 
-    echo ""
-    echo -e "${gl_kjlan}[2/3] 删除配置...${gl_bai}"
-
-    # 从 Caddyfile 中删除配置块（改进版：支持嵌套大括号，清理空行）
-    local temp_file=$(mktemp)
-    local in_block=false
-    local brace_count=0
-    local prev_empty=false
-
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        # 检查是否是要删除域名的注释行（格式：# domain.com - 添加于...）
-        # 使用正则匹配，允许空格变化
-        if [[ "$line" =~ ^#[[:space:]]*${domain_to_delete}[[:space:]]+-[[:space:]]+添加于 ]]; then
-            prev_empty=false
-            continue
-        fi
-
-        # 检查是否是要删除的域名块开始（允许域名后有空格）
-        if [[ "$line" =~ ^${domain_to_delete}[[:space:]]*\{[[:space:]]*$ ]]; then
-            in_block=true
-            brace_count=1
-            prev_empty=false
-            continue
-        fi
-
-        # 如果在要删除的块中
-        if [ "$in_block" = true ]; then
-            # 计算大括号数量（处理嵌套块）
-            local open_braces=$(echo "$line" | grep -o '{' | wc -l)
-            local close_braces=$(echo "$line" | grep -o '}' | wc -l)
-            brace_count=$((brace_count + open_braces - close_braces))
-
-            # 当大括号平衡时，块结束
-            if [ "$brace_count" -le 0 ]; then
-                in_block=false
-                brace_count=0
-            fi
-            continue
-        fi
-
-        # 处理连续空行（只保留一个）
-        if [[ -z "${line// }" ]]; then
-            if [ "$prev_empty" = true ]; then
-                continue
-            fi
-            prev_empty=true
-        else
-            prev_empty=false
-        fi
-
-        echo "$line" >> "$temp_file"
-    done < "$CADDY_CONFIG_FILE"
-
-    # 删除文件末尾多余空行（只删除末尾的，保留中间的）
-    if [ -s "$temp_file" ]; then
-        # 使用 awk 删除末尾空行，保留中间空行
-        awk '
-            { lines[NR] = $0 }
-            /./ { last_non_empty = NR }
-            END {
-                for (i = 1; i <= last_non_empty; i++) {
-                    print lines[i]
-                }
-            }
-        ' "$temp_file" > "${temp_file}.clean" && mv "${temp_file}.clean" "$temp_file"
-    fi
-
-    mv "$temp_file" "$CADDY_CONFIG_FILE"
-    chown caddy:caddy "$CADDY_CONFIG_FILE"
-
-    echo -e "${gl_lv}✅ 配置已删除${gl_bai}"
+    echo -e "${gl_lv}✅ 配置文件已删除${gl_bai}"
 
     # 从域名列表中删除
     sed -i "/^${domain_to_delete}|/d" "$CADDY_DOMAIN_LIST_FILE"
 
     echo ""
-    echo -e "${gl_kjlan}[3/3] 重载 Caddy...${gl_bai}"
+    echo -e "${gl_kjlan}[2/2] 重载 Caddy...${gl_bai}"
 
     # 验证配置
     if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
         echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
-        echo "正在恢复备份..."
-        cp "$backup_file" "$CADDY_CONFIG_FILE"
         break_end
         return 1
     fi
@@ -18190,15 +18202,110 @@ caddy_delete_domain() {
     if [ $? -eq 0 ]; then
         echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
         echo ""
-        echo -e "${gl_lv}✅ 域名 $domain_to_delete 已删除${gl_bai}"
+        echo -e "${gl_lv}✅ 域名 $domain_to_delete 已彻底删除${gl_bai}"
     else
         echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
-        echo "正在恢复备份..."
-        cp "$backup_file" "$CADDY_CONFIG_FILE"
         systemctl restart caddy
     fi
 
     break_end
+}
+
+# 启用/禁用域名
+caddy_toggle_domain() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  启用/禁用域名${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        if [ ! -f "$CADDY_DOMAIN_LIST_FILE" ] || [ ! -s "$CADDY_DOMAIN_LIST_FILE" ]; then
+            echo -e "${gl_huang}暂无配置的域名${gl_bai}"
+            break_end
+            return 0
+        fi
+
+        # 显示域名列表（带状态）
+        local count=1
+        declare -a domains
+        declare -a backends
+        declare -a statuses
+
+        echo -e "${gl_kjlan}序号  状态      域名                    后端地址${gl_bai}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        while IFS='|' read -r domain backend timestamp; do
+            if [ -n "$domain" ]; then
+                local status_icon
+                local status_text
+                if caddy_is_domain_enabled "$domain"; then
+                    status_icon="${gl_lv}✅启用${gl_bai}"
+                    status_text="enabled"
+                else
+                    status_icon="${gl_hong}❌禁用${gl_bai}"
+                    status_text="disabled"
+                fi
+                printf "%-6s%-10b%-24s%s\n" "$count" "$status_icon" "$domain" "$backend"
+                domains[$count]="$domain"
+                backends[$count]="$backend"
+                statuses[$count]="$status_text"
+                count=$((count + 1))
+            fi
+        done < "$CADDY_DOMAIN_LIST_FILE"
+
+        echo ""
+        echo "输入序号切换状态，0 返回"
+        read -e -p "请选择: " choice
+
+        if [ -z "$choice" ] || [ "$choice" = "0" ]; then
+            return 0
+        fi
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -ge "$count" ]; then
+            echo -e "${gl_hong}❌ 无效的序号${gl_bai}"
+            sleep 1
+            continue
+        fi
+
+        local domain_to_toggle="${domains[$choice]}"
+        local current_status="${statuses[$choice]}"
+
+        echo ""
+        if [ "$current_status" = "enabled" ]; then
+            # 禁用域名：删除软链接
+            rm -f "$CADDY_SITES_ENABLED/${domain_to_toggle}.conf"
+            echo -e "${gl_huang}正在禁用 $domain_to_toggle ...${gl_bai}"
+        else
+            # 启用域名：创建软链接
+            ln -sf "$CADDY_SITES_AVAILABLE/${domain_to_toggle}.conf" "$CADDY_SITES_ENABLED/${domain_to_toggle}.conf"
+            echo -e "${gl_lv}正在启用 $domain_to_toggle ...${gl_bai}"
+        fi
+
+        # 验证并重载配置
+        if caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
+            systemctl reload caddy
+            if [ $? -eq 0 ]; then
+                if [ "$current_status" = "enabled" ]; then
+                    echo -e "${gl_lv}✅ $domain_to_toggle 已禁用${gl_bai}"
+                else
+                    echo -e "${gl_lv}✅ $domain_to_toggle 已启用${gl_bai}"
+                fi
+            else
+                echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+            fi
+        else
+            echo -e "${gl_hong}❌ 配置验证失败，正在恢复...${gl_bai}"
+            # 恢复原状态
+            if [ "$current_status" = "enabled" ]; then
+                ln -sf "$CADDY_SITES_AVAILABLE/${domain_to_toggle}.conf" "$CADDY_SITES_ENABLED/${domain_to_toggle}.conf"
+            else
+                rm -f "$CADDY_SITES_ENABLED/${domain_to_toggle}.conf"
+            fi
+        fi
+
+        sleep 1
+    done
 }
 
 # 重载 Caddy 配置
@@ -18520,20 +18627,21 @@ manage_caddy() {
         echo "2. 添加反代域名"
         echo "3. 查看已配置域名"
         echo "4. 删除反代域名"
-        echo "5. 重载 Caddy 配置"
+        echo "5. 启用/禁用域名"
+        echo "6. 重载 Caddy 配置"
         # 根据状态显示启动或停止
         if [ "$status" = "running" ]; then
-            echo "6. 停止 Caddy ⏸️"
+            echo "7. 停止 Caddy ⏸️"
         else
-            echo "6. 启动 Caddy ▶️"
+            echo "7. 启动 Caddy ▶️"
         fi
-        echo "7. 查看 Caddy 状态"
-        echo "8. 查看 Caddy 日志"
-        echo "9. 卸载 Caddy"
+        echo "8. 查看 Caddy 状态"
+        echo "9. 查看 Caddy 日志"
+        echo "10. 卸载 Caddy"
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-9]: " choice
+        read -e -p "请选择操作 [0-10]: " choice
 
         case $choice in
             1)
@@ -18549,18 +18657,21 @@ manage_caddy() {
                 caddy_delete_domain
                 ;;
             5)
-                caddy_reload
+                caddy_toggle_domain
                 ;;
             6)
-                caddy_toggle_service
+                caddy_reload
                 ;;
             7)
-                caddy_show_status
+                caddy_toggle_service
                 ;;
             8)
-                caddy_show_logs
+                caddy_show_status
                 ;;
             9)
+                caddy_show_logs
+                ;;
+            10)
                 caddy_uninstall
                 ;;
             0)
