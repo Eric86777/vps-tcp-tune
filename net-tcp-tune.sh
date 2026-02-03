@@ -18144,7 +18144,7 @@ caddy_list_domains() {
     done < "$CADDY_DOMAIN_LIST_FILE"
 
     echo ""
-    echo "总计: $((count - 1)) 个域名 (${gl_lv}启用: $enabled_count${gl_bai}, ${gl_hong}禁用: $disabled_count${gl_bai})"
+    echo -e "总计: $((count - 1)) 个域名 (${gl_lv}启用: $enabled_count${gl_bai}, ${gl_hong}禁用: $disabled_count${gl_bai})"
     echo ""
 
     break_end
