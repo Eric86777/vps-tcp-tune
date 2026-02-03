@@ -17552,9 +17552,16 @@ caddy_migrate_old_config() {
     echo ""
     echo -e "${gl_huang}检测到旧版配置，正在迁移到新架构...${gl_bai}"
 
+    # 从旧配置中提取邮箱
+    local ssl_email=$(grep -oP '(?<=email\s)[^\s]+' "$CADDY_CONFIG_FILE" 2>/dev/null || echo "admin@example.com")
+
+    # 备份旧配置
+    cp "$CADDY_CONFIG_FILE" "${CADDY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+
     # 创建目录
     mkdir -p "$CADDY_SITES_AVAILABLE"
     mkdir -p "$CADDY_SITES_ENABLED"
+    chown -R caddy:caddy "$CADDY_SITES_AVAILABLE" "$CADDY_SITES_ENABLED"
 
     # 从域名列表读取并创建独立配置文件
     while IFS='|' read -r domain backend timestamp; do
@@ -17582,7 +17589,34 @@ EOF
         fi
     done < "$CADDY_DOMAIN_LIST_FILE"
 
+    # 更新 Caddyfile 为新格式
+    cat > "$CADDY_CONFIG_FILE" << EOF
+# Caddy 多域名反代配置（新架构）
+# 域名配置文件位于: ${CADDY_SITES_AVAILABLE}/
+# 启用的域名软链接: ${CADDY_SITES_ENABLED}/
+
+{
+    admin off
+    email ${ssl_email}
+}
+
+import ${CADDY_SITES_ENABLED}/*.conf
+EOF
+    chown caddy:caddy "$CADDY_CONFIG_FILE"
+
     echo -e "${gl_lv}✅ 配置迁移完成${gl_bai}"
+
+    # 如果 Caddy 在运行，重载配置
+    if systemctl is-active caddy &>/dev/null; then
+        echo "正在重载 Caddy..."
+        if systemctl reload caddy; then
+            echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+        else
+            echo -e "${gl_huang}⚠️ 重载失败，请手动重启 Caddy${gl_bai}"
+        fi
+    fi
+
+    sleep 2
 }
 
 # 检查域名是否启用
@@ -18028,40 +18062,49 @@ EOF
         return 1
     fi
 
-    # 重载 Caddy（零停机）
-    systemctl reload caddy
-
-    if [ $? -eq 0 ]; then
+    # 检查 Caddy 是否在运行
+    local caddy_running=false
+    if systemctl is-active caddy &>/dev/null; then
+        caddy_running=true
+        # 重载 Caddy（零停机）
+        if ! systemctl reload caddy; then
+            echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
+            echo "正在清理..."
+            rm -f "$CADDY_SITES_ENABLED/${domain}.conf"
+            rm -f "$conf_file"
+            if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
+                sed -i "/^${domain}|/d" "$CADDY_DOMAIN_LIST_FILE"
+            fi
+            systemctl restart caddy
+            break_end
+            return 1
+        fi
         echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+    fi
 
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-        echo -e "${gl_lv}🎉 反代配置成功!${gl_bai}"
-        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-        echo ""
-        echo "访问地址: https://${domain}"
-        echo "后端服务: ${backend}"
-        echo ""
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}🎉 反代配置成功!${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "访问地址: https://${domain}"
+    echo "后端服务: ${backend}"
+    echo ""
+    if [ "$caddy_running" = true ]; then
         echo -e "${gl_huang}说明:${gl_bai}"
         echo "  ⏳ Caddy 正在自动申请 SSL 证书..."
         echo "  ⏳ 首次访问可能需要等待几秒钟"
         echo "  ✅ 证书申请成功后即可通过 HTTPS 访问"
-        echo ""
-        echo -e "${gl_huang}提示:${gl_bai}"
-        echo "  - 使用 [7. 查看 Caddy 日志] 可查看证书申请状态"
-        echo "  - 证书由 Let's Encrypt 签发，自动续期"
-        echo ""
     else
-        echo -e "${gl_hong}❌ Caddy 重启失败${gl_bai}"
-        echo "正在恢复备份..."
-        cp "$backup_file" "$CADDY_CONFIG_FILE"
-        systemctl restart caddy
-
-        # 从域名列表中删除
-        if [ -f "$CADDY_DOMAIN_LIST_FILE" ]; then
-            sed -i "/^${domain}|/d" "$CADDY_DOMAIN_LIST_FILE"
-        fi
+        echo -e "${gl_huang}⚠️ Caddy 未运行${gl_bai}"
+        echo "  请使用菜单 [7. 启动 Caddy] 启动服务"
+        echo "  启动后将自动申请 SSL 证书"
     fi
+    echo ""
+    echo -e "${gl_huang}提示:${gl_bai}"
+    echo "  - 使用 [9. 查看 Caddy 日志] 可查看证书申请状态"
+    echo "  - 证书由 Let's Encrypt 签发，自动续期"
+    echo ""
 
     break_end
 }
@@ -18187,25 +18230,29 @@ caddy_delete_domain() {
     sed -i "/^${domain_to_delete}|/d" "$CADDY_DOMAIN_LIST_FILE"
 
     echo ""
-    echo -e "${gl_kjlan}[2/2] 重载 Caddy...${gl_bai}"
+    echo -e "${gl_lv}✅ 域名 $domain_to_delete 已删除${gl_bai}"
 
-    # 验证配置
-    if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
-        echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
-        break_end
-        return 1
-    fi
-
-    # 重载 Caddy（零停机）
-    systemctl reload caddy
-
-    if [ $? -eq 0 ]; then
-        echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+    # 检查 Caddy 是否在运行，在运行才重载
+    if systemctl is-active caddy &>/dev/null; then
         echo ""
-        echo -e "${gl_lv}✅ 域名 $domain_to_delete 已彻底删除${gl_bai}"
+        echo -e "${gl_kjlan}[2/2] 重载 Caddy...${gl_bai}"
+
+        # 验证配置
+        if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
+            echo -e "${gl_hong}❌ 配置文件验证失败${gl_bai}"
+            break_end
+            return 1
+        fi
+
+        # 重载 Caddy（零停机）
+        if systemctl reload caddy; then
+            echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
+        else
+            echo -e "${gl_huang}⚠️ 重载失败，尝试重启...${gl_bai}"
+            systemctl restart caddy
+        fi
     else
-        echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
-        systemctl restart caddy
+        echo -e "${gl_huang}ℹ️ Caddy 未运行，配置将在下次启动时生效${gl_bai}"
     fi
 
     break_end
@@ -18282,19 +18329,8 @@ caddy_toggle_domain() {
             echo -e "${gl_lv}正在启用 $domain_to_toggle ...${gl_bai}"
         fi
 
-        # 验证并重载配置
-        if caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
-            systemctl reload caddy
-            if [ $? -eq 0 ]; then
-                if [ "$current_status" = "enabled" ]; then
-                    echo -e "${gl_lv}✅ $domain_to_toggle 已禁用${gl_bai}"
-                else
-                    echo -e "${gl_lv}✅ $domain_to_toggle 已启用${gl_bai}"
-                fi
-            else
-                echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
-            fi
-        else
+        # 验证配置
+        if ! caddy validate --config "$CADDY_CONFIG_FILE" 2>/dev/null; then
             echo -e "${gl_hong}❌ 配置验证失败，正在恢复...${gl_bai}"
             # 恢复原状态
             if [ "$current_status" = "enabled" ]; then
@@ -18302,6 +18338,29 @@ caddy_toggle_domain() {
             else
                 rm -f "$CADDY_SITES_ENABLED/${domain_to_toggle}.conf"
             fi
+            sleep 1
+            continue
+        fi
+
+        # 检查 Caddy 是否在运行
+        if systemctl is-active caddy &>/dev/null; then
+            if systemctl reload caddy; then
+                if [ "$current_status" = "enabled" ]; then
+                    echo -e "${gl_lv}✅ $domain_to_toggle 已禁用${gl_bai}"
+                else
+                    echo -e "${gl_lv}✅ $domain_to_toggle 已启用${gl_bai}"
+                fi
+            else
+                echo -e "${gl_huang}⚠️ 重载失败，尝试重启...${gl_bai}"
+                systemctl restart caddy
+            fi
+        else
+            if [ "$current_status" = "enabled" ]; then
+                echo -e "${gl_lv}✅ $domain_to_toggle 已禁用${gl_bai}"
+            else
+                echo -e "${gl_lv}✅ $domain_to_toggle 已启用${gl_bai}"
+            fi
+            echo -e "${gl_huang}ℹ️ Caddy 未运行，配置将在下次启动时生效${gl_bai}"
         fi
 
         sleep 1
@@ -18336,10 +18395,17 @@ caddy_reload() {
     echo -e "${gl_lv}✅ 配置文件验证通过${gl_bai}"
     echo ""
 
-    echo "正在重载 Caddy..."
-    systemctl reload caddy
+    # 检查 Caddy 是否在运行
+    if ! systemctl is-active caddy &>/dev/null; then
+        echo -e "${gl_huang}⚠️ Caddy 未运行${gl_bai}"
+        echo ""
+        echo "请先使用 [7. 启动 Caddy] 启动服务"
+        break_end
+        return 1
+    fi
 
-    if [ $? -eq 0 ]; then
+    echo "正在重载 Caddy..."
+    if systemctl reload caddy; then
         echo -e "${gl_lv}✅ Caddy 重载成功${gl_bai}"
     else
         echo -e "${gl_hong}❌ Caddy 重载失败${gl_bai}"
@@ -18588,6 +18654,9 @@ caddy_uninstall() {
 
 # Caddy 管理主菜单
 manage_caddy() {
+    # 首次进入时检测旧配置并迁移
+    caddy_migrate_old_config
+
     while true; do
         clear
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
