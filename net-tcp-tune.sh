@@ -17569,6 +17569,70 @@ sub2api_view_logs() {
     break_end
 }
 
+# 查看配置信息
+sub2api_show_config() {
+    clear
+
+    local status=$(sub2api_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Sub2API 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local port=$(sub2api_get_port)
+    local server_ip=$(curl -s4 --max-time 3 ip.sb 2>/dev/null || curl -s6 --max-time 3 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Sub2API 配置信息${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "Web 管理面板: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo -e "设置向导:     ${gl_huang}http://${server_ip}:${port}/setup${gl_bai}"
+    echo ""
+
+    # 读取数据库信息
+    local db_info_file="$SUB2API_CONFIG_DIR/db-info"
+    if [ -f "$db_info_file" ]; then
+        local db_user=$(grep "DB_USER=" "$db_info_file" | cut -d= -f2)
+        local db_pass=$(grep "DB_PASSWORD=" "$db_info_file" | cut -d= -f2)
+        local db_name=$(grep "DB_NAME=" "$db_info_file" | cut -d= -f2)
+
+        echo -e "${gl_kjlan}【数据库配置】${gl_bai}"
+        echo -e "  主持人:     ${gl_huang}localhost${gl_bai}"
+        echo -e "  端口:       ${gl_huang}5432${gl_bai}"
+        echo -e "  用户名:     ${gl_huang}${db_user}${gl_bai}"
+        echo -e "  密码:       ${gl_huang}${db_pass}${gl_bai}"
+        echo -e "  数据库名称: ${gl_huang}${db_name}${gl_bai}"
+        echo -e "  SSL 模式:   ${gl_huang}禁用${gl_bai}"
+        echo ""
+        echo -e "${gl_kjlan}【Redis 配置】${gl_bai}"
+        echo -e "  主持人:     ${gl_huang}localhost${gl_bai}"
+        echo -e "  端口:       ${gl_huang}6379${gl_bai}"
+        echo -e "  密码:       ${gl_huang}（留空）${gl_bai}"
+        echo ""
+    else
+        echo -e "${gl_huang}⚠️ 未找到数据库配置文件（旧版本部署）${gl_bai}"
+        echo -e "  文件路径: ${SUB2API_CONFIG_DIR}/db-info"
+        echo ""
+    fi
+
+    echo -e "${gl_kjlan}【Claude Code 配置】${gl_bai}"
+    echo -e "  ${gl_huang}export ANTHROPIC_BASE_URL=\"http://${server_ip}:${port}/antigravity\"${gl_bai}"
+    echo -e "  ${gl_huang}export ANTHROPIC_AUTH_TOKEN=\"后台创建的API密钥\"${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: systemctl status sub2api"
+    echo "  启动: systemctl start sub2api"
+    echo "  停止: systemctl stop sub2api"
+    echo "  重启: systemctl restart sub2api"
+    echo "  日志: journalctl -u sub2api -f"
+    echo ""
+
+    break_end
+}
+
 # 卸载
 sub2api_uninstall() {
     echo ""
@@ -17636,14 +17700,15 @@ manage_sub2api() {
         echo ""
         echo "5. 查看状态"
         echo "6. 查看日志"
-        echo "7. 修改端口"
+        echo "7. 查看配置信息"
+        echo "8. 修改端口"
         echo ""
-        echo "8. 卸载 Sub2API"
+        echo "9. 卸载 Sub2API"
         echo ""
         echo "0. 返回上级菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择 [0-8]: " choice
+        read -e -p "请选择 [0-9]: " choice
 
         case $choice in
             1)
@@ -17665,9 +17730,12 @@ manage_sub2api() {
                 sub2api_view_logs
                 ;;
             7)
-                sub2api_change_port
+                sub2api_show_config
                 ;;
             8)
+                sub2api_change_port
+                ;;
+            9)
                 sub2api_uninstall
                 ;;
             0)
