@@ -17247,7 +17247,7 @@ sub2api_setup_postgres() {
         echo -e "${gl_lv}✅ PostgreSQL 已安装${gl_bai}"
     else
         echo "正在安装 PostgreSQL..."
-        apt-get update -qq
+        apt-get update -qq 2>/dev/null
         apt-get install -y -qq postgresql postgresql-contrib > /dev/null 2>&1
         if [ $? -ne 0 ]; then
             echo -e "${gl_hong}❌ PostgreSQL 安装失败${gl_bai}"
