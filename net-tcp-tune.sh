@@ -63,7 +63,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
 #=============================================================================
 
 # 版本号
-readonly SCRIPT_VERSION="2.4"
+readonly SCRIPT_VERSION="4.7.0"
 readonly CADDY_DEFAULT_VERSION="2.10.2"
 readonly SNELL_DEFAULT_VERSION="5.0.1"
 
@@ -7091,12 +7091,13 @@ ai_proxy_menu() {
         echo "2. Open WebUI 部署管理"
         echo "3. CRS 部署管理 (多账户中转/拼车)"
         echo "4. Fuclaude 部署管理 (Claude网页版共享)"
-        echo "5. Caddy 多域名反代"
+        echo "5. Sub2API 部署管理"
+        echo "6. Caddy 多域名反代"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-5]: " choice
+        read -e -p "请选择操作 [0-6]: " choice
 
         case $choice in
             1)
@@ -7112,6 +7113,9 @@ ai_proxy_menu() {
                 manage_fuclaude
                 ;;
             5)
+                manage_sub2api
+                ;;
+            6)
                 manage_caddy
                 ;;
             0)
@@ -14213,6 +14217,15 @@ ag_proxy_get_port() {
     fi
 }
 
+# 检查端口是否可用
+ag_proxy_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
 # 检测 Antigravity Claude Proxy 状态
 ag_proxy_check_status() {
     if [ ! -d "$AG_PROXY_INSTALL_DIR" ]; then
@@ -14408,92 +14421,29 @@ ag_proxy_install_deps() {
     fi
 }
 
-# 检测并处理端口冲突
-ag_proxy_handle_port_conflict() {
-    local port=$(ag_proxy_get_port)
-    echo -e "${gl_kjlan}[4/6] 检测端口 ${port} 占用情况...${gl_bai}"
+# 配置端口
+ag_proxy_configure_port() {
+    echo -e "${gl_kjlan}[4/6] 配置服务端口...${gl_bai}"
 
-    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
-
-    if [ -n "$pid" ]; then
-        # 检查是否是本项目的进程
-        local proc_cwd=$(readlink -f /proc/$pid/cwd 2>/dev/null)
-        local proc_comm=$(cat /proc/$pid/comm 2>/dev/null)
-
-        if [ "$proc_cwd" = "$AG_PROXY_INSTALL_DIR" ] || [[ "$proc_comm" == "node" && -f "$AG_PROXY_INSTALL_DIR/package.json" ]]; then
-            # 是本项目的进程，可以安全终止
-            echo -e "${gl_huang}⚠ 端口 ${port} 被本项目旧进程占用 (PID ${pid})${gl_bai}"
-            echo "正在终止旧进程..."
-            kill "$pid" 2>/dev/null
-            sleep 1
-
-            # 检查是否成功终止
-            if ss -lntp 2>/dev/null | grep -q ":${port} "; then
-                echo "进程未响应，强制终止..."
-                kill -9 "$pid" 2>/dev/null
-                sleep 1
-            fi
-
-            if ss -lntp 2>/dev/null | grep -q ":${port} "; then
-                echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
-                return 1
-            fi
-            echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
-        else
-            # 不是本项目的进程，提示用户
-            echo -e "${gl_hong}❌ 端口 ${port} 被其他程序占用 (PID ${pid})${gl_bai}"
-            echo ""
-            echo -e "占用进程信息："
-            echo -e "  PID: ${pid}"
-            echo -e "  程序: ${proc_comm}"
-            echo -e "  目录: ${proc_cwd}"
-            echo ""
-            echo -e "${gl_huang}请选择操作：${gl_bai}"
-            echo "1. 使用其他端口（推荐）"
-            echo "2. 强制终止该进程并使用 ${port}"
-            echo "0. 取消部署"
-            echo ""
-            read -e -p "请选择 [0-2]: " conflict_choice
-
-            case "$conflict_choice" in
-                1)
-                    read -e -p "请输入新端口 (1-65535): " new_port
-                    if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ]; then
-                        # 检查新端口是否可用
-                        if ss -lntp 2>/dev/null | grep -q ":${new_port} "; then
-                            echo -e "${gl_hong}❌ 端口 ${new_port} 也被占用${gl_bai}"
-                            return 1
-                        fi
-                        echo "$new_port" > "$AG_PROXY_PORT_FILE"
-                        echo -e "${gl_lv}✅ 将使用端口 ${new_port}${gl_bai}"
-                    else
-                        echo -e "${gl_hong}❌ 无效的端口号${gl_bai}"
-                        return 1
-                    fi
-                    ;;
-                2)
-                    echo "正在强制终止进程 ${pid}..."
-                    kill "$pid" 2>/dev/null
-                    sleep 1
-                    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
-                        kill -9 "$pid" 2>/dev/null
-                        sleep 1
-                    fi
-                    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
-                        echo -e "${gl_hong}❌ 无法释放端口 ${port}${gl_bai}"
-                        return 1
-                    fi
-                    echo -e "${gl_lv}✅ 端口 ${port} 已释放${gl_bai}"
-                    ;;
-                *)
-                    echo "已取消"
-                    return 1
-                    ;;
-            esac
-        fi
-    else
-        echo -e "${gl_lv}✅ 端口 ${port} 可用${gl_bai}"
+    local port="$AG_PROXY_PORT"
+    read -e -p "请输入访问端口 [$AG_PROXY_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        port="$input_port"
     fi
+
+    # 检查端口是否可用
+    while ! ag_proxy_check_port "$port"; do
+        echo -e "${gl_hong}⚠️ 端口 $port 已被占用，请换一个${gl_bai}"
+        read -e -p "请输入访问端口: " port
+        if [ -z "$port" ]; then
+            port="$AG_PROXY_PORT"
+        fi
+    done
+    echo -e "${gl_lv}✅ 端口 $port 可用${gl_bai}"
+
+    # 保存端口配置
+    mkdir -p "$(dirname "$AG_PROXY_PORT_FILE")"
+    echo "$port" > "$AG_PROXY_PORT_FILE"
     return 0
 }
 
@@ -14579,13 +14529,13 @@ ag_proxy_deploy() {
     echo ""
     ag_proxy_install_deps || { break_end; return 1; }
     echo ""
-    ag_proxy_handle_port_conflict || { break_end; return 1; }
+    ag_proxy_configure_port || { break_end; return 1; }
     echo ""
     ag_proxy_create_service || { break_end; return 1; }
     echo ""
     ag_proxy_start_service || { break_end; return 1; }
 
-    # 获取服务器 IP (端口配置已在 ag_proxy_handle_port_conflict 中保存)
+    # 获取服务器 IP
     local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
     local port=$(ag_proxy_get_port)
 
@@ -17222,6 +17172,370 @@ manage_fuclaude() {
                 ;;
             9)
                 fuclaude_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# =====================================================
+# Sub2API 部署管理
+# =====================================================
+
+# 常量定义
+SUB2API_SERVICE_NAME="sub2api"
+SUB2API_INSTALL_DIR="/opt/sub2api"
+SUB2API_CONFIG_DIR="/etc/sub2api"
+SUB2API_DEFAULT_PORT="8282"
+SUB2API_PORT_FILE="/etc/sub2api-port"
+SUB2API_INSTALL_SCRIPT="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh"
+
+# 获取当前配置的端口
+sub2api_get_port() {
+    if [ -f "$SUB2API_PORT_FILE" ]; then
+        cat "$SUB2API_PORT_FILE"
+    else
+        echo "$SUB2API_DEFAULT_PORT"
+    fi
+}
+
+# 检查端口是否可用
+sub2api_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 检测 Sub2API 状态
+sub2api_check_status() {
+    if [ ! -d "$SUB2API_INSTALL_DIR" ] && [ ! -f "/etc/systemd/system/sub2api.service" ]; then
+        echo "not_installed"
+    elif systemctl is-active "$SUB2API_SERVICE_NAME" &>/dev/null; then
+        echo "running"
+    else
+        echo "stopped"
+    fi
+}
+
+# 从 systemd 服务文件提取端口
+sub2api_extract_port() {
+    local service_file="/etc/systemd/system/sub2api.service"
+    if [ -f "$service_file" ]; then
+        # 尝试从 ExecStart 行提取端口
+        local port=$(grep -oP ':\K[0-9]+' "$service_file" 2>/dev/null | head -1)
+        if [ -n "$port" ]; then
+            echo "$port"
+            return
+        fi
+    fi
+    echo "$SUB2API_DEFAULT_PORT"
+}
+
+# 一键部署
+sub2api_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 Sub2API${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检查是否已安装
+    local status=$(sub2api_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ Sub2API 已安装${gl_bai}"
+        read -e -p "是否重新部署？(y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        # 停止现有服务
+        systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
+    fi
+
+    # 配置端口
+    echo ""
+    echo -e "${gl_kjlan}[1/2] 配置服务参数...${gl_bai}"
+    echo ""
+
+    local port="$SUB2API_DEFAULT_PORT"
+    read -e -p "请输入访问端口 [$SUB2API_DEFAULT_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        port="$input_port"
+    fi
+
+    # 检查端口是否可用
+    while ! sub2api_check_port "$port"; do
+        echo -e "${gl_hong}⚠️ 端口 $port 已被占用，请换一个${gl_bai}"
+        read -e -p "请输入访问端口: " port
+        if [ -z "$port" ]; then
+            port="$SUB2API_DEFAULT_PORT"
+        fi
+    done
+    echo -e "${gl_lv}✅ 端口 $port 可用${gl_bai}"
+
+    # 执行官方安装脚本
+    echo ""
+    echo -e "${gl_kjlan}[2/2] 执行安装脚本...${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}正在安装，请按提示操作...${gl_bai}"
+    echo -e "${gl_zi}（地址直接回车默认，端口输入: $port）${gl_bai}"
+    echo ""
+
+    bash <(curl -fsSL "$SUB2API_INSTALL_SCRIPT")
+    local install_result=$?
+
+    if [ $install_result -ne 0 ]; then
+        echo -e "${gl_hong}❌ 安装失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 保存端口配置
+    echo "$port" > "$SUB2API_PORT_FILE"
+
+    # 获取服务器 IP
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo ""
+
+    break_end
+}
+
+# 启动服务
+sub2api_start() {
+    echo "正在启动 Sub2API..."
+    systemctl start "$SUB2API_SERVICE_NAME"
+    sleep 1
+    if systemctl is-active "$SUB2API_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 启动成功${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+    break_end
+}
+
+# 停止服务
+sub2api_stop() {
+    echo "正在停止 Sub2API..."
+    systemctl stop "$SUB2API_SERVICE_NAME"
+    sleep 1
+    if ! systemctl is-active "$SUB2API_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+    fi
+    break_end
+}
+
+# 重启服务
+sub2api_restart() {
+    echo "正在重启 Sub2API..."
+    systemctl restart "$SUB2API_SERVICE_NAME"
+    sleep 1
+    if systemctl is-active "$SUB2API_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 重启成功${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+    break_end
+}
+
+# 查看状态
+sub2api_view_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Sub2API 服务状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local port=$(sub2api_get_port)
+    local server_ip=$(curl -s4 --max-time 3 ip.sb 2>/dev/null || echo "获取中...")
+
+    echo -e "服务状态: $(systemctl is-active $SUB2API_SERVICE_NAME 2>/dev/null || echo '未知')"
+    echo -e "访问端口: ${gl_huang}${port}${gl_bai}"
+    echo -e "访问地址: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}--- systemctl status ---${gl_bai}"
+    systemctl status "$SUB2API_SERVICE_NAME" --no-pager 2>/dev/null || echo "服务未安装"
+    echo ""
+
+    break_end
+}
+
+# 修改端口
+sub2api_change_port() {
+    local current_port=$(sub2api_get_port)
+    echo ""
+    echo -e "当前端口: ${gl_huang}${current_port}${gl_bai}"
+    echo ""
+    read -e -p "请输入新端口: " new_port
+
+    if [ -z "$new_port" ]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    # 检查端口是否被占用
+    if ! sub2api_check_port "$new_port"; then
+        echo -e "${gl_hong}❌ 端口 $new_port 已被占用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    # 修改 systemd 服务文件中的端口
+    local service_file="/etc/systemd/system/sub2api.service"
+    if [ -f "$service_file" ]; then
+        sed -i "s/:${current_port}/:${new_port}/g" "$service_file"
+        sed -i "s/=${current_port}/=${new_port}/g" "$service_file"
+    fi
+
+    # 保存新端口
+    echo "$new_port" > "$SUB2API_PORT_FILE"
+
+    # 重载并重启服务
+    systemctl daemon-reload
+    systemctl restart "$SUB2API_SERVICE_NAME"
+
+    sleep 1
+    if systemctl is-active "$SUB2API_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 端口已修改为 ${new_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务重启失败，请检查配置${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看日志
+sub2api_view_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Sub2API 运行日志 (最近 50 行)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    journalctl -u "$SUB2API_SERVICE_NAME" -n 50 --no-pager
+    echo ""
+    break_end
+}
+
+# 卸载
+sub2api_uninstall() {
+    echo ""
+    read -e -p "确定要卸载 Sub2API 吗？(y/n) [n]: " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 停止并禁用服务
+    systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
+    systemctl disable "$SUB2API_SERVICE_NAME" 2>/dev/null
+
+    # 删除服务文件
+    rm -f "/etc/systemd/system/sub2api.service"
+    systemctl daemon-reload
+
+    # 删除安装目录
+    rm -rf "$SUB2API_INSTALL_DIR"
+    rm -rf "$SUB2API_CONFIG_DIR"
+    rm -f "$SUB2API_PORT_FILE"
+
+    # 删除用户
+    userdel sub2api 2>/dev/null
+
+    echo -e "${gl_lv}✅ 卸载完成${gl_bai}"
+    break_end
+}
+
+# Sub2API 管理主菜单
+manage_sub2api() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Sub2API 部署管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(sub2api_check_status)
+        local port=$(sub2api_get_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: $port)"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+        echo ""
+
+        echo "1. 一键部署（首次安装）"
+        echo ""
+        echo "2. 启动服务"
+        echo "3. 停止服务"
+        echo "4. 重启服务"
+        echo ""
+        echo "5. 查看状态"
+        echo "6. 查看日志"
+        echo "7. 修改端口"
+        echo ""
+        echo "8. 卸载 Sub2API"
+        echo ""
+        echo "0. 返回上级菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择 [0-8]: " choice
+
+        case $choice in
+            1)
+                sub2api_deploy
+                ;;
+            2)
+                sub2api_start
+                ;;
+            3)
+                sub2api_stop
+                ;;
+            4)
+                sub2api_restart
+                ;;
+            5)
+                sub2api_view_status
+                ;;
+            6)
+                sub2api_view_logs
+                ;;
+            7)
+                sub2api_change_port
+                ;;
+            8)
+                sub2api_uninstall
                 ;;
             0)
                 return
