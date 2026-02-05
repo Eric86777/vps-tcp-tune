@@ -17569,6 +17569,40 @@ sub2api_view_logs() {
     break_end
 }
 
+# 更新服务
+sub2api_update() {
+    local status=$(sub2api_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Sub2API 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_kjlan}正在执行官方升级脚本...${gl_bai}"
+    echo ""
+
+    local tmp_script=$(mktemp)
+    if ! curl -fsSL "$SUB2API_INSTALL_SCRIPT" -o "$tmp_script"; then
+        echo -e "${gl_hong}❌ 下载升级脚本失败${gl_bai}"
+        rm -f "$tmp_script"
+        break_end
+        return 1
+    fi
+
+    chmod +x "$tmp_script"
+    bash "$tmp_script" upgrade
+    local result=$?
+    rm -f "$tmp_script"
+
+    if [ $result -eq 0 ]; then
+        echo -e "${gl_lv}✅ 升级完成${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 升级失败${gl_bai}"
+    fi
+
+    break_end
+}
+
 # 查看配置信息
 sub2api_show_config() {
     clear
@@ -17636,7 +17670,8 @@ sub2api_show_config() {
 # 卸载
 sub2api_uninstall() {
     echo ""
-    read -e -p "确定要卸载 Sub2API 吗？(y/n) [n]: " confirm
+    echo -e "${gl_hong}⚠️ 此操作将卸载 Sub2API 并删除所有配置数据${gl_bai}"
+    read -e -p "确定要卸载吗？(y/n) [n]: " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         echo "已取消"
         break_end
@@ -17644,23 +17679,28 @@ sub2api_uninstall() {
     fi
 
     echo ""
-    echo "正在卸载..."
+    echo "正在执行官方卸载脚本..."
 
-    # 停止并禁用服务
-    systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
-    systemctl disable "$SUB2API_SERVICE_NAME" 2>/dev/null
+    # 使用官方卸载命令
+    local tmp_script=$(mktemp)
+    if curl -fsSL "$SUB2API_INSTALL_SCRIPT" -o "$tmp_script" 2>/dev/null; then
+        chmod +x "$tmp_script"
+        bash "$tmp_script" uninstall -y --purge
+        rm -f "$tmp_script"
+    else
+        # 官方脚本下载失败，手动卸载
+        echo "官方脚本下载失败，执行手动卸载..."
+        systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
+        systemctl disable "$SUB2API_SERVICE_NAME" 2>/dev/null
+        rm -f "/etc/systemd/system/sub2api.service"
+        systemctl daemon-reload
+        rm -rf "$SUB2API_INSTALL_DIR"
+        userdel sub2api 2>/dev/null
+    fi
 
-    # 删除服务文件
-    rm -f "/etc/systemd/system/sub2api.service"
-    systemctl daemon-reload
-
-    # 删除安装目录
-    rm -rf "$SUB2API_INSTALL_DIR"
+    # 清理我们自己的配置文件
     rm -rf "$SUB2API_CONFIG_DIR"
     rm -f "$SUB2API_PORT_FILE"
-
-    # 删除用户
-    userdel sub2api 2>/dev/null
 
     echo -e "${gl_lv}✅ 卸载完成${gl_bai}"
     break_end
@@ -17692,50 +17732,58 @@ manage_sub2api() {
         esac
         echo ""
 
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
         echo "1. 一键部署（首次安装）"
+        echo "2. 更新服务"
         echo ""
-        echo "2. 启动服务"
-        echo "3. 停止服务"
-        echo "4. 重启服务"
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
         echo ""
-        echo "5. 查看状态"
-        echo "6. 查看日志"
-        echo "7. 查看配置信息"
-        echo "8. 修改端口"
+        echo -e "${gl_kjlan}[配置与信息]${gl_bai}"
+        echo "8. 查看配置信息"
+        echo "9. 修改端口"
         echo ""
-        echo "9. 卸载 Sub2API"
+        echo -e "${gl_kjlan}[卸载]${gl_bai}"
+        echo -e "${gl_hong}99. 卸载（删除服务+数据）${gl_bai}"
         echo ""
         echo "0. 返回上级菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择 [0-9]: " choice
+        read -e -p "请选择操作 [0-9, 99]: " choice
 
         case $choice in
             1)
                 sub2api_deploy
                 ;;
             2)
-                sub2api_start
+                sub2api_update
                 ;;
             3)
-                sub2api_stop
-                ;;
-            4)
-                sub2api_restart
-                ;;
-            5)
                 sub2api_view_status
                 ;;
-            6)
+            4)
                 sub2api_view_logs
                 ;;
+            5)
+                sub2api_start
+                ;;
+            6)
+                sub2api_stop
+                ;;
             7)
-                sub2api_show_config
+                sub2api_restart
                 ;;
             8)
-                sub2api_change_port
+                sub2api_show_config
                 ;;
             9)
+                sub2api_change_port
+                ;;
+            99)
                 sub2api_uninstall
                 ;;
             0)
