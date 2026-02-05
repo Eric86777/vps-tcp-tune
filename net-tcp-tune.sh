@@ -17260,33 +17260,13 @@ sub2api_deploy() {
         systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
     fi
 
-    # 配置端口
-    echo ""
-    echo -e "${gl_kjlan}[1/2] 配置服务参数...${gl_bai}"
-    echo ""
-
-    local port="$SUB2API_DEFAULT_PORT"
-    read -e -p "请输入访问端口 [$SUB2API_DEFAULT_PORT]: " input_port
-    if [ -n "$input_port" ]; then
-        port="$input_port"
-    fi
-
-    # 检查端口是否可用
-    while ! sub2api_check_port "$port"; do
-        echo -e "${gl_hong}⚠️ 端口 $port 已被占用，请换一个${gl_bai}"
-        read -e -p "请输入访问端口: " port
-        if [ -z "$port" ]; then
-            port="$SUB2API_DEFAULT_PORT"
-        fi
-    done
-    echo -e "${gl_lv}✅ 端口 $port 可用${gl_bai}"
-
     # 执行官方安装脚本
     echo ""
-    echo -e "${gl_kjlan}[2/2] 执行安装脚本...${gl_bai}"
+    echo -e "${gl_huang}提示: 官方脚本会询问地址和端口${gl_bai}"
+    echo -e "${gl_zi}  → 地址: 直接回车（默认 0.0.0.0）${gl_bai}"
+    echo -e "${gl_zi}  → 端口: 建议输入 ${SUB2API_DEFAULT_PORT}（避免与其他服务冲突）${gl_bai}"
     echo ""
-    echo -e "${gl_huang}正在安装，请按提示操作...${gl_bai}"
-    echo -e "${gl_zi}（地址直接回车默认，端口输入: $port）${gl_bai}"
+    read -e -p "按回车开始安装..." _
     echo ""
 
     bash <(curl -fsSL "$SUB2API_INSTALL_SCRIPT")
@@ -17298,7 +17278,8 @@ sub2api_deploy() {
         return 1
     fi
 
-    # 保存端口配置
+    # 从服务文件提取端口并保存
+    local port=$(sub2api_extract_port)
     echo "$port" > "$SUB2API_PORT_FILE"
 
     # 获取服务器 IP
