@@ -17239,6 +17239,108 @@ sub2api_extract_port() {
     echo "$SUB2API_DEFAULT_PORT"
 }
 
+# 安装 PostgreSQL 并创建数据库
+sub2api_setup_postgres() {
+    echo -e "${gl_kjlan}[1/4] 安装 PostgreSQL 数据库...${gl_bai}"
+
+    if command -v psql &>/dev/null; then
+        echo -e "${gl_lv}✅ PostgreSQL 已安装${gl_bai}"
+    else
+        echo "正在安装 PostgreSQL..."
+        apt-get update -qq
+        apt-get install -y -qq postgresql postgresql-contrib > /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            echo -e "${gl_hong}❌ PostgreSQL 安装失败${gl_bai}"
+            return 1
+        fi
+        echo -e "${gl_lv}✅ PostgreSQL 安装完成${gl_bai}"
+    fi
+
+    # 确保 PostgreSQL 运行
+    systemctl start postgresql 2>/dev/null
+    systemctl enable postgresql 2>/dev/null
+
+    # 生成随机密码
+    SUB2API_DB_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
+    SUB2API_DB_USER="sub2api"
+    SUB2API_DB_NAME="sub2api"
+
+    # 创建用户和数据库（如果不存在）
+    echo "正在配置数据库..."
+    sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$SUB2API_DB_USER'" | grep -q 1 || \
+        sudo -u postgres psql -c "CREATE USER $SUB2API_DB_USER WITH PASSWORD '$SUB2API_DB_PASSWORD';" > /dev/null 2>&1
+
+    # 如果用户已存在，更新密码
+    sudo -u postgres psql -c "ALTER USER $SUB2API_DB_USER WITH PASSWORD '$SUB2API_DB_PASSWORD';" > /dev/null 2>&1
+
+    sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='$SUB2API_DB_NAME'" | grep -q 1 || \
+        sudo -u postgres psql -c "CREATE DATABASE $SUB2API_DB_NAME OWNER $SUB2API_DB_USER;" > /dev/null 2>&1
+
+    # 验证连接
+    if PGPASSWORD="$SUB2API_DB_PASSWORD" psql -h localhost -U "$SUB2API_DB_USER" -d "$SUB2API_DB_NAME" -c "SELECT 1" > /dev/null 2>&1; then
+        echo -e "${gl_lv}✅ 数据库配置完成，连接正常${gl_bai}"
+    else
+        # 可能需要修改 pg_hba.conf 允许密码认证
+        local pg_hba=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
+        if [ -n "$pg_hba" ]; then
+            # 检查是否已有 sub2api 的规则
+            if ! grep -q "sub2api" "$pg_hba"; then
+                # 在文件开头添加密码认证规则
+                sed -i "1i host    sub2api    sub2api    127.0.0.1/32    md5" "$pg_hba"
+                sed -i "2i host    sub2api    sub2api    ::1/128         md5" "$pg_hba"
+                systemctl restart postgresql
+                echo -e "${gl_lv}✅ 数据库认证已配置${gl_bai}"
+            fi
+        fi
+
+        # 再次验证
+        if PGPASSWORD="$SUB2API_DB_PASSWORD" psql -h localhost -U "$SUB2API_DB_USER" -d "$SUB2API_DB_NAME" -c "SELECT 1" > /dev/null 2>&1; then
+            echo -e "${gl_lv}✅ 数据库配置完成，连接正常${gl_bai}"
+        else
+            echo -e "${gl_huang}⚠️ 数据库已创建，但本地连接验证未通过（不影响使用）${gl_bai}"
+        fi
+    fi
+
+    # 保存数据库信息到文件
+    cat > "$SUB2API_CONFIG_DIR/db-info" << EOF
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=$SUB2API_DB_USER
+DB_PASSWORD=$SUB2API_DB_PASSWORD
+DB_NAME=$SUB2API_DB_NAME
+EOF
+    chmod 600 "$SUB2API_CONFIG_DIR/db-info"
+    return 0
+}
+
+# 安装 Redis
+sub2api_setup_redis() {
+    echo -e "${gl_kjlan}[2/4] 安装 Redis...${gl_bai}"
+
+    if command -v redis-cli &>/dev/null; then
+        echo -e "${gl_lv}✅ Redis 已安装${gl_bai}"
+    else
+        echo "正在安装 Redis..."
+        apt-get install -y -qq redis-server > /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            echo -e "${gl_hong}❌ Redis 安装失败${gl_bai}"
+            return 1
+        fi
+        echo -e "${gl_lv}✅ Redis 安装完成${gl_bai}"
+    fi
+
+    systemctl start redis-server 2>/dev/null
+    systemctl enable redis-server 2>/dev/null
+
+    # 验证 Redis
+    if redis-cli ping 2>/dev/null | grep -q "PONG"; then
+        echo -e "${gl_lv}✅ Redis 运行正常${gl_bai}"
+    else
+        echo -e "${gl_huang}⚠️ Redis 可能未正常运行，请检查${gl_bai}"
+    fi
+    return 0
+}
+
 # 一键部署
 sub2api_deploy() {
     clear
@@ -17260,7 +17362,20 @@ sub2api_deploy() {
         systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
     fi
 
+    # 创建配置目录
+    mkdir -p "$SUB2API_CONFIG_DIR"
+
+    # 安装 PostgreSQL
+    echo ""
+    sub2api_setup_postgres || { break_end; return 1; }
+
+    # 安装 Redis
+    echo ""
+    sub2api_setup_redis || { break_end; return 1; }
+
     # 执行官方安装脚本
+    echo ""
+    echo -e "${gl_kjlan}[3/4] 执行官方安装脚本...${gl_bai}"
     echo ""
     echo -e "${gl_huang}提示: 官方脚本会询问地址和端口${gl_bai}"
     echo -e "${gl_zi}  → 地址: 直接回车（默认 0.0.0.0）${gl_bai}"
@@ -17279,6 +17394,8 @@ sub2api_deploy() {
     fi
 
     # 从服务文件提取端口并保存
+    echo ""
+    echo -e "${gl_kjlan}[4/4] 验证安装...${gl_bai}"
     local port=$(sub2api_extract_port)
     echo "$port" > "$SUB2API_PORT_FILE"
 
@@ -17290,15 +17407,32 @@ sub2api_deploy() {
     echo -e "${gl_lv}  ✅ 部署完成！${gl_bai}"
     echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
-    echo -e "Web 管理面板: ${gl_huang}http://${server_ip}:${port}${gl_bai}"
+    echo -e "Web 管理面板: ${gl_huang}http://${server_ip}:${port}/setup${gl_bai}"
     echo ""
-    echo -e "${gl_kjlan}【下一步操作】${gl_bai}"
-    echo "  1. 浏览器访问上面的地址，登录管理面板"
-    echo "  2. 添加 Claude 账户（OAuth 授权）"
-    echo "  3. 创建 API Key 分发给用户"
-    echo "  4. 配置本地 Claude Code 环境变量"
+    echo -e "${gl_kjlan}【网页初始化配置 - 请照抄以下信息】${gl_bai}"
     echo ""
-    echo -e "${gl_kjlan}【Claude Code 配置】${gl_bai}"
+    echo -e "${gl_kjlan}  第1步 - 数据库配置:${gl_bai}"
+    echo -e "    主持人:     ${gl_huang}localhost${gl_bai}"
+    echo -e "    端口:       ${gl_huang}5432${gl_bai}"
+    echo -e "    用户名:     ${gl_huang}${SUB2API_DB_USER}${gl_bai}"
+    echo -e "    密码:       ${gl_huang}${SUB2API_DB_PASSWORD}${gl_bai}"
+    echo -e "    数据库名称: ${gl_huang}${SUB2API_DB_NAME}${gl_bai}"
+    echo -e "    SSL 模式:   ${gl_huang}禁用${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}  第2步 - Redis 配置:${gl_bai}"
+    echo -e "    主持人:     ${gl_huang}localhost${gl_bai}"
+    echo -e "    端口:       ${gl_huang}6379${gl_bai}"
+    echo -e "    密码:       ${gl_huang}（留空，直接下一步）${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}  第3步 - 管理员帐户:${gl_bai}"
+    echo -e "    自己设置用户名和密码"
+    echo ""
+    echo -e "${gl_kjlan}  第4步 - 准备安装:${gl_bai}"
+    echo -e "    点击安装即可"
+    echo ""
+    echo -e "${gl_zi}提示: 以上数据库信息已保存到 ${SUB2API_CONFIG_DIR}/db-info${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【完成初始化后 - Claude Code 配置】${gl_bai}"
     echo -e "  ${gl_huang}export ANTHROPIC_BASE_URL=\"http://${server_ip}:${port}/antigravity\"${gl_bai}"
     echo -e "  ${gl_huang}export ANTHROPIC_AUTH_TOKEN=\"后台创建的API密钥\"${gl_bai}"
     echo ""
