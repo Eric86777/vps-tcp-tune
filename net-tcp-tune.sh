@@ -3135,6 +3135,14 @@ install_xanmod_kernel() {
 
     echo -e "${gl_lv}XanMod 内核安装成功！${gl_bai}"
     echo -e "${gl_huang}提示: 请先重启系统加载新内核，然后再配置 BBR${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━ CPU 架构信息 ━━━━━━━━━━${gl_bai}"
+    echo -e "  CPU 架构等级: ${gl_lv}x86-64-v${version}${gl_bai}"
+    echo -e "  安装内核版本: ${gl_lv}linux-xanmod-x64v${version}${gl_bai}"
+    echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${version}，已安装该等级的最新内核${gl_bai}"
+    echo -e "  ${gl_huang}不同等级(v1-v4)的内核更新进度可能不同，以 XanMod 官方仓库为准${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
     echo -e "${gl_kjlan}后续更新: 再次运行选项1即可检查并安装最新内核${gl_bai}"
 
     rm -f "$xanmod_repo_file"
@@ -5039,16 +5047,17 @@ realm_fix_timeout() {
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
     echo -e "${gl_huang}功能说明：${gl_bai}"
-    echo "  • 强制 IPv4（避免 IPv6 路由问题）"
-    echo "  • MSS 钳制（解决 MTU 黑洞）"
-    echo "  • 禁用 TCP Fast Open（提升兼容性）"
-    echo "  • 优化 Realm 配置（nodelay + reuse_port）"
-    echo "  • DNS IPv4 纠偏"
+    echo "  • 连接跟踪模块加载 + 容量扩展（转发必需）"
+    echo "  • 强制 IPv4 + nodelay + reuse_port（优化 Realm 配置）"
+    echo "  • 提升 realm.service 文件句柄限制"
     echo ""
-    echo -e "${gl_huang}⚠️  注意：本功能不会覆盖已有的 TCP 调优参数${gl_bai}"
+    echo -e "${gl_kjlan}已由其他功能覆盖（本功能不再重复设置）：${gl_bai}"
+    echo "  • MSS 钳制 → 功能3/4已配置"
+    echo "  • DNS 管理 → 功能5已配置"
+    echo "  • tcp_fin_timeout / tcp_fastopen → 功能3已配置"
     echo ""
     read -e -p "是否继续执行修复？(y/n): " confirm
-    
+
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${gl_huang}已取消操作${gl_bai}"
         return
@@ -5063,10 +5072,10 @@ realm_fix_timeout() {
     # 备份目录
     BACKUP_DIR="/root/.realm_fix_backup/$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$BACKUP_DIR"
-    echo -e "${gl_lv}[1/8] 创建备份目录：$BACKUP_DIR${gl_bai}"
+    echo -e "${gl_lv}[1/4] 创建备份目录：$BACKUP_DIR${gl_bai}"
 
     # 加载并持久化 nf_conntrack
-    echo -e "${gl_lv}[2/8] 加载/持久化 nf_conntrack（连接跟踪）${gl_bai}"
+    echo -e "${gl_lv}[2/4] 加载/持久化 nf_conntrack（连接跟踪）${gl_bai}"
     if command -v modprobe >/dev/null 2>&1; then
         modprobe nf_conntrack 2>/dev/null || true
     fi
@@ -5075,28 +5084,21 @@ realm_fix_timeout() {
         echo nf_conntrack >> /etc/modules-load.d/conntrack.conf
     fi
 
-    # 写入 Realm 专属 sysctl 配置（不覆盖已有参数）
-    echo -e "${gl_lv}[3/8] 写入 Realm 专属 sysctl 配置（/etc/sysctl.d/60-realm-tune.conf）${gl_bai}"
+    # 写入 Realm 专属 sysctl 配置（仅 conntrack_max，其余由功能3管理）
     cat >/etc/sysctl.d/60-realm-tune.conf <<'SYSC'
-# Realm 转发专属优化（不覆盖 net-tcp-tune.sh 的基础配置）
+# Realm 转发专属优化（仅设置功能3未覆盖的参数）
+# tcp_fin_timeout / tcp_fastopen 由功能3的 99-net-tcp-tune.conf 统一管理
 
 # 连接跟踪容量（转发必需）
 net.netfilter.nf_conntrack_max = 262144
-
-# FIN/TIME_WAIT 收敛（加快连接回收）
-net.ipv4.tcp_fin_timeout = 30
-
-# 禁用 TFO（避免跨境防火墙拦截，解决首连超时）
-net.ipv4.tcp_fastopen = 0
 SYSC
-
-    echo -e "${gl_lv}[4/8] 应用 sysctl 配置${gl_bai}"
     sysctl --system >/dev/null 2>&1
+    echo -e "${gl_lv}  ✓ nf_conntrack_max = 262144 已生效${gl_bai}"
 
     # 修改 Realm 配置
+    echo -e "${gl_lv}[3/4] 优化 Realm 配置（IPv4 + nodelay + reuse_port）${gl_bai}"
     realm_cfg="/etc/realm/config.json"
     if [[ -f "$realm_cfg" ]]; then
-        echo -e "${gl_lv}[5/8] 备份并优化 Realm 配置${gl_bai}"
         cp -a "$realm_cfg" "$BACKUP_DIR/"
 
         if command -v jq >/dev/null 2>&1; then
@@ -5115,116 +5117,18 @@ SYSC
                 sed -i.bak '0,/{/s//{\n  "reuse_port": true,/' "$realm_cfg" || true
             fi
         fi
-        
+
         # 统一用文本替换确保 IPv6 监听改为 IPv4
         sed -i.bak -E 's/"listen"\s*:\s*":::([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
         sed -i.bak -E 's/"listen"\s*:\s*"\[::\]:([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
         sed -i.bak 's/:::/0.0.0.0:/g' "$realm_cfg" 2>/dev/null || true
+        echo -e "${gl_lv}  ✓ Realm 配置已优化${gl_bai}"
     else
-        echo -e "${gl_huang}[5/8] 未找到 $realm_cfg，跳过 Realm 配置修改${gl_bai}"
-    fi
-
-    # DNS 纠偏（仅保留 IPv4 DNS）
-    echo -e "${gl_lv}[6/8] 备份并纠偏 DNS 配置${gl_bai}"
-    if [[ -e /etc/resolv.conf ]]; then
-        cp -a /etc/resolv.conf "$BACKUP_DIR/resolv.conf" 2>/dev/null || true
-        ipv4_dns=$(grep -E "^nameserver\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" /etc/resolv.conf 2>/dev/null || true)
-        if [[ -z "$ipv4_dns" ]]; then
-            cat >/etc/resolv.conf <<'DNS'
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-DNS
-        else
-            printf "%s\n" "$ipv4_dns" > /etc/resolv.conf
-        fi
-    fi
-
-    # 配置 MSS 钳制（自动兼容 iptables/nftables）
-    echo -e "${gl_lv}[7/8] 配置 MSS 钳制规则（OUTPUT 链）${gl_bai}"
-    added_mss_rule=false
-
-    # 策略1: 优先使用 iptables（兼容性最好）
-    if command -v iptables >/dev/null 2>&1; then
-        echo -e "${gl_huang}  检测到 iptables，使用 iptables 添加规则...${gl_bai}"
-        if ! iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-            iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null && added_mss_rule=true
-        else
-            added_mss_rule=true
-        fi
-
-        # 可选：FORWARD 链（路由转发场景）
-        if ! iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-            iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
-        fi
-    fi
-
-    # 策略2: 如果没有 iptables，自动安装
-    if [ "$added_mss_rule" != true ] && ! command -v iptables >/dev/null 2>&1; then
-        echo -e "${gl_huang}  未检测到 iptables，正在自动安装...${gl_bai}"
-        if command -v apt-get >/dev/null 2>&1; then
-            DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
-            DEBIAN_FRONTEND=noninteractive apt-get install -y iptables >/dev/null 2>&1
-            
-            if command -v iptables >/dev/null 2>&1; then
-                echo -e "${gl_lv}  ✓ iptables 安装成功${gl_bai}"
-                if iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-                    added_mss_rule=true
-                fi
-                iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
-            else
-                echo -e "${gl_huang}  ⚠ iptables 安装失败，尝试使用 nftables...${gl_bai}"
-            fi
-        elif command -v yum >/dev/null 2>&1; then
-            yum install -y iptables >/dev/null 2>&1
-            if command -v iptables >/dev/null 2>&1; then
-                echo -e "${gl_lv}  ✓ iptables 安装成功${gl_bai}"
-                if iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-                    added_mss_rule=true
-                fi
-                iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
-            fi
-        fi
-    fi
-
-    # 策略3: 备用方案 - 使用 nftables（自动适配语法）
-    if [ "$added_mss_rule" != true ] && command -v nft >/dev/null 2>&1; then
-        echo -e "${gl_huang}  使用 nftables 添加规则...${gl_bai}"
-        nft add table inet mangle 2>/dev/null || true
-        nft add chain inet mangle output '{ type route hook output priority mangle; }' 2>/dev/null || true
-        
-        # 检查是否已有 MSS 规则（兼容多种语法）
-        if ! nft list chain inet mangle output 2>/dev/null | grep -qE 'maxseg.*(clamp|rt mtu)'; then
-            # 优先尝试 rt mtu（nftables 1.0+ 推荐语法）
-            if nft add rule inet mangle output tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null; then
-                added_mss_rule=true
-            # 备选：clamp to pmtu（旧语法）
-            elif nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to pmtu 2>/dev/null; then
-                added_mss_rule=true
-            # 最后尝试：clamp to mtu
-            elif nft add rule inet mangle output tcp flags syn tcp option maxseg size set clamp to mtu 2>/dev/null; then
-                added_mss_rule=true
-            fi
-        else
-            added_mss_rule=true
-        fi
-
-        # 可选：FORWARD 链（路由转发场景）
-        nft add chain inet mangle forward '{ type filter hook forward priority mangle; }' 2>/dev/null || true
-        if ! nft list chain inet mangle forward 2>/dev/null | grep -qE 'maxseg.*(clamp|rt mtu)'; then
-            nft add rule inet mangle forward tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null || \
-                nft add rule inet mangle forward tcp flags syn tcp option maxseg size set clamp to pmtu 2>/dev/null || \
-                nft add rule inet mangle forward tcp flags syn tcp option maxseg size set clamp to mtu 2>/dev/null
-        fi
-    fi
-
-    if [[ "$added_mss_rule" == true ]]; then
-        echo -e "${gl_lv}  ✓ MSS 钳制规则已确保存在${gl_bai}"
-    else
-        echo -e "${gl_hong}  ✗ 未能添加 MSS 钳制规则，请手动排查${gl_bai}"
+        echo -e "${gl_huang}  未找到 $realm_cfg，跳过 Realm 配置修改${gl_bai}"
     fi
 
     # realm.service 文件句柄限制
-    echo -e "${gl_lv}[8/8] 提升 realm.service 文件句柄限制${gl_bai}"
+    echo -e "${gl_lv}[4/4] 提升 realm.service 文件句柄限制${gl_bai}"
     if systemctl list-unit-files 2>/dev/null | grep -q '^realm\.service'; then
         mkdir -p /etc/systemd/system/realm.service.d
         cat >/etc/systemd/system/realm.service.d/override.conf <<'OVR'
@@ -5233,74 +5137,21 @@ LimitNOFILE=1048576
 OVR
         systemctl daemon-reload
         systemctl restart realm 2>/dev/null || echo -e "${gl_huang}  ⚠ realm 重启失败，请手动检查${gl_bai}"
+        echo -e "${gl_lv}  ✓ LimitNOFILE=1048576 已生效${gl_bai}"
     else
         echo -e "${gl_huang}  未发现 realm.service，跳过${gl_bai}"
     fi
 
-    # 持久化防火墙规则（自动执行，兼容 iptables/nftables）
-    if [ "$added_mss_rule" = true ]; then
-        echo -e "${gl_lv}[9/9] 持久化防火墙规则（确保重启后生效）${gl_bai}"
-        
-        # 判断使用的是哪种防火墙
-        if command -v iptables >/dev/null 2>&1; then
-            # 持久化 iptables
-            echo -e "${gl_huang}  持久化 iptables 规则...${gl_bai}"
-            
-            # 检查是否已安装 iptables-persistent
-            if ! dpkg -l | grep -q iptables-persistent 2>/dev/null; then
-                echo -e "${gl_huang}  正在安装 iptables-persistent...${gl_bai}"
-                DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
-                DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1
-                if [ $? -eq 0 ]; then
-                    echo -e "${gl_lv}  ✓ iptables-persistent 安装成功${gl_bai}"
-                else
-                    echo -e "${gl_huang}  ⚠ iptables-persistent 安装失败${gl_bai}"
-                fi
-            else
-                echo -e "${gl_lv}  ✓ iptables-persistent 已安装${gl_bai}"
-            fi
-            
-            # 保存当前规则
-            if command -v netfilter-persistent >/dev/null 2>&1; then
-                netfilter-persistent save >/dev/null 2>&1
-                systemctl enable netfilter-persistent >/dev/null 2>&1
-                echo -e "${gl_lv}  ✓ iptables 规则已保存，重启后自动恢复${gl_bai}"
-            elif command -v iptables-save >/dev/null 2>&1; then
-                mkdir -p /etc/iptables
-                iptables-save > /etc/iptables/rules.v4 2>/dev/null
-                echo -e "${gl_lv}  ✓ iptables 规则已保存到 /etc/iptables/rules.v4${gl_bai}"
-            fi
-            
-        elif command -v nft >/dev/null 2>&1; then
-            # 持久化 nftables
-            echo -e "${gl_huang}  持久化 nftables 规则...${gl_bai}"
-            
-            # Debian/Ubuntu: nftables 规则自动持久化到 /etc/nftables.conf
-            if [ -f /etc/nftables.conf ]; then
-                nft list ruleset > /etc/nftables.conf 2>/dev/null
-                systemctl enable nftables >/dev/null 2>&1
-                echo -e "${gl_lv}  ✓ nftables 规则已保存到 /etc/nftables.conf${gl_bai}"
-            else
-                # 创建配置文件
-                mkdir -p /etc
-                nft list ruleset > /etc/nftables.conf 2>/dev/null
-                systemctl enable nftables >/dev/null 2>&1
-                echo -e "${gl_lv}  ✓ nftables 规则已创建并保存${gl_bai}"
-            fi
-        fi
-    fi
-
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_lv}✅ Realm timeout 修复完成！所有配置已永久生效！${gl_bai}"
+    echo -e "${gl_lv}✅ Realm 优化完成！${gl_bai}"
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
     echo -e "${gl_huang}📋 备份位置：${gl_bai}$BACKUP_DIR"
     echo ""
     echo -e "${gl_huang}🔍 快速验证：${gl_bai}"
     echo "  • Realm 监听：  ss -tlnp | grep realm"
-    echo "  • DNS 配置：    grep nameserver /etc/resolv.conf"
-    echo "  • MSS 规则：    iptables -t mangle -S OUTPUT | grep TCPMSS"
+    echo "  • conntrack：   sysctl net.netfilter.nf_conntrack_max"
     echo "  • Realm 配置：  cat /etc/realm/config.json | grep -E 'resolve|nodelay|reuse_port'"
     echo ""
     echo -e "${gl_lv}💯 重启服务器后所有配置依然生效，无需重复执行！${gl_bai}"
@@ -6280,7 +6131,18 @@ update_xanmod_kernel() {
     local upgradable=$(apt list --upgradable 2>/dev/null | grep xanmod)
     
     if [ -z "$upgradable" ]; then
+        local cpu_level=$(echo "$installed_packages" | grep -oP 'x64v\K\d' | head -1)
         echo -e "${gl_lv}✅ 当前内核已是最新版本！${gl_bai}"
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━━━━━ CPU 架构信息 ━━━━━━━━━━${gl_bai}"
+        echo -e "  CPU 架构等级: ${gl_lv}x86-64-v${cpu_level}${gl_bai}"
+        echo -e "  当前内核版本: ${gl_lv}${current_kernel}${gl_bai}"
+        echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${cpu_level}，该等级暂无更新可用${gl_bai}"
+        echo -e "  ${gl_huang}不同等级(v1-v4)的内核更新进度可能不同，以 XanMod 官方仓库为准${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        rm -f "$xanmod_repo_file"
+        echo -e "${gl_lv}已自动清理 XanMod 软件源（如需更新可再次运行选项1）${gl_bai}"
         break_end
         return 0
     fi
@@ -6301,6 +6163,15 @@ update_xanmod_kernel() {
                 echo ""
                 echo -e "${gl_lv}✅ XanMod 内核更新成功！${gl_bai}"
                 echo -e "${gl_huang}⚠️  请重启系统以加载新内核${gl_bai}"
+                echo ""
+                local cpu_level=$(echo "$installed_packages" | grep -oP 'x64v\K\d' | head -1)
+                echo -e "${gl_kjlan}━━━━━━━━━━ CPU 架构信息 ━━━━━━━━━━${gl_bai}"
+                echo -e "  CPU 架构等级: ${gl_lv}x86-64-v${cpu_level}${gl_bai}"
+                echo -e "  已更新内核包: ${gl_lv}$(echo "$installed_packages" | head -1)${gl_bai}"
+                echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${cpu_level}，已更新至该等级的最新内核${gl_bai}"
+                echo -e "  ${gl_huang}不同等级(v1-v4)的内核更新进度可能不同，以 XanMod 官方仓库为准${gl_bai}"
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo ""
                 echo -e "${gl_kjlan}后续更新: 再次运行选项1即可检查并安装最新内核${gl_bai}"
 
                 rm -f "$xanmod_repo_file"
