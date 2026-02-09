@@ -1472,7 +1472,7 @@ apply_mss_clamp_with_value() {
     fi
 
     local default_iface
-    default_iface=$(echo "$default_route" | grep -oP 'dev \K\S+')
+    default_iface=$(echo "$default_route" | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
     if [ -z "$default_iface" ]; then
         echo -e "${gl_hong}错误: 无法获取默认网卡${gl_bai}"
         return 1
@@ -1480,7 +1480,7 @@ apply_mss_clamp_with_value() {
 
     # 记录原始 MTU 用于回滚
     local original_mtu
-    original_mtu=$(ip link show "$default_iface" 2>/dev/null | grep -oP 'mtu \K\d+')
+    original_mtu=$(ip link show "$default_iface" 2>/dev/null | sed -nE 's/.*mtu ([0-9]+).*/\1/p' | head -1)
 
     # 清理旧版本的 iptables set-mss 规则（兼容性：从旧版本升级时自动清理）
     if command -v iptables &>/dev/null; then
@@ -1600,7 +1600,7 @@ MTUSVCEOF
     echo "验证配置..."
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     local actual_route_mtu
-    actual_route_mtu=$(ip -4 route show default | head -1 | grep -oP 'mtu \K\d+')
+    actual_route_mtu=$(ip -4 route show default | head -1 | sed -nE 's/.* mtu ([0-9]+).*/\1/p')
     if [ -n "$actual_route_mtu" ] && [ "$actual_route_mtu" = "$mtu" ]; then
         echo -e "  路由 MTU:  ${gl_lv}${actual_route_mtu} ✓${gl_bai}"
     else
@@ -1661,7 +1661,7 @@ mtu_mss_optimization() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
         # 检查 MTU 优化是否已设置
-        local route_mtu=$(ip -4 route show default 2>/dev/null | head -1 | grep -oP 'mtu \K\d+')
+        local route_mtu=$(ip -4 route show default 2>/dev/null | head -1 | sed -nE 's/.* mtu ([0-9]+).*/\1/p')
         if [ -n "$route_mtu" ]; then
             local route_mss=$((route_mtu - 40))
             echo -e "  MTU优化:  ${gl_lv}✅ 已设置 (MTU=${route_mtu}, MSS=${route_mss})${gl_bai}"
@@ -1670,7 +1670,8 @@ mtu_mss_optimization() {
         fi
 
         # 显示重传统计
-        local retrans=$(ss -s 2>/dev/null | grep -oP 'retrans:\K\d+' || echo "0")
+        local retrans=$(ss -s 2>/dev/null | sed -nE 's/.*retrans[:[:space:]]*([0-9]+).*/\1/p' | head -1)
+        [ -z "$retrans" ] && retrans="0"
         echo -e "  当前重传: ${retrans} 个"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
@@ -1911,7 +1912,7 @@ detect_bandwidth() {
             echo -e "${gl_zi}正在搜索附近测速服务器...${gl_bai}" >&2
             
             # 获取附近服务器列表（按延迟排序）
-            local servers_list=$(speedtest --accept-license --servers 2>/dev/null | grep -oP '^\s*\K[0-9]+' | head -n 10)
+            local servers_list=$(speedtest --accept-license --servers 2>/dev/null | sed -nE 's/^[[:space:]]*([0-9]+).*/\1/p' | head -n 10)
             
             if [ -z "$servers_list" ]; then
                 echo -e "${gl_huang}无法获取服务器列表，使用自动选择...${gl_bai}" >&2
@@ -1950,7 +1951,7 @@ detect_bandwidth() {
                 # 提取上传速度
                 upload_speed=""
                 if echo "$speedtest_output" | grep -q "Upload:"; then
-                    upload_speed=$(echo "$speedtest_output" | grep -i "Upload:" | grep -oP '\d+\.\d+' 2>/dev/null | head -n1)
+                    upload_speed=$(echo "$speedtest_output" | sed -nE 's/.*[Uu]pload:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/p' | head -n1)
                 fi
                 if [ -z "$upload_speed" ]; then
                     upload_speed=$(echo "$speedtest_output" | grep -i "Upload:" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) {print $i; exit}}')
@@ -2141,7 +2142,7 @@ detect_bandwidth() {
             # 提取上传速度
             local upload_speed=""
             if echo "$speedtest_output" | grep -q "Upload:"; then
-                upload_speed=$(echo "$speedtest_output" | grep -i "Upload:" | grep -oP '\d+\.\d+' 2>/dev/null | head -n1)
+                upload_speed=$(echo "$speedtest_output" | sed -nE 's/.*[Uu]pload:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/p' | head -n1)
             fi
             if [ -z "$upload_speed" ]; then
                 upload_speed=$(echo "$speedtest_output" | grep -i "Upload:" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) {print $i; exit}}')
@@ -3165,7 +3166,7 @@ install_xanmod_kernel() {
     if wget -qO "$detect_script" "${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/check_x86-64_psabi.sh" 2>/dev/null && \
        [ -s "$detect_script" ]; then
         chmod +x "$detect_script"
-        version=$("$detect_script" 2>/dev/null | grep -oP 'x86-64-v\K\d' | head -1)
+        version=$("$detect_script" 2>/dev/null | sed -nE 's/.*x86-64-v([1-4]).*/\1/p' | head -1)
     fi
     rm -rf "$detect_dir"
 
@@ -4816,7 +4817,7 @@ PERSIST_SERVICE
         # 查找当前网卡对应的 .network 配置文件
         local networkd_file=""
         if command -v networkctl &>/dev/null; then
-            networkd_file=$(networkctl status "$main_interface" 2>/dev/null | grep -oP 'Network File: \K.*' || echo "")
+            networkd_file=$(networkctl status "$main_interface" 2>/dev/null | sed -nE 's/.*Network File:[[:space:]]*(.*)/\1/p' | head -1)
         fi
 
         if [[ -n "$networkd_file" ]] && [[ -f "$networkd_file" ]]; then
@@ -5387,7 +5388,7 @@ run_speedtest() {
                 echo -e "${gl_zi}正在搜索附近测速服务器...${gl_bai}"
                 
                 # 获取附近服务器列表
-                local servers_list=$(speedtest --accept-license --servers 2>/dev/null | grep -oP '^\s*\K[0-9]+' | head -n 10)
+                local servers_list=$(speedtest --accept-license --servers 2>/dev/null | sed -nE 's/^[[:space:]]*([0-9]+).*/\1/p' | head -n 10)
                 
                 if [ -z "$servers_list" ]; then
                     echo -e "${gl_huang}无法获取服务器列表，使用自动选择...${gl_bai}"
@@ -6204,13 +6205,46 @@ update_xanmod_kernel() {
     local upgradable=$(apt list --upgradable 2>/dev/null | grep xanmod)
     
     if [ -z "$upgradable" ]; then
-        local cpu_level=$(echo "$installed_packages" | grep -oP 'x64v\K\d' | head -1)
-        echo -e "${gl_lv}✅ 当前内核已是最新版本！${gl_bai}"
+        local cpu_level
+        cpu_level=$(echo "$installed_packages" | sed -nE 's/.*x64v([1-4]).*/\1/p' | head -1)
+        [ -z "$cpu_level" ] && cpu_level="3"
+
+        # 获取已安装的最新 XanMod 内核版本（从 linux-image 包名提取版本号并取最大值）
+        local latest_installed
+        latest_installed=$(echo "$installed_packages" \
+            | sed -nE 's/^linux-image-([0-9]+\.[0-9]+\.[0-9]+-x64v[1-4]-xanmod[0-9]+)$/\1/p' \
+            | sort -V | tail -1)
+
+        local running_latest=0
+        if [ -n "$latest_installed" ] && [ "$current_kernel" = "$latest_installed" ]; then
+            running_latest=1
+        fi
+
+        if [ $running_latest -eq 1 ]; then
+            echo -e "${gl_lv}✅ 当前运行内核已是最新版本！${gl_bai}"
+        else
+            echo -e "${gl_lv}✅ XanMod 内核包已是最新，但当前运行内核尚未切换！${gl_bai}"
+            echo -e "  正在运行: ${gl_hong}${current_kernel}${gl_bai}"
+            if [ -n "$latest_installed" ]; then
+                echo -e "  最新已装: ${gl_lv}${latest_installed}${gl_bai}"
+            else
+                echo -e "  ${gl_huang}提示: 未能解析最新已装内核版本，请重启后再检查${gl_bai}"
+            fi
+            echo -e "  ${gl_huang}请重启系统 (reboot) 以切换到最新内核${gl_bai}"
+        fi
         echo ""
+
         echo -e "${gl_kjlan}━━━━━━━━━━ CPU 架构信息 ━━━━━━━━━━${gl_bai}"
         echo -e "  CPU 架构等级: ${gl_lv}x86-64-v${cpu_level}${gl_bai}"
-        echo -e "  当前内核版本: ${gl_lv}${current_kernel}${gl_bai}"
-        echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${cpu_level}，该等级暂无更新可用${gl_bai}"
+        echo -e "  当前运行内核: ${gl_lv}${current_kernel}${gl_bai}"
+        if [ -n "$latest_installed" ] && [ $running_latest -ne 1 ]; then
+            echo -e "  最新已装内核: ${gl_lv}${latest_installed}${gl_bai}"
+        fi
+        if [ $running_latest -eq 1 ]; then
+            echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${cpu_level}，当前已运行该等级最新内核${gl_bai}"
+        else
+            echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${cpu_level}，最新内核已安装，重启后生效${gl_bai}"
+        fi
         echo -e "  ${gl_huang}不同等级(v1-v4)的内核更新进度可能不同，以 XanMod 官方仓库为准${gl_bai}"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
@@ -6237,10 +6271,18 @@ update_xanmod_kernel() {
                 echo -e "${gl_lv}✅ XanMod 内核更新成功！${gl_bai}"
                 echo -e "${gl_huang}⚠️  请重启系统以加载新内核${gl_bai}"
                 echo ""
-                local cpu_level=$(echo "$installed_packages" | grep -oP 'x64v\K\d' | head -1)
+                local cpu_level
+                cpu_level=$(echo "$installed_packages" | sed -nE 's/.*x64v([1-4]).*/\1/p' | head -1)
+                [ -z "$cpu_level" ] && cpu_level="3"
+                local latest_installed
+                latest_installed=$(dpkg -l 2>/dev/null | awk '/^ii\s+linux-image-[0-9].*xanmod/ {print $2}' | sed 's/^linux-image-//' | sort -V | tail -1)
                 echo -e "${gl_kjlan}━━━━━━━━━━ CPU 架构信息 ━━━━━━━━━━${gl_bai}"
                 echo -e "  CPU 架构等级: ${gl_lv}x86-64-v${cpu_level}${gl_bai}"
-                echo -e "  已更新内核包: ${gl_lv}$(echo "$installed_packages" | head -1)${gl_bai}"
+                if [ -n "$latest_installed" ]; then
+                    echo -e "  最新已装内核: ${gl_lv}${latest_installed}${gl_bai}"
+                else
+                    echo -e "  已更新内核包: ${gl_lv}$(echo "$installed_packages" | head -1)${gl_bai}"
+                fi
                 echo -e "  ${gl_huang}说明: 本机 CPU 最高支持 v${cpu_level}，已更新至该等级的最新内核${gl_bai}"
                 echo -e "  ${gl_huang}不同等级(v1-v4)的内核更新进度可能不同，以 XanMod 官方仓库为准${gl_bai}"
                 echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -12895,7 +12937,7 @@ list_reverse_proxies() {
         local config_file="$REVERSE_PROXY_CONFIG_DIR/cf-tunnel/$tunnel_name.yaml"
         if [ -f "$config_file" ]; then
             local domain=$(grep "hostname:" "$config_file" | head -1 | awk '{print $3}')
-            local port=$(grep "service:" "$config_file" | head -1 | grep -oP ':\K[0-9]+')
+            local port=$(grep "service:" "$config_file" | head -1 | sed -nE 's/.*:([0-9]+).*/\1/p')
 
             echo "  域名: https://$domain"
             echo "  端口: $port"
@@ -13553,7 +13595,7 @@ ag_proxy_update() {
 
             # 显示版本信息
             if [ -f "$AG_PROXY_INSTALL_DIR/package.json" ]; then
-                local version=$(grep '"version"' "$AG_PROXY_INSTALL_DIR/package.json" | head -1 | grep -oP '"\d+\.\d+\.\d+"' | tr -d '"')
+                local version=$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$AG_PROXY_INSTALL_DIR/package.json" | head -1)
                 if [ -n "$version" ]; then
                     echo -e "当前版本: ${gl_huang}v${version}${gl_bai}"
                 fi
@@ -13628,7 +13670,7 @@ ag_proxy_restart() {
 
     # 检测端口冲突
     local port=$(ag_proxy_get_port)
-    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
+    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1)
     local service_pid=$(systemctl show -p MainPID "$AG_PROXY_SERVICE_NAME" 2>/dev/null | cut -d= -f2)
 
     # 如果端口被其他进程占用（不是当前服务）
@@ -14425,7 +14467,7 @@ crs_get_port() {
         # 尝试从配置文件读取
         local install_dir=$(crs_get_install_dir)
         if [ -f "$install_dir/config/config.js" ]; then
-            local port=$(grep -oP 'port:\s*\K[0-9]+' "$install_dir/config/config.js" 2>/dev/null | head -1)
+            local port=$(sed -nE 's/.*port:[[:space:]]*([0-9]+).*/\1/p' "$install_dir/config/config.js" 2>/dev/null | head -1)
             if [ -n "$port" ]; then
                 echo "$port"
                 return
@@ -14876,8 +14918,8 @@ crs_show_admin() {
         echo ""
 
         # 解析 JSON 并显示
-        local username=$(grep -oP '"username"\s*:\s*"\K[^"]+' "$init_file" 2>/dev/null)
-        local password=$(grep -oP '"password"\s*:\s*"\K[^"]+' "$init_file" 2>/dev/null)
+        local username=$(sed -nE 's/.*"username"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$init_file" 2>/dev/null | head -1)
+        local password=$(sed -nE 's/.*"password"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$init_file" 2>/dev/null | head -1)
 
         if [ -n "$username" ] && [ -n "$password" ]; then
             local port=$(crs_get_port)
@@ -16068,7 +16110,7 @@ sub2api_extract_port() {
     local service_file="/etc/systemd/system/sub2api.service"
     if [ -f "$service_file" ]; then
         # 尝试从 ExecStart 行提取端口
-        local port=$(grep -oP ':\K[0-9]+' "$service_file" 2>/dev/null | head -1)
+        local port=$(sed -nE 's/.*:([0-9]+).*/\1/p' "$service_file" 2>/dev/null | head -1)
         if [ -n "$port" ]; then
             echo "$port"
             return
@@ -16699,7 +16741,7 @@ caddy_handle_port_conflict() {
     fi
 
     # 端口被占用,查找占用进程
-    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | grep -oP 'pid=\K[0-9]+' | head -1)
+    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1)
 
     if [ -z "$pid" ]; then
         echo -e "${gl_hong}❌ 端口 ${port} 被占用，但无法获取进程信息${gl_bai}"
@@ -16954,7 +16996,8 @@ caddy_migrate_old_config() {
     echo -e "${gl_huang}检测到旧版配置，正在迁移到新架构...${gl_bai}"
 
     # 从旧配置中提取邮箱
-    local ssl_email=$(grep -oP '(?<=email\s)[^\s]+' "$CADDY_CONFIG_FILE" 2>/dev/null || echo "admin@example.com")
+    local ssl_email=$(awk '/^[[:space:]]*email[[:space:]]+/ {print $2; exit}' "$CADDY_CONFIG_FILE" 2>/dev/null)
+    [ -z "$ssl_email" ] && ssl_email="admin@example.com"
 
     # 备份旧配置
     cp "$CADDY_CONFIG_FILE" "${CADDY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
