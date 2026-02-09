@@ -1361,9 +1361,9 @@ detect_path_mtu_multi_region() {
              continue
         fi
 
-        # 2. 开始 MTU 探测（包含1472用于精确检测标准1500 MTU）
+        # 2. 开始 MTU 探测（从1472开始=标准1500 MTU，向下探测到1200覆盖多层隧道）
         local found=0
-        for size in 1500 1492 1480 1472 1460 1452 1440 1420 1400 1380 1360 1340 1320 1300; do
+        for size in 1472 1460 1452 1440 1420 1400 1380 1360 1340 1320 1300 1280 1260 1240 1220 1200; do
             if ping -M do -s "$size" -c 1 -W 1 "$active_target" &>/dev/null; then
                 local mtu=$((size + 28))
                 local mss=$((size + 28 - 40))
@@ -1505,19 +1505,29 @@ OPTIMIZED_MTU=$mtu
 OPTIMIZED_MSS=$mss
 ORIGINAL_MTU=${original_mtu:-1500}
 DEFAULT_IFACE=$default_iface
+FALLBACK_LINK_MTU=false
 EOF
+    if [ ! -f /usr/local/etc/mtu-optimize.conf ]; then
+        echo -e "${gl_hong}错误: 配置文件写入失败（磁盘满或权限不足）${gl_bai}"
+        return 1
+    fi
 
     # 设置默认路由 MTU（核心操作：让功能3/6的 clamp-to-pmtu 自动使用正确的值）
     echo "设置路由 MTU = ${mtu} (对应 MSS = ${mss}) ..."
     local clean_route
-    clean_route=$(echo "$default_route" | sed 's/ mtu [0-9]*//')
+    clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
     if ip route replace $clean_route mtu "$mtu" 2>/dev/null; then
         echo -e "${gl_lv}✅ 默认路由 MTU 已设置为 ${mtu}${gl_bai}"
     else
-        # 回退：直接设置网卡 MTU
-        echo -e "${gl_huang}⚠️ 路由 MTU 设置失败，尝试设置网卡 MTU...${gl_bai}"
+        # 回退：直接设置网卡 MTU（影响该网卡上所有流量，包括 Docker bridge 等）
+        echo -e "${gl_huang}⚠️ 路由 MTU 设置失败，尝试设置网卡链路 MTU...${gl_bai}"
+        if docker ps &>/dev/null || [ -d /sys/class/net/docker0 ]; then
+            echo -e "${gl_huang}⚠️ 检测到 Docker 环境，降低链路 MTU 可能影响容器网络通信${gl_bai}"
+        fi
         if ip link set dev "$default_iface" mtu "$mtu" 2>/dev/null; then
-            echo -e "${gl_lv}✅ 网卡 ${default_iface} MTU 已设置为 ${mtu}${gl_bai}"
+            echo -e "${gl_lv}✅ 网卡 ${default_iface} 链路 MTU 已设置为 ${mtu}${gl_bai}"
+            # 标记使用了链路MTU回退，持久化脚本需要知道
+            sed -i 's/^FALLBACK_LINK_MTU=.*/FALLBACK_LINK_MTU=true/' /usr/local/etc/mtu-optimize.conf 2>/dev/null
         else
             echo -e "${gl_hong}❌ MTU 设置失败${gl_bai}"
             return 1
@@ -1542,22 +1552,44 @@ EOF
 
     # 兼容旧版本：若历史上把 MTU 恢复逻辑写入了 bbr-optimize-apply.sh，则移除
     if [ -f /usr/local/bin/bbr-optimize-apply.sh ] && grep -q "MTU 优化恢复 (mtu-optimize)" /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null; then
-        sed -i '/# MTU 优化恢复 (mtu-optimize)/,/^fi$/d' /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null || true
+        sed -i '/# MTU 优化恢复 (mtu-optimize)/,/^[[:space:]]*fi[[:space:]]*$/d' /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null || true
     fi
 
     cat > /usr/local/bin/mtu-optimize-apply.sh << 'MTUAPPLYEOF'
 #!/bin/bash
-# MTU Optimize 重启恢复脚本 - 自动生成
-if [ -f /usr/local/etc/mtu-optimize.conf ]; then
-    . /usr/local/etc/mtu-optimize.conf
-    if [ -n "$OPTIMIZED_MTU" ]; then
-        sleep 2
-        default_route=$(ip -4 route show default | head -1)
-        if [ -n "$default_route" ]; then
-            clean_route=$(echo "$default_route" | sed 's/ mtu [0-9]*//')
-            ip route replace $clean_route mtu "$OPTIMIZED_MTU" 2>/dev/null
-        fi
+# MTU Optimize 重启恢复脚本 - 自动生成，勿手动编辑
+if [ ! -f /usr/local/etc/mtu-optimize.conf ]; then
+    exit 0
+fi
+. /usr/local/etc/mtu-optimize.conf
+[ -n "$OPTIMIZED_MTU" ] || exit 0
+
+sleep 2
+
+# 恢复路由 MTU
+route_ok=false
+default_route=$(ip -4 route show default | head -1)
+if [ -n "$default_route" ]; then
+    clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
+    if ip route replace $clean_route mtu "$OPTIMIZED_MTU" 2>/dev/null; then
+        route_ok=true
     fi
+fi
+
+# 路由MTU失败或之前使用了链路MTU回退，则设置链路MTU
+if [ "$route_ok" = false ] || [ "${FALLBACK_LINK_MTU:-false}" = "true" ]; then
+    iface="${DEFAULT_IFACE:-$(ip -4 route show default | head -1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')}"
+    if [ -n "$iface" ]; then
+        ip link set dev "$iface" mtu "$OPTIMIZED_MTU" 2>/dev/null || true
+    fi
+fi
+
+# 确保 clamp-to-pmtu 规则存在（OUTPUT + FORWARD 链）
+if command -v iptables >/dev/null 2>&1; then
+    iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
+      || iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
+      || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
 fi
 MTUAPPLYEOF
     chmod +x /usr/local/bin/mtu-optimize-apply.sh
@@ -1575,9 +1607,13 @@ ExecStart=/usr/local/bin/mtu-optimize-apply.sh
 [Install]
 WantedBy=multi-user.target
 MTUSVCEOF
-    systemctl daemon-reload 2>/dev/null
-    systemctl enable mtu-optimize-persist.service 2>/dev/null
-    echo -e "${gl_lv}✅ 已配置独立 mtu-optimize-persist 服务（与功能3解耦）${gl_bai}"
+    if command -v systemctl &>/dev/null; then
+        systemctl daemon-reload 2>/dev/null
+        systemctl enable mtu-optimize-persist.service 2>/dev/null
+        echo -e "${gl_lv}✅ 已配置独立 mtu-optimize-persist 服务（与功能3解耦）${gl_bai}"
+    else
+        echo -e "${gl_huang}⚠️ 未检测到 systemd，重启持久化不可用，MTU优化仅当前会话生效${gl_bai}"
+    fi
     echo ""
 
     # 验证
@@ -1660,6 +1696,8 @@ mtu_mss_optimization() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
 
+        echo -e "${gl_huang}提示: 本功能仅优化 IPv4 路由，IPv6 流量不受影响${gl_bai}"
+        echo ""
         echo -e "${gl_kjlan}功能菜单:${gl_bai}"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "1. 自动检测并优化 ⭐ 推荐"
@@ -1757,7 +1795,7 @@ mtu_mss_optimization() {
                     default_route=$(ip -4 route show default | head -1)
                     if [ -n "$default_route" ]; then
                         local clean_route
-                        clean_route=$(echo "$default_route" | sed 's/ mtu [0-9]*//')
+                        clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
                         ip route replace $clean_route 2>/dev/null
                         echo -e "${gl_lv}✓ 默认路由 MTU 已恢复${gl_bai}"
                     fi
@@ -1791,7 +1829,7 @@ mtu_mss_optimization() {
                     rm -f /usr/local/etc/mtu-optimize.conf
                     # 兼容旧版本残留：移除 bbr-optimize-apply.sh 里的 MTU 恢复段
                     if [ -f /usr/local/bin/bbr-optimize-apply.sh ] && grep -q "MTU 优化恢复 (mtu-optimize)" /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null; then
-                        sed -i '/# MTU 优化恢复 (mtu-optimize)/,/^fi$/d' /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null || true
+                        sed -i '/# MTU 优化恢复 (mtu-optimize)/,/^[[:space:]]*fi[[:space:]]*$/d' /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null || true
                     fi
                     # 移除独立的 mtu-optimize 服务
                     if [ -f /etc/systemd/system/mtu-optimize-persist.service ]; then
@@ -6873,6 +6911,8 @@ uninstall_all() {
     echo "  • bbr 快捷别名"
     echo "  • 所有 BBR/网络优化配置"
     echo "  • 所有 sysctl 配置文件"
+    echo "  • MTU优化和持久化服务"
+    echo "  • DNS净化和持久化服务"
     echo "  • 其他相关配置文件和备份"
     echo ""
     echo -e "${gl_hong}此操作不可逆！${gl_bai}"
@@ -6895,7 +6935,7 @@ uninstall_all() {
     local xanmod_removed=0
     
     # 1. 卸载 XanMod 内核
-    echo -e "${gl_huang}[1/6] 检查并卸载 XanMod 内核...${gl_bai}"
+    echo -e "${gl_huang}[1/8] 检查并卸载 XanMod 内核...${gl_bai}"
     if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
         # 安全检查：确认有回退内核
         local non_xanmod_kernels=$(dpkg -l 2>/dev/null | grep '^ii' | grep 'linux-image-' | grep -v 'xanmod' | grep -v 'dbg' | wc -l)
@@ -6923,7 +6963,7 @@ uninstall_all() {
     echo ""
     
     # 2. 卸载 bbr 快捷别名
-    echo -e "${gl_huang}[2/6] 卸载 bbr 快捷别名...${gl_bai}"
+    echo -e "${gl_huang}[2/8] 卸载 bbr 快捷别名...${gl_bai}"
     
     # 检查所有可能的配置文件
     local rc_files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile")
@@ -7020,7 +7060,7 @@ uninstall_all() {
     echo ""
     
     # 3. 清理 sysctl 配置文件
-    echo -e "${gl_huang}[3/6] 清理 sysctl 配置文件...${gl_bai}"
+    echo -e "${gl_huang}[3/8] 清理 sysctl 配置文件...${gl_bai}"
     local sysctl_files=(
         "$SYSCTL_CONF"
         "/etc/sysctl.d/99-bbr-ultimate.conf"
@@ -7063,7 +7103,7 @@ uninstall_all() {
     echo ""
     
     # 4. 清理 XanMod 软件源
-    echo -e "${gl_huang}[4/6] 清理 XanMod 软件源...${gl_bai}"
+    echo -e "${gl_huang}[4/8] 清理 XanMod 软件源...${gl_bai}"
     local repo_files=(
         "/etc/apt/sources.list.d/xanmod-release.list"
         "/usr/share/keyrings/xanmod-archive-keyring.gpg"
@@ -7085,8 +7125,78 @@ uninstall_all() {
     fi
     echo ""
     
-    # 5. 清理其他临时文件和备份
-    echo -e "${gl_huang}[5/6] 清理临时文件和备份...${gl_bai}"
+    # 5. 清理持久化服务和优化配置（功能3/4/5）
+    echo -e "${gl_huang}[5/8] 清理持久化服务和优化配置...${gl_bai}"
+    local persist_cleaned=0
+
+    # 功能4: MTU优化 — 恢复路由/链路MTU + 清理服务
+    if [ -f /usr/local/etc/mtu-optimize.conf ]; then
+        . /usr/local/etc/mtu-optimize.conf 2>/dev/null
+        # 恢复默认路由 MTU
+        local def_rt
+        def_rt=$(ip -4 route show default 2>/dev/null | head -1)
+        if [ -n "$def_rt" ]; then
+            local cl_rt
+            cl_rt=$(echo "$def_rt" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
+            ip route replace $cl_rt 2>/dev/null || true
+        fi
+        # 恢复链路 MTU
+        if [ -n "${DEFAULT_IFACE:-}" ] && [ -n "${ORIGINAL_MTU:-}" ]; then
+            ip link set dev "$DEFAULT_IFACE" mtu "$ORIGINAL_MTU" 2>/dev/null || true
+        fi
+        rm -f /usr/local/etc/mtu-optimize.conf
+        persist_cleaned=$((persist_cleaned + 1))
+        echo -e "  ${gl_lv}✓ MTU优化已恢复${gl_bai}"
+    fi
+    if [ -f /etc/systemd/system/mtu-optimize-persist.service ]; then
+        systemctl disable mtu-optimize-persist.service 2>/dev/null || true
+        rm -f /etc/systemd/system/mtu-optimize-persist.service
+        rm -f /usr/local/bin/mtu-optimize-apply.sh
+        persist_cleaned=$((persist_cleaned + 1))
+    fi
+
+    # 功能3: BBR优化持久化
+    if [ -f /etc/systemd/system/bbr-optimize-persist.service ]; then
+        systemctl disable bbr-optimize-persist.service 2>/dev/null || true
+        rm -f /etc/systemd/system/bbr-optimize-persist.service
+        rm -f /usr/local/bin/bbr-optimize-apply.sh
+        persist_cleaned=$((persist_cleaned + 1))
+        echo -e "  ${gl_lv}✓ BBR持久化服务已移除${gl_bai}"
+    fi
+
+    # 功能5: DNS净化持久化
+    if [ -f /etc/systemd/system/dns-purify-persist.service ]; then
+        systemctl disable dns-purify-persist.service 2>/dev/null || true
+        rm -f /etc/systemd/system/dns-purify-persist.service
+        rm -f /usr/local/bin/dns-purify-apply.sh
+        persist_cleaned=$((persist_cleaned + 1))
+        echo -e "  ${gl_lv}✓ DNS持久化服务已移除${gl_bai}"
+    fi
+
+    # 清理旧版 iptables set-mss 规则（功能4旧版兼容）
+    if command -v iptables &>/dev/null; then
+        local tag="net-tcp-tune-mss" del_v
+        while read -r del_v; do
+            [ -n "$del_v" ] || continue
+            iptables -t mangle -D OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$del_v" -m comment --comment "$tag" 2>/dev/null || true
+        done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "$tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
+        while read -r del_v; do
+            [ -n "$del_v" ] || continue
+            iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$del_v" -m comment --comment "$tag" 2>/dev/null || true
+        done < <(iptables -t mangle -S POSTROUTING 2>/dev/null | grep "$tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
+    fi
+
+    if [ $persist_cleaned -gt 0 ]; then
+        systemctl daemon-reload 2>/dev/null || true
+        echo -e "  ${gl_lv}✅ 已清理 $persist_cleaned 个持久化组件${gl_bai}"
+        uninstall_count=$((uninstall_count + 1))
+    else
+        echo -e "  ${gl_huang}未找到持久化服务${gl_bai}"
+    fi
+    echo ""
+
+    # 6. 清理其他临时文件和备份
+    echo -e "${gl_huang}[6/8] 清理临时文件和备份...${gl_bai}"
     local temp_files=(
         "/tmp/socks5_proxy_*.sh"
         "/root/.realm_backup/"
@@ -7107,12 +7217,39 @@ uninstall_all() {
     fi
     echo ""
     
-    # 6. 应用 sysctl 更改
-    echo -e "${gl_huang}[6/6] 应用系统配置更改...${gl_bai}"
+    # 7. 应用 sysctl 更改
+    echo -e "${gl_huang}[7/8] 应用系统配置更改...${gl_bai}"
     sysctl --system > /dev/null 2>&1
     echo -e "  ${gl_lv}✅ 系统配置已重置${gl_bai}"
     echo ""
-    
+
+    # 8. 清理功能5 DNS净化残留配置
+    echo -e "${gl_huang}[8/8] 清理 DNS 净化残留配置...${gl_bai}"
+    local dns_cleaned=0
+    # NetworkManager DNS 委托配置
+    if [ -f /etc/NetworkManager/conf.d/99-dns-purify.conf ]; then
+        rm -f /etc/NetworkManager/conf.d/99-dns-purify.conf
+        systemctl reload NetworkManager 2>/dev/null || true
+        dns_cleaned=$((dns_cleaned + 1))
+    fi
+    # systemd-networkd drop-in
+    local sd_dir
+    for sd_dir in /etc/systemd/network /run/systemd/network /usr/lib/systemd/network; do
+        local dropin_f
+        for dropin_f in "$sd_dir"/*.network.d/dns-purify-override.conf; do
+            [ -f "$dropin_f" ] || continue
+            rm -f "$dropin_f"
+            rmdir "$(dirname "$dropin_f")" 2>/dev/null || true
+            dns_cleaned=$((dns_cleaned + 1))
+        done
+    done
+    if [ $dns_cleaned -gt 0 ]; then
+        echo -e "  ${gl_lv}✅ 已清理 DNS 净化残留配置${gl_bai}"
+    else
+        echo -e "  ${gl_huang}未找到 DNS 净化残留${gl_bai}"
+    fi
+    echo ""
+
     # 完成提示
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_lv}✅ 完全卸载完成！${gl_bai}"
