@@ -4202,13 +4202,12 @@ dns_purify_and_harden() {
         echo "false" > "$PRE_STATE_DIR/dns-persist.was-enabled"
     fi
 
-    if systemctl is-enabled --quiet systemd-resolved 2>/dev/null; then
-        echo "true" > "$PRE_STATE_DIR/resolved.was-enabled"
-    else
-        echo "false" > "$PRE_STATE_DIR/resolved.was-enabled"
-    fi
+    # 用文本输出精确记录 enabled/static/disabled/masked 状态（is-enabled --quiet 对 static 也返回 0）
+    local resolved_enable_state
+    resolved_enable_state=$(systemctl is-enabled systemd-resolved 2>/dev/null || echo "unknown")
+    echo "$resolved_enable_state" > "$PRE_STATE_DIR/resolved.enable-state"
 
-    if systemctl is-enabled systemd-resolved 2>/dev/null | grep -q '^masked$'; then
+    if [[ "$resolved_enable_state" == "masked" || "$resolved_enable_state" == "masked-runtime" ]]; then
         echo "true" > "$PRE_STATE_DIR/resolved.was-masked"
     else
         echo "false" > "$PRE_STATE_DIR/resolved.was-masked"
@@ -4250,11 +4249,11 @@ dns_purify_and_harden() {
 
     # 自动回滚函数（失败即恢复，避免遗留DNS隐患）
     auto_rollback_dns_purify() {
-        # 恢复关键文件到执行前状态
+        # 恢复关键文件到执行前状态（注意：resolv.conf 延后恢复，避免悬空链接）
         restore_path_state "/etc/dhcp/dhclient.conf" "dhclient.conf"
         restore_path_state "/etc/network/interfaces" "interfaces"
         restore_path_state "/etc/systemd/resolved.conf" "resolved.conf"
-        restore_path_state "/etc/resolv.conf" "resolv.conf"
+        # resolv.conf 在服务状态恢复后再处理（见下方）
         restore_path_state "/etc/systemd/system/dns-purify-persist.service" "dns-purify-persist.service"
         restore_path_state "/usr/local/bin/dns-purify-apply.sh" "dns-purify-apply.sh"
         restore_path_state "/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf" "dbus-fix.conf"
@@ -4275,12 +4274,14 @@ dns_purify_and_harden() {
             esac
         fi
 
-        # 先移除本次可能新增的 networkd drop-in
-        local dropin_file
-        for dropin_file in /etc/systemd/network/*.network.d/dns-purify-override.conf; do
-            [[ -f "$dropin_file" ]] || continue
-            rm -f "$dropin_file"
-            rmdir "$(dirname "$dropin_file")" 2>/dev/null || true
+        # 移除本次可能新增的 networkd drop-in（扩展搜索所有可能路径）
+        local dropin_file search_dir
+        for search_dir in /etc/systemd/network /run/systemd/network /usr/lib/systemd/network; do
+            for dropin_file in "$search_dir"/*.network.d/dns-purify-override.conf; do
+                [[ -f "$dropin_file" ]] || continue
+                rm -f "$dropin_file"
+                rmdir "$(dirname "$dropin_file")" 2>/dev/null || true
+            done
         done
 
         # 恢复执行前已有的 networkd drop-in
@@ -4292,6 +4293,16 @@ dns_purify_and_harden() {
                 mkdir -p "$(dirname "$restore_path")"
                 cp -a "$PRE_STATE_DIR/$restore_key" "$restore_path" 2>/dev/null || true
             done < "$PRE_STATE_DIR/networkd-dropins.map"
+        fi
+
+        # 重载 systemd-networkd（使 drop-in 变更生效）
+        if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+            networkctl reload 2>/dev/null || systemctl reload systemd-networkd 2>/dev/null || true
+        fi
+
+        # 重载 NetworkManager（使配置文件变更生效）
+        if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+            systemctl reload NetworkManager 2>/dev/null || true
         fi
 
         # 恢复 dns-purify 持久化服务启用状态
@@ -4316,11 +4327,17 @@ dns_purify_and_harden() {
             DEBIAN_FRONTEND=noninteractive apt-get install -y resolvconf >/dev/null 2>&1 || true
         fi
 
-        # 恢复 systemd-resolved 启用/屏蔽/运行状态
-        local resolved_was_enabled="false"
+        # 恢复 systemd-resolved 启用/屏蔽/运行状态（在 resolv.conf 之前）
+        local resolved_enable_state="unknown"
         local resolved_was_masked="false"
         local resolved_was_active="false"
-        [[ -f "$PRE_STATE_DIR/resolved.was-enabled" ]] && resolved_was_enabled=$(cat "$PRE_STATE_DIR/resolved.was-enabled" 2>/dev/null || echo "false")
+        [[ -f "$PRE_STATE_DIR/resolved.enable-state" ]] && resolved_enable_state=$(cat "$PRE_STATE_DIR/resolved.enable-state" 2>/dev/null || echo "unknown")
+        # 兼容旧版快照格式
+        [[ "$resolved_enable_state" == "unknown" && -f "$PRE_STATE_DIR/resolved.was-enabled" ]] && {
+            local old_enabled
+            old_enabled=$(cat "$PRE_STATE_DIR/resolved.was-enabled" 2>/dev/null || echo "false")
+            [[ "$old_enabled" == "true" ]] && resolved_enable_state="enabled" || resolved_enable_state="disabled"
+        }
         [[ -f "$PRE_STATE_DIR/resolved.was-masked" ]] && resolved_was_masked=$(cat "$PRE_STATE_DIR/resolved.was-masked" 2>/dev/null || echo "false")
         [[ -f "$PRE_STATE_DIR/resolved.was-active" ]] && resolved_was_active=$(cat "$PRE_STATE_DIR/resolved.was-active" 2>/dev/null || echo "false")
 
@@ -4329,58 +4346,67 @@ dns_purify_and_harden() {
             systemctl stop systemd-resolved 2>/dev/null || true
         else
             systemctl unmask systemd-resolved 2>/dev/null || true
-            if [[ "$resolved_was_enabled" == "true" ]]; then
-                systemctl enable systemd-resolved 2>/dev/null || true
-            else
-                systemctl disable systemd-resolved 2>/dev/null || true
-            fi
+            case "$resolved_enable_state" in
+                enabled|enabled-runtime)
+                    systemctl enable systemd-resolved 2>/dev/null || true
+                    ;;
+                static|indirect|generated)
+                    # static/indirect/generated 状态由包管理器控制，不改变
+                    ;;
+                *)
+                    systemctl disable systemd-resolved 2>/dev/null || true
+                    ;;
+            esac
 
             if [[ "$resolved_was_active" == "true" ]]; then
                 systemctl restart systemd-resolved 2>/dev/null || systemctl start systemd-resolved 2>/dev/null || true
+                # 等待 resolved 完全启动，确保 stub 文件可用
+                local wait_i
+                for wait_i in $(seq 1 5); do
+                    [[ -f /run/systemd/resolve/stub-resolv.conf ]] && break
+                    sleep 1
+                done
             else
                 systemctl stop systemd-resolved 2>/dev/null || true
             fi
         fi
 
-        # 回滚后做一次健康校验，失败则启用应急DNS兜底
-        sleep 2
+        # 最后恢复 resolv.conf（此时 resolved 已恢复运行状态，stub 文件可用）
+        # 特殊处理：如果备份是指向 stub 的软链接但 resolved 未运行，则写静态文件
+        if [[ -L "$PRE_STATE_DIR/resolv.conf" ]]; then
+            local backup_link_target
+            backup_link_target=$(readlink "$PRE_STATE_DIR/resolv.conf" 2>/dev/null || echo "")
+            if [[ "$backup_link_target" == *"stub-resolv.conf"* ]] && [[ ! -f /run/systemd/resolve/stub-resolv.conf ]]; then
+                # resolved 未运行，stub 不存在 — 写入静态 nameserver 避免悬空链接
+                rm -f /etc/resolv.conf 2>/dev/null || true
+                echo "nameserver 127.0.0.53" > /etc/resolv.conf 2>/dev/null || true
+            else
+                restore_path_state "/etc/resolv.conf" "resolv.conf"
+            fi
+        else
+            restore_path_state "/etc/resolv.conf" "resolv.conf"
+        fi
+
+        # 回滚后验证 — 充分等待 resolved 初始化（最多15秒，每3秒重试）
         local rollback_ok=false
         local pre_dns_health="false"
         [[ -f "$PRE_STATE_DIR/pre-dns.health" ]] && pre_dns_health=$(cat "$PRE_STATE_DIR/pre-dns.health" 2>/dev/null || echo "false")
 
-        if command -v getent >/dev/null 2>&1; then
-            if getent hosts google.com >/dev/null 2>&1 || getent hosts baidu.com >/dev/null 2>&1; then
+        local max_wait=5
+        for i in $(seq 1 $max_wait); do
+            if dns_runtime_health_check "global" || dns_runtime_health_check "cn"; then
                 rollback_ok=true
+                break
             fi
-        fi
+            sleep 3
+        done
 
-        if [ "$rollback_ok" = false ] && [ "$pre_dns_health" = "true" ]; then
-            cat > /etc/systemd/resolved.conf << 'EMERGENCY_RESOLVED'
-[Resolve]
-DNS=223.5.5.5 119.29.29.29 1.1.1.1 8.8.8.8
-FallbackDNS=114.114.114.114 8.8.4.4
-LLMNR=no
-MulticastDNS=no
-DNSSEC=no
-DNSOverTLS=opportunistic
-Cache=yes
-DNSStubListener=yes
-EMERGENCY_RESOLVED
-
-            systemctl reload-or-restart systemd-resolved 2>/dev/null || true
-
-            local rollback_iface
-            rollback_iface=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
-            if [[ -n "$rollback_iface" ]] && command -v resolvectl >/dev/null 2>&1; then
-                timeout 5 resolvectl dns "$rollback_iface" 223.5.5.5 119.29.29.29 1.1.1.1 8.8.8.8 2>/dev/null || true
-                timeout 5 resolvectl domain "$rollback_iface" ~. 2>/dev/null || true
-                timeout 5 resolvectl default-route "$rollback_iface" yes 2>/dev/null || true
-            fi
-
-            if [[ -f /run/systemd/resolve/stub-resolv.conf ]]; then
-                rm -f /etc/resolv.conf
-                ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf 2>/dev/null || true
-            fi
+        if [ "$rollback_ok" = true ]; then
+            echo -e "${gl_lv}  ✅ 回滚后DNS健康校验通过${gl_bai}"
+        elif [ "$pre_dns_health" = "true" ]; then
+            echo -e "${gl_huang}  ⚠️  回滚后DNS验证超时，但已恢复执行前配置，可能需要等待网络就绪${gl_bai}"
+        else
+            echo -e "${gl_huang}  ⚠️  执行前DNS即不可用，已恢复原始配置${gl_bai}"
         fi
     }
 
@@ -4427,9 +4453,9 @@ EMERGENCY_RESOLVED
         local host="$1"
         local port="$2"
         if command -v timeout >/dev/null 2>&1; then
-            timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
+            timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port} && exec 3>&-" >/dev/null 2>&1
         else
-            bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
+            bash -c "exec 3<>/dev/tcp/${host}/${port} && exec 3>&-" >/dev/null 2>&1
         fi
     }
 
@@ -4442,10 +4468,6 @@ EMERGENCY_RESOLVED
     # 网卡级 DNS（用于 resolvectl）
     local INTERFACE_DNS_PRIMARY=""
     local INTERFACE_DNS_SECONDARY=""
-    # strict DoT 失败时降级用（避免整机DNS不可用）
-    local INTERFACE_DNS_PRIMARY_PLAIN=""
-    local INTERFACE_DNS_SECONDARY_PLAIN=""
-    
     case "$dns_mode_choice" in
         1)
             # 纯国外模式
@@ -4457,8 +4479,6 @@ EMERGENCY_RESOLVED
             # 网卡级使用纯IP，避免个别systemd/resolvectl版本对SNI参数兼容问题
             INTERFACE_DNS_PRIMARY="8.8.8.8"
             INTERFACE_DNS_SECONDARY="1.1.1.1"
-            INTERFACE_DNS_PRIMARY_PLAIN="8.8.8.8"
-            INTERFACE_DNS_SECONDARY_PLAIN="1.1.1.1"
             ;;
         2)
             # 纯国内模式（国内DNS和国内域名大多不支持DNSSEC，必须禁用）
@@ -4469,8 +4489,6 @@ EMERGENCY_RESOLVED
             MODE_NAME="纯国内模式"
             INTERFACE_DNS_PRIMARY="223.5.5.5"
             INTERFACE_DNS_SECONDARY="119.29.29.29"
-            INTERFACE_DNS_PRIMARY_PLAIN="223.5.5.5"
-            INTERFACE_DNS_SECONDARY_PLAIN="119.29.29.29"
             ;;
         3)
             # 混合模式
@@ -4481,8 +4499,6 @@ EMERGENCY_RESOLVED
             MODE_NAME="混合模式"
             INTERFACE_DNS_PRIMARY="8.8.8.8"
             INTERFACE_DNS_SECONDARY="1.1.1.1"
-            INTERFACE_DNS_PRIMARY_PLAIN="8.8.8.8"
-            INTERFACE_DNS_SECONDARY_PLAIN="1.1.1.1"
             ;;
     esac
 
@@ -4726,8 +4742,11 @@ DNSStubListener=yes
         echo "建议：如非必要，不建议继续修改"
         echo "      能正常执行的系统不会弹出此提示"
         echo ""
-        echo -e "${gl_huang}状态：检测到锁定保护，正在自动回滚到执行前状态${gl_bai}"
-        auto_rollback_dns_purify
+        echo -e "${gl_huang}状态：检测到锁定保护，正在恢复已修改的配置${gl_bai}"
+        # 只回滚 resolved.conf（阶段二已修改），不做完整回滚
+        # resolv.conf 尚未被修改（软链接替换在此检查之后），无需恢复
+        restore_path_state "/etc/systemd/resolved.conf" "resolved.conf"
+        systemctl reload-or-restart systemd-resolved 2>/dev/null || true
         echo ""
         break_end
         return 1
@@ -5073,6 +5092,12 @@ PERSIST_SCRIPT_VARS
 
     cat >> /usr/local/bin/dns-purify-apply.sh << 'PERSIST_SCRIPT_BODY'
 
+# 前置检查：resolvectl 是否可用
+if ! command -v resolvectl >/dev/null 2>&1; then
+    echo "dns-purify: resolvectl 不可用，跳过" | systemd-cat -t dns-purify 2>/dev/null || true
+    exit 0
+fi
+
 # 检测默认网卡（动态获取，适应网卡名变更）
 IFACE=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
 
@@ -5088,9 +5113,6 @@ for i in $(seq 1 15); do
     fi
     sleep 2
 done
-
-# 再等待网络完全就绪（防止 DHCP 还在跑）
-sleep 5
 
 # 应用网卡级DNS配置
 resolvectl dns "$IFACE" "$DNS_PRIMARY" "$DNS_SECONDARY" 2>/dev/null
@@ -5117,7 +5139,7 @@ Description=DNS Purify - Restore DNS Configuration on Boot
 Documentation=https://github.com/Eric86777/vps-tcp-tune
 After=systemd-resolved.service network-online.target
 Wants=network-online.target
-Requires=systemd-resolved.service
+Wants=systemd-resolved.service
 
 [Service]
 Type=oneshot
@@ -5326,10 +5348,10 @@ if [[ -d "$PRE_STATE_DIR" ]]; then
         fi
     }
 
+    # 恢复配置文件（resolv.conf 延后，避免悬空链接）
     restore_path_state "/etc/dhcp/dhclient.conf" "dhclient.conf"
     restore_path_state "/etc/network/interfaces" "interfaces"
     restore_path_state "/etc/systemd/resolved.conf" "resolved.conf"
-    restore_path_state "/etc/resolv.conf" "resolv.conf"
     restore_path_state "/etc/systemd/system/dns-purify-persist.service" "dns-purify-persist.service"
     restore_path_state "/usr/local/bin/dns-purify-apply.sh" "dns-purify-apply.sh"
     restore_path_state "/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf" "dbus-fix.conf"
@@ -5349,10 +5371,13 @@ if [[ -d "$PRE_STATE_DIR" ]]; then
         esac
     fi
 
-    for dropin_file in /etc/systemd/network/*.network.d/dns-purify-override.conf; do
-        [[ -f "$dropin_file" ]] || continue
-        rm -f "$dropin_file"
-        rmdir "$(dirname "$dropin_file")" 2>/dev/null || true
+    # 移除 networkd drop-in（扩展搜索所有可能路径）
+    for search_dir in /etc/systemd/network /run/systemd/network /usr/lib/systemd/network; do
+        for dropin_file in "$search_dir"/*.network.d/dns-purify-override.conf; do
+            [[ -f "$dropin_file" ]] || continue
+            rm -f "$dropin_file"
+            rmdir "$(dirname "$dropin_file")" 2>/dev/null || true
+        done
     done
 
     if [[ -f "$PRE_STATE_DIR/networkd-dropins.map" ]]; then
@@ -5362,6 +5387,14 @@ if [[ -d "$PRE_STATE_DIR" ]]; then
             mkdir -p "$(dirname "$restore_path")"
             cp -a "$PRE_STATE_DIR/$restore_key" "$restore_path" 2>/dev/null || true
         done < "$PRE_STATE_DIR/networkd-dropins.map"
+    fi
+
+    # 重载 networkd/NM 使配置变更生效
+    if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+        networkctl reload 2>/dev/null || systemctl reload systemd-networkd 2>/dev/null || true
+    fi
+    if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        systemctl reload NetworkManager 2>/dev/null || true
     fi
 
     systemctl daemon-reload 2>/dev/null || true
@@ -5385,10 +5418,16 @@ if [[ -d "$PRE_STATE_DIR" ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y resolvconf >/dev/null 2>&1 || true
     fi
 
-    resolved_was_enabled="false"
+    # 先恢复 resolved 服务状态（在 resolv.conf 之前，避免悬空链接）
+    resolved_enable_state="unknown"
     resolved_was_masked="false"
     resolved_was_active="false"
-    [[ -f "$PRE_STATE_DIR/resolved.was-enabled" ]] && resolved_was_enabled=$(cat "$PRE_STATE_DIR/resolved.was-enabled" 2>/dev/null || echo "false")
+    [[ -f "$PRE_STATE_DIR/resolved.enable-state" ]] && resolved_enable_state=$(cat "$PRE_STATE_DIR/resolved.enable-state" 2>/dev/null || echo "unknown")
+    # 兼容旧版快照
+    if [[ "$resolved_enable_state" == "unknown" && -f "$PRE_STATE_DIR/resolved.was-enabled" ]]; then
+        old_enabled=$(cat "$PRE_STATE_DIR/resolved.was-enabled" 2>/dev/null || echo "false")
+        [[ "$old_enabled" == "true" ]] && resolved_enable_state="enabled" || resolved_enable_state="disabled"
+    fi
     [[ -f "$PRE_STATE_DIR/resolved.was-masked" ]] && resolved_was_masked=$(cat "$PRE_STATE_DIR/resolved.was-masked" 2>/dev/null || echo "false")
     [[ -f "$PRE_STATE_DIR/resolved.was-active" ]] && resolved_was_active=$(cat "$PRE_STATE_DIR/resolved.was-active" 2>/dev/null || echo "false")
 
@@ -5397,17 +5436,40 @@ if [[ -d "$PRE_STATE_DIR" ]]; then
         systemctl stop systemd-resolved 2>/dev/null || true
     else
         systemctl unmask systemd-resolved 2>/dev/null || true
-        if [[ "$resolved_was_enabled" == "true" ]]; then
-            systemctl enable systemd-resolved 2>/dev/null || true
-        else
-            systemctl disable systemd-resolved 2>/dev/null || true
-        fi
+        case "$resolved_enable_state" in
+            enabled|enabled-runtime)
+                systemctl enable systemd-resolved 2>/dev/null || true
+                ;;
+            static|indirect|generated)
+                ;;
+            *)
+                systemctl disable systemd-resolved 2>/dev/null || true
+                ;;
+        esac
 
         if [[ "$resolved_was_active" == "true" ]]; then
             systemctl restart systemd-resolved 2>/dev/null || systemctl start systemd-resolved 2>/dev/null || true
+            # 等待 stub 文件可用
+            for wait_i in $(seq 1 5); do
+                [[ -f /run/systemd/resolve/stub-resolv.conf ]] && break
+                sleep 1
+            done
         else
             systemctl stop systemd-resolved 2>/dev/null || true
         fi
+    fi
+
+    # 最后恢复 resolv.conf（此时 resolved 已恢复，stub 文件可用）
+    if [[ -L "$PRE_STATE_DIR/resolv.conf" ]]; then
+        backup_link=$(readlink "$PRE_STATE_DIR/resolv.conf" 2>/dev/null || echo "")
+        if [[ "$backup_link" == *"stub-resolv.conf"* ]] && [[ ! -f /run/systemd/resolve/stub-resolv.conf ]]; then
+            rm -f /etc/resolv.conf 2>/dev/null || true
+            echo "nameserver 127.0.0.53" > /etc/resolv.conf 2>/dev/null || true
+        else
+            restore_path_state "/etc/resolv.conf" "resolv.conf"
+        fi
+    else
+        restore_path_state "/etc/resolv.conf" "resolv.conf"
     fi
 
     echo ""
@@ -5416,6 +5478,8 @@ if [[ -d "$PRE_STATE_DIR" ]]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     exit 0
 fi
+
+# ===== 旧版回滚（无 pre_state 目录时的兼容模式）=====
 
 # 恢复 dhclient.conf
 if [[ -f "$BACKUP_DIR/dhclient.conf.bak" ]]; then
@@ -5438,20 +5502,6 @@ if [[ -f "$BACKUP_DIR/resolved.conf.bak" ]]; then
     echo "✅ 已恢复 resolved.conf"
 fi
 
-# 恢复 resolv.conf
-if [[ -f "$BACKUP_DIR/resolv.conf.bak" ]]; then
-    echo "恢复 resolv.conf..."
-    cp "$BACKUP_DIR/resolv.conf.bak" /etc/resolv.conf
-    echo "✅ 已恢复 resolv.conf"
-fi
-
-# 恢复 if-up.d/resolved 可执行权限
-if [[ -f /etc/network/if-up.d/resolved ]] && [[ ! -x /etc/network/if-up.d/resolved ]]; then
-    echo "恢复 if-up.d/resolved 可执行权限..."
-    chmod +x /etc/network/if-up.d/resolved
-    echo "✅ 已恢复 if-up.d/resolved 可执行权限"
-fi
-
 # 移除DNS持久化服务
 if [[ -f /etc/systemd/system/dns-purify-persist.service ]]; then
     echo "移除 DNS持久化服务..."
@@ -5469,19 +5519,19 @@ fi
 # 移除 D-Bus 修复配置（仅删除本脚本创建的文件，不删整个目录）
 if [[ -f /etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf ]]; then
     rm -f /etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf
-    # 目录为空才删除，避免误删用户自定义的 drop-in
     rmdir /etc/systemd/system/systemd-resolved.service.d 2>/dev/null || true
     echo "✅ 已移除 D-Bus 修复配置"
 fi
 
-# 移除 systemd-networkd DNS阻断 drop-in
-for dropin_dir in /etc/systemd/network/*.network.d; do
-    if [[ -f "$dropin_dir/dns-purify-override.conf" ]]; then
-        rm -f "$dropin_dir/dns-purify-override.conf"
-        # 如果目录为空则删除
-        rmdir "$dropin_dir" 2>/dev/null || true
-        echo "✅ 已移除 systemd-networkd DNS阻断配置"
-    fi
+# 移除 systemd-networkd DNS阻断 drop-in（扩展搜索路径）
+for search_dir in /etc/systemd/network /run/systemd/network /usr/lib/systemd/network; do
+    for dropin_dir in "$search_dir"/*.network.d; do
+        if [[ -f "$dropin_dir/dns-purify-override.conf" ]]; then
+            rm -f "$dropin_dir/dns-purify-override.conf"
+            rmdir "$dropin_dir" 2>/dev/null || true
+            echo "✅ 已移除 systemd-networkd DNS阻断配置"
+        fi
+    done
 done
 
 # 移除 NetworkManager DNS配置
@@ -5490,13 +5540,36 @@ if [[ -f /etc/NetworkManager/conf.d/99-dns-purify.conf ]]; then
     echo "✅ 已移除 NetworkManager DNS配置"
 fi
 
+# 恢复 if-up.d/resolved 可执行权限
+if [[ -f /etc/network/if-up.d/resolved ]] && [[ ! -x /etc/network/if-up.d/resolved ]]; then
+    echo "恢复 if-up.d/resolved 可执行权限..."
+    chmod +x /etc/network/if-up.d/resolved
+    echo "✅ 已恢复 if-up.d/resolved 可执行权限"
+fi
+
 # 重新加载 systemd
 systemctl daemon-reload 2>/dev/null || true
+
+# 重载 networkd/NM
+if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+    networkctl reload 2>/dev/null || systemctl reload systemd-networkd 2>/dev/null || true
+fi
+if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    systemctl reload NetworkManager 2>/dev/null || true
+fi
 
 # 重新加载 systemd-resolved
 echo "重新加载 systemd-resolved..."
 systemctl reload-or-restart systemd-resolved 2>/dev/null || true
 echo "✅ systemd-resolved 已重新加载"
+
+# 恢复 resolv.conf（在 resolved 重启之后，保留软链接特性）
+if [[ -f "$BACKUP_DIR/resolv.conf.bak" ]]; then
+    echo "恢复 resolv.conf..."
+    rm -f /etc/resolv.conf
+    cp -a "$BACKUP_DIR/resolv.conf.bak" /etc/resolv.conf
+    echo "✅ 已恢复 resolv.conf"
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
