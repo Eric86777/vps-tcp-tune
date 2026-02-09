@@ -3135,27 +3135,10 @@ install_xanmod_kernel() {
 
     echo -e "${gl_lv}XanMod 内核安装成功！${gl_bai}"
     echo -e "${gl_huang}提示: 请先重启系统加载新内核，然后再配置 BBR${gl_bai}"
-    echo -e "${gl_kjlan}后续更新: 可执行 ${gl_bai}sudo apt update && sudo apt upgrade${gl_kjlan} 以获取最新内核${gl_bai}"
+    echo -e "${gl_kjlan}后续更新: 再次运行选项1即可检查并安装最新内核${gl_bai}"
 
-    read -e -p "是否保留 XanMod 软件源以便后续自动获取更新？(Y/n): " keep_repo
-    case "${keep_repo:-Y}" in
-        [Nn])
-            echo -e "${gl_huang}移除软件源后将无法通过 apt upgrade 自动获取内核更新，如需更新需重新添加仓库。${gl_bai}"
-            read -e -p "确认仍要移除 XanMod 软件源吗？(Y/N): " remove_repo
-            case "$remove_repo" in
-                [Yy])
-                    rm -f "$xanmod_repo_file"
-                    echo -e "${gl_huang}已按要求移除 XanMod 软件源。${gl_bai}"
-                    ;;
-                *)
-                    echo -e "${gl_lv}已保留 XanMod 软件源。${gl_bai}"
-                    ;;
-            esac
-            ;;
-        *)
-            echo -e "${gl_lv}已保留 XanMod 软件源，系统可通过 apt upgrade 获取未来的内核更新。${gl_bai}"
-            ;;
-    esac
+    rm -f "$xanmod_repo_file"
+    echo -e "${gl_lv}已自动清理 XanMod 软件源（如需更新可再次运行选项1）${gl_bai}"
 
     return 0
 }
@@ -6318,27 +6301,10 @@ update_xanmod_kernel() {
                 echo ""
                 echo -e "${gl_lv}✅ XanMod 内核更新成功！${gl_bai}"
                 echo -e "${gl_huang}⚠️  请重启系统以加载新内核${gl_bai}"
-                echo -e "${gl_kjlan}后续更新: 可执行 ${gl_bai}sudo apt update && sudo apt upgrade${gl_kjlan} 以检查新版本${gl_bai}"
+                echo -e "${gl_kjlan}后续更新: 再次运行选项1即可检查并安装最新内核${gl_bai}"
 
-                read -e -p "是否保留 XanMod 软件源以便继续接收更新？(Y/n): " keep_repo
-                case "${keep_repo:-Y}" in
-                    [Nn])
-                        echo -e "${gl_huang}移除软件源后将无法通过 apt upgrade 自动获取内核更新，后续需手动重新添加。${gl_bai}"
-                        read -e -p "确认移除 XanMod 软件源吗？(Y/N): " remove_repo
-                        case "$remove_repo" in
-                            [Yy])
-                                rm -f "$xanmod_repo_file"
-                                echo -e "${gl_huang}已按要求移除 XanMod 软件源。${gl_bai}"
-                                ;;
-                            *)
-                                echo -e "${gl_lv}已保留 XanMod 软件源。${gl_bai}"
-                                ;;
-                        esac
-                        ;;
-                    *)
-                        echo -e "${gl_lv}已保留 XanMod 软件源，可继续通过 apt upgrade 获取最新内核。${gl_bai}"
-                        ;;
-                esac
+                rm -f "$xanmod_repo_file"
+                echo -e "${gl_lv}已自动清理 XanMod 软件源（如需更新可再次运行选项1）${gl_bai}"
                 return 0
             else
                 echo ""
