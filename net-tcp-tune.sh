@@ -1,10 +1,21 @@
 #!/bin/bash
 #=============================================================================
-# BBR v3 终极优化脚本 - 融合版
+# BBR v3 终极优化脚本 - Ultimate Edition
 # 功能：结合 XanMod 官方内核的稳定性 + 专业队列算法调优
 # 特点：安全性 + 性能 双优化
-# 版本：2.2 Ultimate Edition
-# 更新：安全下载校验 + MSS 规则安全处理 + Realm 依赖预检
+#=============================================================================
+# 版本管理规则：
+# 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
+# 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
+#=============================================================================
+# v4.8.1 更新: 精简功能6(Realm)删除与功能3/4/5重复冲突的代码，功能1添加CPU架构信息展示 (by Eric86777)
+# v4.8.0 更新: 功能1安装/更新内核后自动清理软件源，减少交互确认 (by Eric86777)
+# v4.7.0 更新: 移除6个低质量功能，菜单精简38→32项 (by Eric86777)
+# v4.6.0 更新: 修复功能3/4共18个bug+重构功能4消除跨功能冲突 (by Eric86777)
+# v4.5.0 更新: 修复XanMod内核安装/更新/卸载19个bug (by Eric86777)
+
+SCRIPT_VERSION="4.8.1"
+SCRIPT_LAST_UPDATE="精简功能6删除冗余代码+功能1添加CPU架构等级信息"
 #=============================================================================
 
 #=============================================================================
@@ -52,6 +63,50 @@ readonly COLOR_CYAN="$gl_kjlan"
 readonly COLOR_PURPLE="$gl_zi"
 readonly COLOR_GRAY="$gl_hui"
 
+# 显示宽度计算（中文占2列，ASCII占1列）
+get_display_width() {
+    local str="$1"
+    local byte_len=$(printf '%s' "$str" | LC_ALL=C wc -c | tr -d ' ')
+    local char_len=${#str}
+    local extra=$((byte_len - char_len))
+    local wide=$((extra / 2))
+    echo $((char_len + wide))
+}
+
+# 格式化字符串到固定显示宽度（截断+填充，确保宽度精确）
+format_fixed_width() {
+    local str="$1"
+    local target_width=$2
+    local current_width=$(get_display_width "$str")
+
+    # 如果太长，截断
+    if [ "$current_width" -gt "$target_width" ]; then
+        local result=""
+        local i=0
+        local len=${#str}
+        while [ $i -lt $len ]; do
+            local char="${str:$i:1}"
+            local test_str="${result}${char}"
+            local test_width=$(get_display_width "$test_str")
+            if [ "$test_width" -gt $((target_width - 2)) ]; then
+                str="${result}.."
+                break
+            fi
+            result="$test_str"
+            i=$((i + 1))
+        done
+        current_width=$(get_display_width "$str")
+    fi
+
+    # 填充到目标宽度
+    local padding=$((target_width - current_width))
+    if [ $padding -gt 0 ]; then
+        printf "%s%*s" "$str" "$padding" ""
+    else
+        printf "%s" "$str"
+    fi
+}
+
 # GitHub 代理设置
 gh_proxy="https://"
 
@@ -62,8 +117,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
 # 常量定义（版本号、URL 等集中管理）
 #=============================================================================
 
-# 版本号
-readonly SCRIPT_VERSION="4.8.0"
+# 版本号（SCRIPT_VERSION / SCRIPT_LAST_UPDATE 在文件头部定义）
 readonly CADDY_DEFAULT_VERSION="2.10.2"
 readonly SNELL_DEFAULT_VERSION="5.0.1"
 
@@ -5856,9 +5910,15 @@ show_main_menu() {
     local is_installed=$?
 
     echo ""
-    echo -e "${gl_zi}╔════════════════════════════════════════════╗${gl_bai}"
-    echo -e "${gl_zi}║   BBR v3 终极优化脚本 - Ultimate Edition  ║${gl_bai}"
-    echo -e "${gl_zi}╚════════════════════════════════════════════╝${gl_bai}"
+    local box_width=50
+    local inner=$((box_width - 2))
+    echo -e "${gl_zi}╔$(printf '═%.0s' $(seq 1 $inner))╗${gl_bai}"
+    echo -e "${gl_zi}║ $(format_fixed_width "BBR v3 终极优化脚本 - Ultimate Edition" $((inner - 2))) ║${gl_bai}"
+    echo -e "${gl_zi}║ $(format_fixed_width "version ${SCRIPT_VERSION}" $((inner - 2))) ║${gl_bai}"
+    if [ -n "$SCRIPT_LAST_UPDATE" ]; then
+        echo -e "${gl_zi}║ ${gl_huang}$(format_fixed_width "更新: ${SCRIPT_LAST_UPDATE}" $((inner - 2)))${gl_zi} ║${gl_bai}"
+    fi
+    echo -e "${gl_zi}╚$(printf '═%.0s' $(seq 1 $inner))╝${gl_bai}"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━ 核心功能 ━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_kjlan}[内核管理]${gl_bai}"
