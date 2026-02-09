@@ -330,22 +330,31 @@ check_disk_space() {
         read -e -p "是否继续？(Y/N): " continue_choice
         case "$continue_choice" in
             [Yy]) return 0 ;;
-            *) exit 1 ;;
+            *) return 1 ;;
         esac
     fi
 }
 
 check_swap() {
     local swap_total=$(free -m | awk 'NR==3{print $2}')
-    
+
     if [ "$swap_total" -eq 0 ]; then
         echo -e "${gl_huang}检测到无虚拟内存，正在创建 1G SWAP...${gl_bai}"
-        fallocate -l $((1025 * 1024 * 1024)) /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1025
-        chmod 600 /swapfile
-        mkswap /swapfile > /dev/null 2>&1
-        swapon /swapfile
-        echo '/swapfile none swap sw 0 0' >> /etc/fstab
-        echo -e "${gl_lv}虚拟内存创建成功${gl_bai}"
+        if fallocate -l $((1025 * 1024 * 1024)) /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1025 2>/dev/null; then
+            chmod 600 /swapfile
+            mkswap /swapfile > /dev/null 2>&1
+            if swapon /swapfile 2>/dev/null; then
+                # 防止重复写入 fstab
+                if ! grep -q '/swapfile' /etc/fstab 2>/dev/null; then
+                    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+                fi
+                echo -e "${gl_lv}虚拟内存创建成功${gl_bai}"
+            else
+                echo -e "${gl_huang}⚠️  SWAP 激活失败，但不影响安装${gl_bai}"
+            fi
+        else
+            echo -e "${gl_huang}⚠️  SWAP 文件创建失败，但不影响安装${gl_bai}"
+        fi
     fi
 }
 
@@ -4292,7 +4301,9 @@ check_bbr_status() {
     fi
     
     if [ $status -ne 0 ] && [ $dpkg_available -eq 0 ]; then
-        if [ $xanmod_running -eq 1 ] || [ $bbr_active -eq 1 ]; then
+        # 非 Debian 系统：仅当内核名确实含 xanmod 时才认为已安装
+        # BBR v3 活跃不等于 XanMod（用户可能自编译内核），避免误触发 update 流程
+        if [ $xanmod_running -eq 1 ]; then
             status=0
         fi
     fi
@@ -4408,6 +4419,13 @@ install_xanmod_kernel() {
         fi
     fi
     
+    # 显式检查 x86_64 架构
+    if [ "$cpu_arch" != "x86_64" ]; then
+        echo -e "${gl_hong}错误: 不支持的 CPU 架构: ${cpu_arch}${gl_bai}"
+        echo "本脚本仅支持 x86_64 和 aarch64 架构"
+        return 1
+    fi
+
     # x86_64 架构安装流程
     # 检查系统支持
     if [ -r /etc/os-release ]; then
@@ -4420,55 +4438,93 @@ install_xanmod_kernel() {
         echo -e "${gl_hong}错误: 无法确定操作系统类型${gl_bai}"
         return 1
     fi
-    
+
     # 环境准备
-    check_disk_space 3
+    check_disk_space 3 || return 1
     check_swap
-    install_package wget gnupg
-    
-    # 添加 XanMod GPG 密钥
+    install_package wget gnupg || { echo -e "${gl_hong}错误: 无法安装必要依赖 wget/gnupg${gl_bai}"; return 1; }
+
+    # 添加 XanMod GPG 密钥（分步执行，避免管道 $? 只检查最后一条命令）
     echo "正在添加 XanMod 仓库密钥..."
-    wget -qO - ${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/archive.key | \
-        gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${gl_hong}密钥下载失败，尝试官方源...${gl_bai}"
-        wget -qO - https://dl.xanmod.org/archive.key | \
-            gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
+    local gpg_key_file="/usr/share/keyrings/xanmod-archive-keyring.gpg"
+    local key_tmp=$(mktemp)
+    local gpg_ok=false
+
+    # 尝试1: 从镜像源下载
+    if wget -qO "$key_tmp" "${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/archive.key" 2>/dev/null && \
+       [ -s "$key_tmp" ]; then
+        if gpg --dearmor -o "$gpg_key_file" --yes < "$key_tmp" 2>/dev/null; then
+            gpg_ok=true
+        fi
     fi
-    
+
+    # 尝试2: 从 XanMod 官方源下载
+    if [ "$gpg_ok" = false ]; then
+        echo -e "${gl_huang}镜像源失败，尝试 XanMod 官方源...${gl_bai}"
+        if wget -qO "$key_tmp" "https://dl.xanmod.org/archive.key" 2>/dev/null && \
+           [ -s "$key_tmp" ]; then
+            if gpg --dearmor -o "$gpg_key_file" --yes < "$key_tmp" 2>/dev/null; then
+                gpg_ok=true
+            fi
+        fi
+    fi
+
+    rm -f "$key_tmp"
+
+    if [ "$gpg_ok" = false ]; then
+        echo -e "${gl_hong}错误: GPG 密钥导入失败，无法继续安装${gl_bai}"
+        echo "请检查网络连接后重试"
+        return 1
+    fi
+    echo -e "${gl_lv}✅ GPG 密钥导入成功${gl_bai}"
+
     local xanmod_repo_file="/etc/apt/sources.list.d/xanmod-release.list"
 
-    # 添加 XanMod 仓库
-    echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | \
+    # 添加 XanMod 仓库（使用 HTTPS）
+    echo "deb [signed-by=${gpg_key_file}] https://deb.xanmod.org releases main" | \
         tee "$xanmod_repo_file" > /dev/null
-    
-    # 检测 CPU 架构版本
+
+    # 检测 CPU 架构版本（使用安全临时目录）
     echo "正在检测 CPU 支持的最优内核版本..."
-    local version=$(wget -q ${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/check_x86-64_psabi.sh && \
-                   chmod +x check_x86-64_psabi.sh && \
-                   ./check_x86-64_psabi.sh | grep -oP 'x86-64-v\K\d+|x86-64-v\d+')
-    
-    if [ -z "$version" ]; then
-        echo -e "${gl_huang}自动检测失败，使用默认版本 v3${gl_bai}"
+    local detect_dir=$(mktemp -d)
+    local detect_script="${detect_dir}/check_x86-64_psabi.sh"
+    local version=""
+
+    if wget -qO "$detect_script" "${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/check_x86-64_psabi.sh" 2>/dev/null && \
+       [ -s "$detect_script" ]; then
+        chmod +x "$detect_script"
+        version=$("$detect_script" 2>/dev/null | grep -oP 'x86-64-v\K\d' | head -1)
+    fi
+    rm -rf "$detect_dir"
+
+    # 验证版本号合法性（只允许 1-4）
+    if ! [[ "$version" =~ ^[1-4]$ ]]; then
+        echo -e "${gl_huang}自动检测失败或版本不合法，使用默认版本 v3${gl_bai}"
         version="3"
     fi
-    
+
     echo -e "${gl_lv}将安装: linux-xanmod-x64v${version}${gl_bai}"
-    
+
     # 安装 XanMod 内核
-    apt-get update
-    apt-get install -y linux-xanmod-x64v$version
-    
+    echo "正在更新软件包列表..."
+    if ! apt-get update; then
+        echo -e "${gl_huang}⚠️  apt-get update 部分失败，尝试继续安装...${gl_bai}"
+    fi
+
+    apt-get install -y "linux-xanmod-x64v${version}"
+
     if [ $? -ne 0 ]; then
         echo -e "${gl_hong}内核安装失败！${gl_bai}"
         rm -f "$xanmod_repo_file"
-        rm -f check_x86-64_psabi.sh*
         return 1
     fi
 
-    # 清理临时文件
-    rm -f check_x86-64_psabi.sh*
+    # 验证内核是否真正安装成功
+    if ! dpkg -l 2>/dev/null | grep -qE "^ii\s+linux-xanmod-x64v${version}"; then
+        echo -e "${gl_hong}内核包安装验证失败！${gl_bai}"
+        rm -f "$xanmod_repo_file"
+        return 1
+    fi
 
     echo -e "${gl_lv}XanMod 内核安装成功！${gl_bai}"
     echo -e "${gl_huang}提示: 请先重启系统加载新内核，然后再配置 BBR${gl_bai}"
@@ -7436,7 +7492,8 @@ show_main_menu() {
     case $choice in
         1)
             if [ $is_installed -eq 0 ]; then
-                update_xanmod_kernel && server_reboot
+                update_xanmod_kernel
+                # update 函数内部已有重启交互，无需再次调用 server_reboot
             else
                 install_xanmod_kernel && server_reboot
             fi
@@ -7603,26 +7660,48 @@ update_xanmod_kernel() {
     if [ ! -f "$xanmod_repo_file" ]; then
         echo "正在添加 XanMod 仓库..."
 
-        # 添加密钥
-        wget -qO - ${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/archive.key | \
-            gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes 2>/dev/null
-        
-        if [ $? -ne 0 ]; then
-            wget -qO - https://dl.xanmod.org/archive.key | \
-                gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes 2>/dev/null
+        # 添加密钥（分步执行，避免管道 $? 问题）
+        local gpg_key_file="/usr/share/keyrings/xanmod-archive-keyring.gpg"
+        local key_tmp=$(mktemp)
+        local gpg_ok=false
+
+        if wget -qO "$key_tmp" "${gh_proxy}raw.githubusercontent.com/kejilion/sh/main/archive.key" 2>/dev/null && \
+           [ -s "$key_tmp" ]; then
+            if gpg --dearmor -o "$gpg_key_file" --yes < "$key_tmp" 2>/dev/null; then
+                gpg_ok=true
+            fi
         fi
-        
-        # 添加仓库
-        echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | \
+
+        if [ "$gpg_ok" = false ]; then
+            if wget -qO "$key_tmp" "https://dl.xanmod.org/archive.key" 2>/dev/null && \
+               [ -s "$key_tmp" ]; then
+                if gpg --dearmor -o "$gpg_key_file" --yes < "$key_tmp" 2>/dev/null; then
+                    gpg_ok=true
+                fi
+            fi
+        fi
+
+        rm -f "$key_tmp"
+
+        if [ "$gpg_ok" = false ]; then
+            echo -e "${gl_hong}错误: GPG 密钥导入失败${gl_bai}"
+            break_end
+            return 1
+        fi
+
+        # 添加仓库（HTTPS）
+        echo "deb [signed-by=${gpg_key_file}] https://deb.xanmod.org releases main" | \
             tee "$xanmod_repo_file" > /dev/null
     fi
-    
+
     # 更新软件包列表
     echo "正在更新软件包列表..."
-    apt-get update > /dev/null 2>&1
-    
-    # 检查已安装的 XanMod 内核包
-    local installed_packages=$(dpkg -l | grep 'linux-.*xanmod' | awk '{print $2}')
+    if ! apt-get update > /dev/null 2>&1; then
+        echo -e "${gl_huang}⚠️  apt-get update 部分失败，尝试继续...${gl_bai}"
+    fi
+
+    # 检查已安装的 XanMod 内核包（使用 ^ii 过滤，排除已卸载残留）
+    local installed_packages=$(dpkg -l | grep -E '^ii\s+linux-.*xanmod' | awk '{print $2}')
     
     if [ -z "$installed_packages" ]; then
         echo -e "${gl_hong}错误: 未检测到已安装的 XanMod 内核${gl_bai}"
@@ -7700,12 +7779,53 @@ update_xanmod_kernel() {
 
 uninstall_xanmod() {
     echo -e "${gl_huang}警告: 即将卸载 XanMod 内核${gl_bai}"
+    echo ""
+
+    # 安全检查：确认系统中有回退内核可用
+    local non_xanmod_kernels=$(dpkg -l 2>/dev/null | grep '^ii' | grep 'linux-image-' | grep -v 'xanmod' | grep -v 'dbg' | wc -l)
+    if [ "$non_xanmod_kernels" -eq 0 ]; then
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_hong}❌ 安全检查未通过：未检测到非 XanMod 的回退内核！${gl_bai}"
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo "卸载 XanMod 内核后系统将没有可启动的内核，重启会导致 VPS 无法开机。"
+        echo ""
+        echo -e "${gl_lv}建议：先安装默认内核再卸载 XanMod${gl_bai}"
+        echo "  apt install -y linux-image-amd64   # Debian"
+        echo "  apt install -y linux-image-generic  # Ubuntu"
+        echo ""
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✅ 检测到 ${non_xanmod_kernels} 个回退内核，可以安全卸载${gl_bai}"
+    echo ""
+
     read -e -p "确定继续吗？(Y/N): " confirm
-    
+
     case "$confirm" in
         [Yy])
-            apt purge -y 'linux-*xanmod1*'
-            update-grub
+            # 使用能匹配元包和内核包的模式
+            echo "正在卸载 XanMod 相关包..."
+            if apt purge -y 'linux-*xanmod*' 2>&1; then
+                # 验证卸载结果
+                if dpkg -l 2>/dev/null | grep -qE '^ii\s+linux-.*xanmod'; then
+                    echo -e "${gl_hong}⚠️  部分 XanMod 包未能卸载，请手动检查：${gl_bai}"
+                    dpkg -l | grep -E '^ii\s+linux-.*xanmod' | awk '{print "  - " $2}'
+                else
+                    echo -e "${gl_lv}✅ XanMod 内核包已全部卸载${gl_bai}"
+                fi
+                update-grub 2>/dev/null
+            else
+                echo -e "${gl_hong}❌ 卸载命令执行失败，请手动检查${gl_bai}"
+                break_end
+                return 1
+            fi
+
+            # 清理软件源和 GPG 密钥
+            rm -f /etc/apt/sources.list.d/xanmod-release.list
+            rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
+            echo -e "${gl_lv}✅ XanMod 软件源已清理${gl_bai}"
+
             rm -f "$SYSCTL_CONF"
             echo -e "${gl_lv}XanMod 内核已卸载${gl_bai}"
             server_reboot
@@ -7753,18 +7873,25 @@ uninstall_all() {
     # 1. 卸载 XanMod 内核
     echo -e "${gl_huang}[1/6] 检查并卸载 XanMod 内核...${gl_bai}"
     if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
-        echo "  正在卸载 XanMod 内核..."
-        if apt purge -y 'linux-*xanmod1*' > /dev/null 2>&1; then
-            update-grub > /dev/null 2>&1
+        # 安全检查：确认有回退内核
+        local non_xanmod_kernels=$(dpkg -l 2>/dev/null | grep '^ii' | grep 'linux-image-' | grep -v 'xanmod' | grep -v 'dbg' | wc -l)
+        if [ "$non_xanmod_kernels" -eq 0 ]; then
+            echo -e "  ${gl_hong}❌ 未检测到回退内核，跳过卸载以防系统无法启动${gl_bai}"
+            echo -e "  ${gl_huang}请先安装默认内核: apt install -y linux-image-amd64${gl_bai}"
         else
-            echo -e "  ${gl_hong}❌ XanMod 内核卸载命令执行失败，请手动检查${gl_bai}"
-        fi
-        if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
-            echo -e "  ${gl_hong}❌ 仍检测到 XanMod 内核，请手动检查${gl_bai}"
-        else
-            echo -e "  ${gl_lv}✅ XanMod 内核已卸载${gl_bai}"
-            uninstall_count=$((uninstall_count + 1))
-            xanmod_removed=1
+            echo "  正在卸载 XanMod 内核..."
+            if apt purge -y 'linux-*xanmod*' > /dev/null 2>&1; then
+                update-grub > /dev/null 2>&1
+            else
+                echo -e "  ${gl_hong}❌ XanMod 内核卸载命令执行失败，请手动检查${gl_bai}"
+            fi
+            if dpkg -l | grep -qE '^ii\s+linux-.*xanmod'; then
+                echo -e "  ${gl_hong}❌ 仍检测到 XanMod 内核，请手动检查${gl_bai}"
+            else
+                echo -e "  ${gl_lv}✅ XanMod 内核已卸载${gl_bai}"
+                uninstall_count=$((uninstall_count + 1))
+                xanmod_removed=1
+            fi
         fi
     else
         echo -e "  ${gl_huang}未检测到 XanMod 内核，跳过${gl_bai}"
@@ -7793,9 +7920,11 @@ uninstall_all() {
             
             # 方法1：删除包含 "net-tcp-tune 快捷别名" 的整个块
             if grep -q "net-tcp-tune 快捷别名" "$rc_file" 2>/dev/null; then
-                # 删除从分隔线到别名结束的整个块
-                sed '/^# ================/,/^alias bbr=/d' "$rc_file" 2>/dev/null | \
-                sed '/net-tcp-tune 快捷别名/,/^alias bbr=/d' > "$temp_file" 2>/dev/null
+                # 使用精确的标记删除，避免 sed 范围匹配到用户其他内容
+                sed '/net-tcp-tune 快捷别名/,/^alias bbr=/d' "$rc_file" 2>/dev/null > "$temp_file"
+                # 清理可能残留的分隔线（只删紧邻别名块的分隔线）
+                sed -i '/^# ================.*net-tcp-tune/d' "$temp_file" 2>/dev/null
+                sed -i '/^# ================$/{ N; /net-tcp-tune\|alias bbr/d; }' "$temp_file" 2>/dev/null
             else
                 # 直接复制文件
                 cp "$rc_file" "$temp_file"
@@ -7818,8 +7947,9 @@ uninstall_all() {
             if ! diff -q "$rc_file" "$temp_file" > /dev/null 2>&1; then
                 # 备份原文件
                 cp "$rc_file" "${rc_file}.bak.uninstall.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
-                # 替换文件
-                mv "$temp_file" "$rc_file"
+                # 替换文件（保留原文件权限）
+                cp "$temp_file" "$rc_file"
+                rm -f "$temp_file"
                 alias_removed=1
                 echo -e "  ${gl_lv}✅ 已从 $(basename $rc_file) 中删除别名${gl_bai}"
             else
