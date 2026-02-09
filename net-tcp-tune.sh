@@ -5189,10 +5189,33 @@ optimize_xinchendahai_original() {
 dns_purify_fix_systemd_resolved() {
     echo -e "${gl_kjlan}正在检测 systemd-resolved 服务状态...${gl_bai}"
 
-    # 检查服务是否被 masked
+    # 检查服务是否已启用且正在运行
     if systemctl is-enabled systemd-resolved &> /dev/null; then
-        echo -e "${gl_lv}✅ systemd-resolved 服务状态正常${gl_bai}"
-        return 0
+        if systemctl is-active --quiet systemd-resolved; then
+            echo -e "${gl_lv}✅ systemd-resolved 服务已启用且运行中${gl_bai}"
+            return 0
+        else
+            # 已启用但未运行（可能 crash 或被手动停止）
+            echo -e "${gl_huang}systemd-resolved 已启用但未运行，正在启动...${gl_bai}"
+            systemctl start systemd-resolved 2>/dev/null || true
+            sleep 2
+            if systemctl is-active --quiet systemd-resolved; then
+                echo -e "${gl_lv}✅ systemd-resolved 服务已成功启动${gl_bai}"
+                return 0
+            else
+                echo -e "${gl_hong}启动失败，尝试重新启用...${gl_bai}"
+                systemctl restart systemd-resolved 2>/dev/null || true
+                sleep 2
+                if systemctl is-active --quiet systemd-resolved; then
+                    echo -e "${gl_lv}✅ systemd-resolved 服务已重启成功${gl_bai}"
+                    return 0
+                else
+                    echo -e "${gl_hong}服务无法启动${gl_bai}"
+                    systemctl status systemd-resolved --no-pager || true
+                    return 1
+                fi
+            fi
+        fi
     fi
 
     # 检查是否被 masked
@@ -5242,7 +5265,17 @@ dns_purify_fix_systemd_resolved() {
         echo -e "${gl_huang}systemd-resolved 未启用，正在启用...${gl_bai}"
         systemctl enable systemd-resolved 2>/dev/null || true
         systemctl start systemd-resolved 2>/dev/null || true
-        return 0
+
+        # 等待服务启动并验证
+        sleep 2
+        if systemctl is-active --quiet systemd-resolved; then
+            echo -e "${gl_lv}✅ systemd-resolved 服务已启用并运行${gl_bai}"
+            return 0
+        else
+            echo -e "${gl_hong}systemd-resolved 启动失败${gl_bai}"
+            systemctl status systemd-resolved --no-pager || true
+            return 1
+        fi
     fi
 }
 
@@ -5452,10 +5485,14 @@ dns_purify_and_harden() {
     echo -e "${gl_lv}已选择：${MODE_NAME}${gl_bai}"
     echo ""
     
-    # 构建配置
+    # 构建配置（动态拼接，避免 FallbackDNS 为空时产生空行）
     local SECURE_RESOLVED_CONFIG="[Resolve]
-DNS=${TARGET_DNS}
-${FALLBACK_DNS:+FallbackDNS=${FALLBACK_DNS}}
+DNS=${TARGET_DNS}"
+    if [[ -n "$FALLBACK_DNS" ]]; then
+        SECURE_RESOLVED_CONFIG="${SECURE_RESOLVED_CONFIG}
+FallbackDNS=${FALLBACK_DNS}"
+    fi
+    SECURE_RESOLVED_CONFIG="${SECURE_RESOLVED_CONFIG}
 LLMNR=no
 MulticastDNS=no
 DNSSEC=${DNSSEC_MODE}
@@ -5471,7 +5508,7 @@ DNSStubListener=yes
     debian_version=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' || echo "unknown")
 
     # ==================== 阶段一：清除DNS冲突源 ====================
-    echo -e "${gl_kjlan}[阶段 1/4] 清除DNS冲突源（安全操作）...${gl_bai}"
+    echo -e "${gl_kjlan}[阶段 1/5] 清除DNS冲突源（安全操作）...${gl_bai}"
     echo ""
 
     # 1. 驯服 DHCP 客户端
@@ -5480,12 +5517,23 @@ DNSStubListener=yes
         # 备份
         cp "$dhclient_conf" "$BACKUP_DIR/dhclient.conf.bak" 2>/dev/null || true
         
-        if ! grep -q "ignore domain-name-servers;" "$dhclient_conf" || ! grep -q "ignore domain-search;" "$dhclient_conf"; then
-            echo "  → 配置 dhclient 忽略DHCP提供的DNS..."
+        local dhclient_changed=false
+        if ! grep -q "ignore domain-name-servers;" "$dhclient_conf"; then
             echo "" >> "$dhclient_conf"
             echo "# 由DNS净化脚本添加 - $(date)" >> "$dhclient_conf"
             echo "ignore domain-name-servers;" >> "$dhclient_conf"
+            dhclient_changed=true
+        fi
+        if ! grep -q "ignore domain-search;" "$dhclient_conf"; then
+            if [ "$dhclient_changed" = false ]; then
+                echo "" >> "$dhclient_conf"
+                echo "# 由DNS净化脚本添加 - $(date)" >> "$dhclient_conf"
+            fi
             echo "ignore domain-search;" >> "$dhclient_conf"
+            dhclient_changed=true
+        fi
+        if [ "$dhclient_changed" = true ]; then
+            echo "  → 配置 dhclient 忽略DHCP提供的DNS..."
             echo -e "${gl_lv}  ✅ dhclient 配置完成${gl_bai}"
         else
             echo -e "${gl_lv}  ✅ dhclient 已配置（跳过）${gl_bai}"
@@ -5518,7 +5566,7 @@ DNSStubListener=yes
     echo ""
 
     # ==================== 阶段二：配置 systemd-resolved ====================
-    echo -e "${gl_kjlan}[阶段 2/4] 配置 systemd-resolved...${gl_bai}"
+    echo -e "${gl_kjlan}[阶段 2/5] 配置 systemd-resolved...${gl_bai}"
     echo ""
 
     # 检查是否已安装
@@ -5600,7 +5648,7 @@ DNSStubListener=yes
     echo ""
 
     # ==================== 阶段三：应用DNS配置（SSH安全方式）====================
-    echo -e "${gl_kjlan}[阶段 3/4] 应用DNS配置（SSH安全模式）...${gl_bai}"
+    echo -e "${gl_kjlan}[阶段 3/5] 应用DNS配置（SSH安全模式）...${gl_bai}"
     echo ""
 
     # 先重新加载 systemd-resolved 配置
@@ -5710,13 +5758,8 @@ DNSStubListener=yes
     
     # 检测是否需要修复D-Bus接口
     local need_dbus_fix=false
-    # 注意：debian_version 已在5180行定义，这里不再重复定义
-    
-    # 获取Debian版本
-    if [ -f /etc/os-release ]; then
-        debian_version=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' 2>/dev/null || echo "")
-    fi
-    
+    # debian_version 已在阶段二前定义，此处直接使用
+
     echo "  → 检测系统版本：Debian ${debian_version:-未知}"
     
     # 检查resolvectl是否能正常通信
@@ -5823,7 +5866,7 @@ DBUS_FIX
     echo ""
 
     # ==================== 阶段四：配置网卡DNS ====================
-    echo -e "${gl_kjlan}[阶段 4/4] 配置网卡DNS（立即生效）...${gl_bai}"
+    echo -e "${gl_kjlan}[阶段 4/5] 配置网卡DNS（立即生效）...${gl_bai}"
     echo ""
     
     # 🔥 强力保障：阶段4执行前二次验证resolvectl（确保100%成功）
@@ -5963,6 +6006,137 @@ STAGE4_TEMP
         fi
         echo -e "${gl_lv}  ✅ DNS配置已通过 /etc/systemd/resolved.conf 生效${gl_bai}"
     fi
+
+    # ==================== 阶段五：配置重启持久化 ====================
+    echo ""
+    echo -e "${gl_kjlan}[阶段 5/5] 配置重启持久化（确保重启后DNS不失效）...${gl_bai}"
+    echo ""
+
+    # --- 5a: 创建开机自动恢复脚本 ---
+    echo "  → 创建DNS持久化恢复脚本..."
+    cat > /usr/local/bin/dns-purify-apply.sh << 'PERSIST_SCRIPT_HEAD'
+#!/bin/bash
+# DNS净化持久化脚本 - 开机自动恢复网卡级DNS配置
+# 由 net-tcp-tune.sh DNS净化功能自动生成
+# 安全说明：仅重新应用 resolvectl 运行时配置，不修改网络服务
+
+PERSIST_SCRIPT_HEAD
+
+    # 写入用户选择的DNS（动态替换变量）
+    cat >> /usr/local/bin/dns-purify-apply.sh << PERSIST_SCRIPT_VARS
+DNS_PRIMARY="${INTERFACE_DNS_PRIMARY}"
+DNS_SECONDARY="${INTERFACE_DNS_SECONDARY}"
+PERSIST_SCRIPT_VARS
+
+    cat >> /usr/local/bin/dns-purify-apply.sh << 'PERSIST_SCRIPT_BODY'
+
+# 检测默认网卡（动态获取，适应网卡名变更）
+IFACE=$(ip route | grep '^default' | awk '{print $5}' | head -n1)
+
+if [ -z "$IFACE" ]; then
+    echo "dns-purify: 未检测到默认网卡，跳过" | systemd-cat -t dns-purify 2>/dev/null || true
+    exit 0
+fi
+
+# 等待 systemd-resolved 完全就绪（最多等30秒）
+for i in $(seq 1 15); do
+    if resolvectl status >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
+# 再等待网络完全就绪（防止 DHCP 还在跑）
+sleep 5
+
+# 应用网卡级DNS配置
+resolvectl dns "$IFACE" "$DNS_PRIMARY" "$DNS_SECONDARY" 2>/dev/null
+resolvectl domain "$IFACE" "~." 2>/dev/null
+resolvectl default-route "$IFACE" yes 2>/dev/null
+
+# 验证DNS可用性
+sleep 2
+if getent hosts google.com >/dev/null 2>&1 || getent hosts baidu.com >/dev/null 2>&1; then
+    echo "dns-purify: DNS配置恢复成功 (接口: $IFACE, DNS: $DNS_PRIMARY $DNS_SECONDARY)" | systemd-cat -t dns-purify 2>/dev/null || true
+else
+    echo "dns-purify: DNS验证未通过，但配置已应用 (接口: $IFACE)" | systemd-cat -t dns-purify 2>/dev/null || true
+fi
+PERSIST_SCRIPT_BODY
+
+    chmod +x /usr/local/bin/dns-purify-apply.sh
+    echo -e "${gl_lv}  ✅ 持久化脚本已创建: /usr/local/bin/dns-purify-apply.sh${gl_bai}"
+
+    # --- 5b: 创建 systemd 开机服务 ---
+    echo "  → 创建开机自启服务..."
+    cat > /etc/systemd/system/dns-purify-persist.service << 'PERSIST_SERVICE'
+[Unit]
+Description=DNS Purify - Restore DNS Configuration on Boot
+Documentation=https://github.com/Eric86777/vps-tcp-tune
+After=systemd-resolved.service network-online.target
+Wants=network-online.target
+Requires=systemd-resolved.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/dns-purify-apply.sh
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
+PERSIST_SERVICE
+
+    systemctl daemon-reload
+    systemctl enable dns-purify-persist.service >/dev/null 2>&1
+    echo -e "${gl_lv}  ✅ 开机自启服务已创建并启用: dns-purify-persist.service${gl_bai}"
+
+    # --- 5c: 阻止 systemd-networkd DHCP 覆盖DNS（最常见的重启失效原因）---
+    if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+        echo "  → 检测到 systemd-networkd，配置 DHCP DNS 阻断..."
+
+        # 查找当前网卡对应的 .network 配置文件
+        local networkd_file=""
+        if command -v networkctl &>/dev/null; then
+            networkd_file=$(networkctl status "$main_interface" 2>/dev/null | grep -oP 'Network File: \K.*' || echo "")
+        fi
+
+        if [[ -n "$networkd_file" ]] && [[ -f "$networkd_file" ]]; then
+            # 安全方式：创建 drop-in 覆盖，不修改原文件
+            local dropin_dir="${networkd_file}.d"
+            mkdir -p "$dropin_dir"
+            cat > "$dropin_dir/dns-purify-override.conf" << 'NETWORKD_DROPIN'
+# DNS净化脚本 - 阻止DHCP覆盖DNS配置
+# 仅禁用DHCP下发的DNS，不影响IP地址等其他DHCP功能
+[DHCP]
+UseDNS=false
+UseDomains=false
+NETWORKD_DROPIN
+            echo -e "${gl_lv}  ✅ systemd-networkd DHCP DNS 阻断已配置（drop-in: ${dropin_dir}/）${gl_bai}"
+            echo -e "${gl_lv}     仅阻止DNS覆盖，不影响IP/网关等DHCP功能${gl_bai}"
+        else
+            # 没找到现有配置文件，创建通用的 drop-in 目录
+            echo -e "${gl_huang}  ⚠️  未找到 ${main_interface} 的 .network 文件${gl_bai}"
+            echo -e "${gl_lv}  ✅ 已通过开机服务保障重启后DNS恢复${gl_bai}"
+        fi
+    else
+        echo -e "${gl_lv}  ✅ 未使用 systemd-networkd（无需额外配置）${gl_bai}"
+    fi
+
+    # --- 5d: 处理 NetworkManager（如果存在）---
+    if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        echo "  → 检测到 NetworkManager，配置DNS保护..."
+        mkdir -p /etc/NetworkManager/conf.d
+        cat > /etc/NetworkManager/conf.d/99-dns-purify.conf << 'NM_CONF'
+# DNS净化脚本 - 让 NetworkManager 使用 systemd-resolved
+# 不直接管理 /etc/resolv.conf，交给 systemd-resolved
+[main]
+dns=systemd-resolved
+NM_CONF
+        echo -e "${gl_lv}  ✅ NetworkManager 已配置为使用 systemd-resolved${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_lv}  ✅ 重启持久化配置完成，重启后DNS不会失效${gl_bai}"
 
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -6129,6 +6303,52 @@ if [[ -f "$BACKUP_DIR/resolv.conf.bak" ]]; then
     cp "$BACKUP_DIR/resolv.conf.bak" /etc/resolv.conf
     echo "✅ 已恢复 resolv.conf"
 fi
+
+# 恢复 if-up.d/resolved 可执行权限
+if [[ -f /etc/network/if-up.d/resolved ]] && [[ ! -x /etc/network/if-up.d/resolved ]]; then
+    echo "恢复 if-up.d/resolved 可执行权限..."
+    chmod +x /etc/network/if-up.d/resolved
+    echo "✅ 已恢复 if-up.d/resolved 可执行权限"
+fi
+
+# 移除DNS持久化服务
+if [[ -f /etc/systemd/system/dns-purify-persist.service ]]; then
+    echo "移除 DNS持久化服务..."
+    systemctl disable dns-purify-persist.service 2>/dev/null || true
+    rm -f /etc/systemd/system/dns-purify-persist.service
+    echo "✅ 已移除 dns-purify-persist.service"
+fi
+
+# 移除DNS持久化脚本
+if [[ -f /usr/local/bin/dns-purify-apply.sh ]]; then
+    rm -f /usr/local/bin/dns-purify-apply.sh
+    echo "✅ 已移除 dns-purify-apply.sh"
+fi
+
+# 移除 D-Bus 修复配置
+if [[ -d /etc/systemd/system/systemd-resolved.service.d ]]; then
+    rm -rf /etc/systemd/system/systemd-resolved.service.d
+    echo "✅ 已移除 D-Bus 修复配置"
+fi
+
+# 移除 systemd-networkd DNS阻断 drop-in
+for dropin_dir in /etc/systemd/network/*.network.d; do
+    if [[ -f "$dropin_dir/dns-purify-override.conf" ]]; then
+        rm -f "$dropin_dir/dns-purify-override.conf"
+        # 如果目录为空则删除
+        rmdir "$dropin_dir" 2>/dev/null || true
+        echo "✅ 已移除 systemd-networkd DNS阻断配置"
+    fi
+done
+
+# 移除 NetworkManager DNS配置
+if [[ -f /etc/NetworkManager/conf.d/99-dns-purify.conf ]]; then
+    rm -f /etc/NetworkManager/conf.d/99-dns-purify.conf
+    echo "✅ 已移除 NetworkManager DNS配置"
+fi
+
+# 重新加载 systemd
+systemctl daemon-reload 2>/dev/null || true
 
 # 重新加载 systemd-resolved
 echo "重新加载 systemd-resolved..."
