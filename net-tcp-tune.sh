@@ -7392,7 +7392,7 @@ run_xinchendahai_xray() {
 set -euo pipefail
 
 # --- 全局常量 ---
-readonly SCRIPT_VERSION="Final v2.9.1"
+readonly XRAY_SCRIPT_VERSION="Final v2.9.1"
 readonly xray_config_path="/usr/local/etc/xray/config.json"
 readonly xray_binary_path="/usr/local/bin/xray"
 readonly xray_install_script_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
@@ -7958,7 +7958,7 @@ draw_divider() {
 draw_menu_header() {
     clear
     echo -e "${cyan} Xray VLESS-Reality & Shadowsocks-2022 管理脚本${none}"
-    echo -e "${yellow} Version: ${SCRIPT_VERSION}${none}"
+    echo -e "${yellow} Version: ${XRAY_SCRIPT_VERSION}${none}"
     draw_divider
     check_xray_status
     echo -e "${xray_status_info}"
