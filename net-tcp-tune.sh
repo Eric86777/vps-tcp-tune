@@ -1777,6 +1777,17 @@ mtu_mss_optimization() {
                         echo -e "${gl_lv}✓ 默认路由 MTU 已恢复${gl_bai}"
                     fi
 
+                    # 恢复链路 MTU（应对 ip link set 回退场景）
+                    if [ -f /usr/local/etc/mtu-optimize.conf ]; then
+                        local saved_iface saved_original_mtu
+                        saved_iface=$(grep '^DEFAULT_IFACE=' /usr/local/etc/mtu-optimize.conf | cut -d= -f2)
+                        saved_original_mtu=$(grep '^ORIGINAL_MTU=' /usr/local/etc/mtu-optimize.conf | cut -d= -f2)
+                        if [ -n "$saved_iface" ] && [ -n "$saved_original_mtu" ]; then
+                            ip link set dev "$saved_iface" mtu "$saved_original_mtu" 2>/dev/null && \
+                                echo -e "${gl_lv}✓ 网卡 ${saved_iface} MTU 已恢复为 ${saved_original_mtu}${gl_bai}"
+                        fi
+                    fi
+
                     # 清理旧版 iptables set-mss 规则（兼容旧版本）
                     if command -v iptables &>/dev/null; then
                         local comment_tag="net-tcp-tune-mss"
@@ -5033,9 +5044,11 @@ if [[ -f /usr/local/bin/dns-purify-apply.sh ]]; then
     echo "✅ 已移除 dns-purify-apply.sh"
 fi
 
-# 移除 D-Bus 修复配置
-if [[ -d /etc/systemd/system/systemd-resolved.service.d ]]; then
-    rm -rf /etc/systemd/system/systemd-resolved.service.d
+# 移除 D-Bus 修复配置（仅删除本脚本创建的文件，不删整个目录）
+if [[ -f /etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf ]]; then
+    rm -f /etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf
+    # 目录为空才删除，避免误删用户自定义的 drop-in
+    rmdir /etc/systemd/system/systemd-resolved.service.d 2>/dev/null || true
     echo "✅ 已移除 D-Bus 修复配置"
 fi
 
