@@ -19379,26 +19379,27 @@ openclaw_config_model() {
     echo "1. CRS 反代 (Claude)         — anthropic-messages 协议"
     echo "2. sub2api 反代 (Gemini)      — google-generative-ai 协议"
     echo "3. sub2api 反代 (GPT)         — openai-responses 协议"
+    echo "4. sub2api Antigravity (Claude) — anthropic-messages 协议"
     echo ""
     echo -e "${gl_huang}── 通用配置 ──${gl_bai}"
-    echo "4. Anthropic 直连反代（自建 Nginx/Caddy 反代）"
-    echo "5. OpenAI 兼容中转（new-api / one-api / LiteLLM 等）"
-    echo "6. OpenRouter"
-    echo "7. Google Gemini 反代（其他 Gemini 代理）"
+    echo "5. Anthropic 直连反代（自建 Nginx/Caddy 反代）"
+    echo "6. OpenAI 兼容中转（new-api / one-api / LiteLLM 等）"
+    echo "7. OpenRouter"
+    echo "8. Google Gemini 反代（其他 Gemini 代理）"
     echo ""
     echo -e "${gl_zi}── 官方直连 ──${gl_bai}"
-    echo "8. Anthropic 官方 API Key"
-    echo "9. Google Gemini 官方 API Key"
-    echo "10. OpenAI 官方 API Key"
+    echo "9. Anthropic 官方 API Key"
+    echo "10. Google Gemini 官方 API Key"
+    echo "11. OpenAI 官方 API Key"
     echo ""
-    read -e -p "请选择 [1-10]: " api_choice
+    read -e -p "请选择 [1-11]: " api_choice
 
     local api_type=""
     local base_url=""
     local provider_name="my-proxy"
     local need_base_url=true
     local need_api_key=true
-    local preset_mode=""  # crs / sub2api-gemini / 空=手动
+    local preset_mode=""  # crs / sub2api-gemini / sub2api-gpt / sub2api-antigravity / 空=手动
 
     case "$api_choice" in
         1)
@@ -19439,17 +19440,30 @@ openclaw_config_model() {
             echo -e "${gl_zi}Key 格式示例: sk-xxxx...（GPT 专用 Key）${gl_bai}"
             ;;
         4)
+            # sub2api Antigravity (Claude) - 已验证
+            preset_mode="sub2api-antigravity"
+            api_type="anthropic-messages"
+            provider_name="sub2api-antigravity"
+            echo ""
+            echo -e "${gl_lv}已选择: sub2api Antigravity (Claude)${gl_bai}"
+            echo -e "${gl_zi}协议: anthropic-messages | 支持 tools，OpenClaw 完全兼容${gl_bai}"
+            echo ""
+            echo -e "${gl_zi}地址格式示例: https://你的sub2api域名/antigravity${gl_bai}"
+            echo -e "${gl_zi}Key 格式示例: sk-xxxx...（Antigravity 专用 Key）${gl_bai}"
+            echo -e "${gl_huang}注意: 高峰期偶尔返回 503，重试即可；账户池较小${gl_bai}"
+            ;;
+        5)
             api_type="anthropic-messages"
             echo ""
             echo -e "${gl_zi}提示: 反代地址一般不需要 /v1 后缀${gl_bai}"
             echo -e "${gl_huang}注意: 使用 Claude Code 凭证的反代（如 sub2api Claude）无法用于 OpenClaw${gl_bai}"
             ;;
-        5)
+        6)
             api_type="openai-completions"
             echo ""
             echo -e "${gl_zi}提示: 中转地址一般需要 /v1 后缀${gl_bai}"
             ;;
-        6)
+        7)
             api_type="openai-completions"
             base_url="https://openrouter.ai/api/v1"
             provider_name="openrouter"
@@ -19457,12 +19471,12 @@ openclaw_config_model() {
             echo ""
             echo -e "${gl_lv}已预填 OpenRouter 地址: ${base_url}${gl_bai}"
             ;;
-        7)
+        8)
             api_type="google-generative-ai"
             echo ""
             echo -e "${gl_zi}提示: Gemini 反代地址会自动添加 /v1beta 后缀${gl_bai}"
             ;;
-        8)
+        9)
             api_type="anthropic-messages"
             base_url="https://api.anthropic.com"
             provider_name="anthropic"
@@ -19470,7 +19484,7 @@ openclaw_config_model() {
             echo ""
             echo -e "${gl_lv}使用 Anthropic 官方 API${gl_bai}"
             ;;
-        9)
+        10)
             api_type="google-generative-ai"
             base_url="https://generativelanguage.googleapis.com/v1beta"
             provider_name="google"
@@ -19478,7 +19492,7 @@ openclaw_config_model() {
             echo ""
             echo -e "${gl_lv}使用 Google Gemini 官方 API${gl_bai}"
             ;;
-        10)
+        11)
             api_type="openai-responses"
             base_url="https://api.openai.com/v1"
             provider_name="openai"
@@ -19503,6 +19517,8 @@ openclaw_config_model() {
             echo -e "${gl_zi}示例: https://你的sub2api域名（/v1beta 会自动添加）${gl_bai}"
         elif [ "$preset_mode" = "sub2api-gpt" ]; then
             echo -e "${gl_zi}示例: https://你的sub2api域名（/v1 会自动添加）${gl_bai}"
+        elif [ "$preset_mode" = "sub2api-antigravity" ]; then
+            echo -e "${gl_zi}示例: https://你的sub2api域名/antigravity（路径需包含 /antigravity）${gl_bai}"
         elif [ "$api_type" = "google-generative-ai" ]; then
             echo -e "${gl_zi}示例: https://your-proxy.com（/v1beta 会自动添加）${gl_bai}"
         else
@@ -19540,6 +19556,8 @@ openclaw_config_model() {
         echo -e "${gl_zi}sub2api Gemini Key 格式: sk-xxxx...${gl_bai}"
     elif [ "$preset_mode" = "sub2api-gpt" ]; then
         echo -e "${gl_zi}sub2api GPT Key 格式: sk-xxxx...${gl_bai}"
+    elif [ "$preset_mode" = "sub2api-antigravity" ]; then
+        echo -e "${gl_zi}sub2api Antigravity Key 格式: sk-xxxx...${gl_bai}"
     fi
     echo ""
     read -e -p "API Key: " api_key
@@ -19565,7 +19583,24 @@ openclaw_config_model() {
     local model_context="200000"
     local model_max_tokens="16384"
 
-    if [ "$api_type" = "anthropic-messages" ]; then
+    if [ "$preset_mode" = "sub2api-antigravity" ]; then
+        echo "1. claude-sonnet-4-5 (推荐)"
+        echo "2. claude-sonnet-4-5-thinking (扩展思考)"
+        echo "3. claude-opus-4-5-thinking (最强思考)"
+        echo "4. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-4]: " model_choice
+        case "$model_choice" in
+            1) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            2) model_id="claude-sonnet-4-5-thinking"; model_name="Claude Sonnet 4.5 Thinking"; model_reasoning="true"; model_input='["text", "image"]' ;;
+            3) model_id="claude-opus-4-5-thinking"; model_name="Claude Opus 4.5 Thinking"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
+            4)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                ;;
+            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+        esac
+    elif [ "$api_type" = "anthropic-messages" ]; then
         echo "1. claude-opus-4-6 (Opus 4.6 最强)"
         echo "2. claude-sonnet-4-5 (Sonnet 4.5 均衡)"
         echo "3. claude-haiku-4-5 (Haiku 4.5 快速)"
@@ -19583,44 +19618,50 @@ openclaw_config_model() {
             *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
         esac
     elif [ "$api_type" = "google-generative-ai" ]; then
-        echo "1. gemini-2.5-pro (最强推理)"
-        echo "2. gemini-2.5-flash (快速均衡)"
-        echo "3. gemini-2.0-flash (轻量)"
-        echo "4. gemini-3-pro-preview (预览版)"
+        echo "1. gemini-3-pro-preview (最新旗舰)"
+        echo "2. gemini-3-flash-preview (最新快速)"
+        echo "3. gemini-2.5-pro (推理增强)"
+        echo "4. gemini-2.5-flash (快速均衡)"
         echo "5. 自定义模型 ID"
         echo ""
         read -e -p "请选择 [1-5]: " model_choice
         case "$model_choice" in
-            1) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
-            2) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
-            3) model_id="gemini-2.0-flash"; model_name="Gemini 2.0 Flash"; model_reasoning="false"; model_input='["text", "image"]'; model_cost_input="0.1"; model_cost_output="0.4"; model_cost_cache_read="0.025"; model_cost_cache_write="0.5"; model_context="1000000"; model_max_tokens="8192" ;;
-            4) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="7.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            1) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="7.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            2) model_id="gemini-3-flash-preview"; model_name="Gemini 3 Flash Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
+            3) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            4) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
             5)
                 read -e -p "输入模型 ID: " model_id
                 read -e -p "输入模型显示名称: " model_name
                 model_reasoning="true"; model_input='["text", "image"]'; model_context="1000000"; model_max_tokens="65536"
                 ;;
-            *) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            *) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="7.5"; model_context="1000000"; model_max_tokens="65536" ;;
         esac
     elif [ "$api_type" = "openai-responses" ]; then
-        echo "1. gpt-5.3-codex (Codex 最强)"
-        echo "2. o3 (推理增强)"
-        echo "3. gpt-4o"
-        echo "4. gpt-4o-mini"
-        echo "5. 自定义模型 ID"
+        echo "1. gpt-5.3 (最新旗舰)"
+        echo "2. gpt-5.3-codex (Codex 最强)"
+        echo "3. gpt-5.2"
+        echo "4. gpt-5.2-codex"
+        echo "5. gpt-5.1"
+        echo "6. gpt-5.1-codex"
+        echo "7. gpt-5.1-codex-max"
+        echo "8. 自定义模型 ID"
         echo ""
-        read -e -p "请选择 [1-5]: " model_choice
+        read -e -p "请选择 [1-8]: " model_choice
         case "$model_choice" in
-            1) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            2) model_id="o3"; model_name="O3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="10"; model_cost_output="40"; model_cost_cache_read="2.5"; model_cost_cache_write="10"; model_max_tokens="100000" ;;
-            3) model_id="gpt-4o"; model_name="GPT-4o"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="10"; model_cost_cache_read="1.25"; model_cost_cache_write="2.5"; model_context="128000"; model_max_tokens="16384" ;;
-            4) model_id="gpt-4o-mini"; model_name="GPT-4o Mini"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.075"; model_cost_cache_write="0.15"; model_context="128000"; model_max_tokens="16384" ;;
-            5)
+            1) model_id="gpt-5.3"; model_name="GPT 5.3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            2) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            3) model_id="gpt-5.2"; model_name="GPT 5.2"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            4) model_id="gpt-5.2-codex"; model_name="GPT 5.2 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            5) model_id="gpt-5.1"; model_name="GPT 5.1"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            6) model_id="gpt-5.1-codex"; model_name="GPT 5.1 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            7) model_id="gpt-5.1-codex-max"; model_name="GPT 5.1 Codex Max"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            8)
                 read -e -p "输入模型 ID: " model_id
                 read -e -p "输入模型显示名称: " model_name
                 model_reasoning="true"; model_input='["text", "image"]'; model_max_tokens="32768"
                 ;;
-            *) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            *) model_id="gpt-5.3"; model_name="GPT 5.3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
         esac
     elif [ "$api_type" = "openai-completions" ]; then
         echo "1. claude-opus-4-6 (通过中转)"
@@ -20008,7 +20049,92 @@ openclaw_restart() {
     break_end
 }
 
-# 频道管理
+# 更新频道配置到 openclaw.json（通过 Node.js 合并 JSON5）
+openclaw_update_channel() {
+    local channel_name="$1"
+    local channel_config_json="$2"
+
+    if [ ! -f "$OPENCLAW_CONFIG_FILE" ]; then
+        echo -e "${gl_hong}❌ 配置文件不存在，请先部署 OpenClaw${gl_bai}"
+        return 1
+    fi
+
+    local tmp_channel=$(mktemp)
+    local tmp_script=$(mktemp)
+    echo "$channel_config_json" > "$tmp_channel"
+
+    cat > "$tmp_script" << 'NODESCRIPT'
+const fs = require('fs');
+const configPath = process.argv[2];
+const channelName = process.argv[3];
+const channelFile = process.argv[4];
+const newChannelConfig = JSON.parse(fs.readFileSync(channelFile, 'utf-8'));
+
+const content = fs.readFileSync(configPath, 'utf-8');
+const stripped = content.replace(/\/\/.*$/gm, '');
+let config;
+try {
+    config = new Function('return (' + stripped + ')')();
+} catch(e) {
+    console.error('无法解析配置文件: ' + e.message);
+    process.exit(1);
+}
+
+if (!config.channels) config.channels = {};
+config.channels[channelName] = newChannelConfig;
+
+const output = '// OpenClaw 配置 - 由部署脚本自动生成\n// 文档: https://docs.openclaw.ai/gateway/configuration\n' + JSON.stringify(config, null, 2) + '\n';
+fs.writeFileSync(configPath, output);
+NODESCRIPT
+
+    node "$tmp_script" "$OPENCLAW_CONFIG_FILE" "$channel_name" "$tmp_channel" 2>&1
+    local result=$?
+    rm -f "$tmp_channel" "$tmp_script"
+    return $result
+}
+
+# 从 openclaw.json 移除频道配置
+openclaw_remove_channel() {
+    local channel_name="$1"
+
+    if [ ! -f "$OPENCLAW_CONFIG_FILE" ]; then
+        echo "配置文件不存在"
+        return 1
+    fi
+
+    local tmp_script=$(mktemp)
+    cat > "$tmp_script" << 'NODESCRIPT'
+const fs = require('fs');
+const configPath = process.argv[2];
+const channelName = process.argv[3];
+
+const content = fs.readFileSync(configPath, 'utf-8');
+const stripped = content.replace(/\/\/.*$/gm, '');
+let config;
+try {
+    config = new Function('return (' + stripped + ')')();
+} catch(e) {
+    console.error('无法解析配置文件');
+    process.exit(1);
+}
+
+if (config.channels && config.channels[channelName]) {
+    delete config.channels[channelName];
+    const output = '// OpenClaw 配置 - 由部署脚本自动生成\n// 文档: https://docs.openclaw.ai/gateway/configuration\n' + JSON.stringify(config, null, 2) + '\n';
+    fs.writeFileSync(configPath, output);
+    console.log('已移除 ' + channelName + ' 频道配置');
+} else {
+    console.log('频道 ' + channelName + ' 未在配置中找到');
+}
+NODESCRIPT
+
+    node "$tmp_script" "$OPENCLAW_CONFIG_FILE" "$channel_name" 2>&1
+    local result=$?
+    rm -f "$tmp_script"
+    return $result
+}
+
+# 频道管理菜单
 openclaw_channels() {
     if ! command -v openclaw &>/dev/null; then
         echo -e "${gl_hong}❌ OpenClaw 未安装，请先执行「一键部署」${gl_bai}"
@@ -20023,9 +20149,29 @@ openclaw_channels() {
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo ""
 
-        # 显示已配置的频道
+        # 显示已配置的频道（从配置文件读取）
         echo -e "${gl_lv}── 已配置的频道 ──${gl_bai}"
-        openclaw channels list 2>/dev/null || echo "  暂无已配置的频道"
+        if [ -f "$OPENCLAW_CONFIG_FILE" ]; then
+            node -e '
+                const fs = require("fs");
+                const content = fs.readFileSync(process.argv[1], "utf-8");
+                const stripped = content.replace(/\/\/.*$/gm, "");
+                try {
+                    const config = new Function("return (" + stripped + ")")();
+                    const ch = config.channels || {};
+                    const names = Object.keys(ch);
+                    if (names.length === 0) { console.log("  暂无已配置的频道"); }
+                    else {
+                        for (const n of names) {
+                            const enabled = ch[n].enabled !== false ? "✅" : "❌";
+                            console.log("  " + enabled + " " + n);
+                        }
+                    }
+                } catch(e) { console.log("  暂无已配置的频道"); }
+            ' "$OPENCLAW_CONFIG_FILE" 2>/dev/null || echo "  暂无已配置的频道"
+        else
+            echo "  暂无已配置的频道"
+        fi
         echo ""
 
         echo -e "${gl_kjlan}[配置频道]${gl_bai}"
@@ -20053,7 +20199,7 @@ openclaw_channels() {
                 echo -e "${gl_zi}📋 获取 Bot Token 步骤:${gl_bai}"
                 echo "  1. 打开 Telegram，搜索 ${gl_huang}@BotFather${gl_bai}"
                 echo "  2. 发送 /newbot 创建新 Bot"
-                echo "  3. 按提示设置 Bot 名称和用户名（用户名必须以 _bot 结尾）"
+                echo "  3. 按提示设置 Bot 名称和用户名（用户名必须以 bot 结尾）"
                 echo "  4. 复制 BotFather 给的 Token"
                 echo ""
                 echo -e "${gl_zi}Token 格式: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz${gl_bai}"
@@ -20067,24 +20213,28 @@ openclaw_channels() {
                 fi
 
                 echo ""
-                echo "正在配置 Telegram 频道..."
-                openclaw channels add --channel telegram --token "$tg_token" 2>&1
+                echo "正在写入 Telegram 配置..."
+                local tg_json="{\"botToken\":\"${tg_token}\",\"enabled\":true,\"dmPolicy\":\"pairing\"}"
+                openclaw_update_channel "telegram" "$tg_json"
 
                 if [ $? -eq 0 ]; then
                     echo ""
                     echo -e "${gl_lv}✅ Telegram Bot 配置成功${gl_bai}"
                     echo ""
-                    echo -e "${gl_zi}下一步: 在 Telegram 中搜索你的 Bot 并发送消息测试${gl_bai}"
+                    echo -e "${gl_zi}下一步:${gl_bai}"
+                    echo "  1. 在 Telegram 中搜索你的 Bot 并发送一条消息"
+                    echo "  2. Bot 会回复一个配对码（pairing code）"
+                    echo "  3. 在服务器运行: ${gl_huang}openclaw pairing approve telegram <配对码>${gl_bai}"
 
-                    # 重启服务使配置生效
                     if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
                         systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
                         sleep 2
-                        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                        echo ""
+                        echo -e "${gl_lv}✅ 服务已重启，配置已生效${gl_bai}"
                     fi
                 else
                     echo ""
-                    echo -e "${gl_hong}❌ 配置失败，请检查 Token 是否正确${gl_bai}"
+                    echo -e "${gl_hong}❌ 配置写入失败${gl_bai}"
                 fi
                 break_end
                 ;;
@@ -20094,9 +20244,10 @@ openclaw_channels() {
                 echo -e "${gl_kjlan}━━━ 配置 WhatsApp ━━━${gl_bai}"
                 echo ""
                 echo -e "${gl_zi}📋 登录步骤:${gl_bai}"
-                echo "  1. 终端会显示 QR 二维码"
-                echo "  2. 打开手机 WhatsApp → 设置 → 已关联设备 → 关联设备"
-                echo "  3. 扫描终端中的 QR 码（60秒内有效，超时重新运行）"
+                echo "  1. 先写入 WhatsApp 频道配置"
+                echo "  2. 终端会显示 QR 二维码"
+                echo "  3. 打开手机 WhatsApp → 设置 → 已关联设备 → 关联设备"
+                echo "  4. 扫描终端中的 QR 码（60秒内有效，超时重新运行）"
                 echo ""
                 echo -e "${gl_huang}⚠ 注意事项:${gl_bai}"
                 echo "  • 需要使用真实手机号，虚拟号码可能被封禁"
@@ -20107,13 +20258,24 @@ openclaw_channels() {
                 case "$confirm" in
                     [Yy])
                         echo ""
-                        openclaw channels login --channel whatsapp
-                        echo ""
+                        echo "正在写入 WhatsApp 配置..."
+                        local wa_json='{"enabled":true,"dmPolicy":"pairing"}'
+                        openclaw_update_channel "whatsapp" "$wa_json"
 
-                        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
-                            systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
-                            sleep 2
-                            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                        if [ $? -eq 0 ]; then
+                            echo -e "${gl_lv}✅ WhatsApp 配置已写入${gl_bai}"
+                            echo ""
+
+                            if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                                systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                                sleep 2
+                            fi
+
+                            echo "正在启动 WhatsApp 登录（显示 QR 码）..."
+                            echo ""
+                            openclaw channels login 2>&1
+                        else
+                            echo -e "${gl_hong}❌ 配置写入失败${gl_bai}"
                         fi
                         ;;
                     *)
@@ -20147,8 +20309,9 @@ openclaw_channels() {
                 fi
 
                 echo ""
-                echo "正在配置 Discord 频道..."
-                openclaw channels add --channel discord --token "$dc_token" 2>&1
+                echo "正在写入 Discord 配置..."
+                local dc_json="{\"token\":\"${dc_token}\",\"enabled\":true}"
+                openclaw_update_channel "discord" "$dc_json"
 
                 if [ $? -eq 0 ]; then
                     echo ""
@@ -20159,11 +20322,11 @@ openclaw_channels() {
                     if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
                         systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
                         sleep 2
-                        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                        echo -e "${gl_lv}✅ 服务已重启，配置已生效${gl_bai}"
                     fi
                 else
                     echo ""
-                    echo -e "${gl_hong}❌ 配置失败，请检查 Token 是否正确${gl_bai}"
+                    echo -e "${gl_hong}❌ 配置写入失败${gl_bai}"
                 fi
                 break_end
                 ;;
@@ -20201,28 +20364,22 @@ openclaw_channels() {
                 fi
 
                 echo ""
-                echo "正在配置 Slack 频道..."
+                echo "正在写入 Slack 配置..."
+                local slack_json="{\"appToken\":\"${slack_app_token}\",\"botToken\":\"${slack_bot_token}\",\"enabled\":true}"
+                openclaw_update_channel "slack" "$slack_json"
 
-                # 写入环境变量文件持久化
-                if [ -f "$OPENCLAW_ENV_FILE" ]; then
-                    sed -i '/^SLACK_APP_TOKEN=/d' "$OPENCLAW_ENV_FILE"
-                    sed -i '/^SLACK_BOT_TOKEN=/d' "$OPENCLAW_ENV_FILE"
-                fi
-                echo "SLACK_APP_TOKEN=${slack_app_token}" >> "$OPENCLAW_ENV_FILE"
-                echo "SLACK_BOT_TOKEN=${slack_bot_token}" >> "$OPENCLAW_ENV_FILE"
+                if [ $? -eq 0 ]; then
+                    echo ""
+                    echo -e "${gl_lv}✅ Slack 配置已保存${gl_bai}"
 
-                # 使用 CLI 添加频道
-                export SLACK_APP_TOKEN="$slack_app_token"
-                export SLACK_BOT_TOKEN="$slack_bot_token"
-                openclaw channels add --channel slack 2>&1
-
-                echo ""
-                echo -e "${gl_lv}✅ Slack 配置已保存${gl_bai}"
-
-                if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
-                    systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
-                    sleep 2
-                    echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                        systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                        sleep 2
+                        echo -e "${gl_lv}✅ 服务已重启，配置已生效${gl_bai}"
+                    fi
+                else
+                    echo ""
+                    echo -e "${gl_hong}❌ 配置写入失败${gl_bai}"
                 fi
                 break_end
                 ;;
@@ -20231,7 +20388,10 @@ openclaw_channels() {
                 clear
                 echo -e "${gl_kjlan}━━━ 频道状态 ━━━${gl_bai}"
                 echo ""
-                openclaw channels status 2>&1 || echo "无法获取频道状态"
+                openclaw channels status --probe 2>&1 || \
+                openclaw channels status 2>&1 || \
+                openclaw gateway status 2>&1 || \
+                echo "无法获取频道状态"
                 echo ""
                 break_end
                 ;;
@@ -20240,7 +20400,9 @@ openclaw_channels() {
                 clear
                 echo -e "${gl_kjlan}━━━ 频道日志（最近 50 行）━━━${gl_bai}"
                 echo ""
-                openclaw channels logs 2>&1 || echo "无法获取频道日志"
+                journalctl -u "$OPENCLAW_SERVICE_NAME" --no-pager -n 50 2>/dev/null || \
+                openclaw logs 2>&1 || \
+                echo "无法获取频道日志"
                 echo ""
                 break_end
                 ;;
@@ -20278,16 +20440,9 @@ openclaw_channels() {
                 case "$confirm" in
                     [Yy])
                         echo ""
-                        openclaw channels remove --channel "$channel_name" 2>&1 || \
-                        openclaw channels logout --channel "$channel_name" 2>&1
+                        openclaw_remove_channel "$channel_name"
                         echo ""
                         echo -e "${gl_lv}✅ 已断开 ${channel_name}${gl_bai}"
-
-                        # Slack 额外清理环境变量
-                        if [ "$channel_name" = "slack" ] && [ -f "$OPENCLAW_ENV_FILE" ]; then
-                            sed -i '/^SLACK_APP_TOKEN=/d' "$OPENCLAW_ENV_FILE"
-                            sed -i '/^SLACK_BOT_TOKEN=/d' "$OPENCLAW_ENV_FILE"
-                        fi
 
                         if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
                             systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
@@ -20438,13 +20593,14 @@ openclaw_quick_api() {
     echo "1. CRS 反代 (Claude)         — anthropic-messages"
     echo "2. sub2api 反代 (Gemini)      — google-generative-ai"
     echo "3. sub2api 反代 (GPT)         — openai-responses"
+    echo "4. sub2api Antigravity (Claude) — anthropic-messages"
     echo ""
     echo -e "${gl_huang}── 通用配置 ──${gl_bai}"
-    echo "4. 自定义 Anthropic 反代"
-    echo "5. 自定义 OpenAI 兼容"
+    echo "5. 自定义 Anthropic 反代"
+    echo "6. 自定义 OpenAI 兼容"
     echo ""
 
-    read -e -p "请选择 [1-5]: " api_choice
+    read -e -p "请选择 [1-6]: " api_choice
 
     local api_type="" provider_name="" preset_mode=""
     local base_url="" api_key="" model_id="" model_name=""
@@ -20478,12 +20634,21 @@ openclaw_quick_api() {
             echo -e "${gl_zi}地址格式: https://你的sub2api域名${gl_bai}"
             ;;
         4)
+            preset_mode="sub2api-antigravity"
+            api_type="anthropic-messages"
+            provider_name="sub2api-antigravity"
+            echo ""
+            echo -e "${gl_lv}已选择: sub2api Antigravity (Claude)${gl_bai}"
+            echo -e "${gl_zi}地址格式: https://你的sub2api域名/antigravity${gl_bai}"
+            echo -e "${gl_huang}注意: 高峰期偶尔返回 503，重试即可${gl_bai}"
+            ;;
+        5)
             api_type="anthropic-messages"
             provider_name="custom-anthropic"
             echo ""
             echo -e "${gl_zi}地址格式: https://your-proxy.com${gl_bai}"
             ;;
-        5)
+        6)
             api_type="openai-completions"
             provider_name="custom-openai"
             echo ""
@@ -20532,43 +20697,66 @@ openclaw_quick_api() {
     echo ""
     echo -e "${gl_kjlan}选择模型:${gl_bai}"
     if [ "$preset_mode" = "crs" ]; then
-        echo "1. claude-sonnet-4-5 (推荐)"
-        echo "2. claude-opus-4-6"
+        echo "1. claude-opus-4-6 (推荐)"
+        echo "2. claude-sonnet-4-5"
         echo "3. claude-haiku-4-5"
         echo "4. 自定义"
         read -e -p "请选择 [1-4]: " m_choice
         case $m_choice in
-            1) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-            2) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
+            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
+            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
             3) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5" ;;
+            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
+        esac
+    elif [ "$preset_mode" = "sub2api-antigravity" ]; then
+        echo "1. claude-sonnet-4-5 (推荐)"
+        echo "2. claude-sonnet-4-5-thinking (扩展思考)"
+        echo "3. claude-opus-4-5-thinking (最强思考)"
+        echo "4. 自定义"
+        read -e -p "请选择 [1-4]: " m_choice
+        case $m_choice in
+            1) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            2) model_id="claude-sonnet-4-5-thinking"; model_name="Claude Sonnet 4.5 Thinking" ;;
+            3) model_id="claude-opus-4-5-thinking"; model_name="Claude Opus 4.5 Thinking" ;;
             4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
             *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
         esac
     elif [ "$preset_mode" = "sub2api-gemini" ]; then
-        echo "1. gemini-2.5-pro (推荐)"
-        echo "2. gemini-2.5-flash"
-        echo "3. gemini-2.0-flash"
-        echo "4. 自定义"
-        read -e -p "请选择 [1-4]: " m_choice
+        echo "1. gemini-3-pro-preview (推荐)"
+        echo "2. gemini-3-flash-preview"
+        echo "3. gemini-2.5-pro"
+        echo "4. gemini-2.5-flash"
+        echo "5. 自定义"
+        read -e -p "请选择 [1-5]: " m_choice
         case $m_choice in
-            1) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
-            2) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash" ;;
-            3) model_id="gemini-2.0-flash"; model_name="Gemini 2.0 Flash" ;;
-            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
-            *) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
+            1) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview" ;;
+            2) model_id="gemini-3-flash-preview"; model_name="Gemini 3 Flash Preview" ;;
+            3) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
+            4) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash" ;;
+            5) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview" ;;
         esac
     elif [ "$preset_mode" = "sub2api-gpt" ]; then
-        echo "1. gpt-4o (推荐)"
-        echo "2. o3"
-        echo "3. gpt-5.3-codex"
-        echo "4. 自定义"
-        read -e -p "请选择 [1-4]: " m_choice
+        echo "1. gpt-5.3 (推荐)"
+        echo "2. gpt-5.3-codex"
+        echo "3. gpt-5.2"
+        echo "4. gpt-5.2-codex"
+        echo "5. gpt-5.1"
+        echo "6. gpt-5.1-codex"
+        echo "7. gpt-5.1-codex-max"
+        echo "8. 自定义"
+        read -e -p "请选择 [1-8]: " m_choice
         case $m_choice in
-            1) model_id="gpt-4o"; model_name="GPT-4o" ;;
-            2) model_id="o3"; model_name="o3" ;;
-            3) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex" ;;
-            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
-            *) model_id="gpt-4o"; model_name="GPT-4o" ;;
+            1) model_id="gpt-5.3"; model_name="GPT 5.3" ;;
+            2) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex" ;;
+            3) model_id="gpt-5.2"; model_name="GPT 5.2" ;;
+            4) model_id="gpt-5.2-codex"; model_name="GPT 5.2 Codex" ;;
+            5) model_id="gpt-5.1"; model_name="GPT 5.1" ;;
+            6) model_id="gpt-5.1-codex"; model_name="GPT 5.1 Codex" ;;
+            7) model_id="gpt-5.1-codex-max"; model_name="GPT 5.1 Codex Max" ;;
+            8) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="gpt-5.3"; model_name="GPT 5.3" ;;
         esac
     else
         read -e -p "模型 ID: " model_id
