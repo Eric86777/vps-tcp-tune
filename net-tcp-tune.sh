@@ -20508,8 +20508,8 @@ const server = http.createServer(async (req, res) => {
                 })),
                 stream: false
             };
-            if (chatReq.max_tokens) respReq.max_output_tokens = chatReq.max_tokens;
-            // 不转发 temperature/top_p 等参数，部分上游不支持会导致 502
+            // 只转发 model/input/stream，不传 temperature/max_tokens 等额外参数
+            // 部分上游（如 sub2api）不支持这些参数会导致 502
 
             const upstreamEndpoint = upstream_url.replace(/\/+$/, '') + '/v1/responses';
             const authHeader = `Bearer ${api_key}`;
