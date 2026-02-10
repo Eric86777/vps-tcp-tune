@@ -8,15 +8,15 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.8.7 更新: OpenClaw新增频道管理功能，支持Telegram/WhatsApp/Discord/Slack一键配置 (by Eric86777)
 # v4.8.6 更新: AI代理工具箱新增OpenAI Responses API转换代理，支持Chat Completions客户端对接Responses API服务 (by Eric86777)
-# v4.8.5 更新: AI代理工具箱新增OpenClaw部署管理，支持CRS/sub2api(Gemini/GPT)等反代预设一键配置 (by Eric86777)
 # v4.8.4 更新: 新增功能66一键全自动优化（两阶段：安装内核→重启→全自动调优3→4→5→6→8） (by Eric86777)
 # v4.8.3 更新: 功能5入口添加配置状态检测+老版持久化风险警告+README更新 (by Eric86777)
 # v4.8.2 更新: 修复功能1"内核已最新"误判，新增运行/已装内核对比提示并增强解析兼容性 (by Eric86777)
 # v4.8.1 更新: 精简功能6(Realm)删除与功能3/4/5重复冲突的代码，功能1添加CPU架构信息展示 (by Eric86777)
 
-SCRIPT_VERSION="4.8.6"
-SCRIPT_LAST_UPDATE="新增OpenAI Responses API转换代理"
+SCRIPT_VERSION="4.8.7"
+SCRIPT_LAST_UPDATE="OpenClaw新增频道管理(Telegram/WhatsApp/Discord/Slack)"
 #=============================================================================
 
 #=============================================================================
@@ -19765,6 +19765,7 @@ Type=simple
 ExecStart=${openclaw_bin} gateway --port ${port} --verbose
 Restart=always
 RestartSec=5
+EnvironmentFile=-${HOME}/.openclaw/.env
 Environment=HOME=${HOME}
 WorkingDirectory=${HOME}
 StandardOutput=journal
@@ -20009,38 +20010,306 @@ openclaw_restart() {
 
 # 频道管理
 openclaw_channels() {
-    clear
-    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}  OpenClaw 频道管理${gl_bai}"
-    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo ""
-
     if ! command -v openclaw &>/dev/null; then
-        echo -e "${gl_hong}❌ OpenClaw 未安装${gl_bai}"
+        echo -e "${gl_hong}❌ OpenClaw 未安装，请先执行「一键部署」${gl_bai}"
         break_end
         return 1
     fi
 
-    echo -e "${gl_kjlan}支持的频道:${gl_bai}"
-    echo "  WhatsApp / Telegram / Discord / Slack / Signal"
-    echo "  Google Chat / iMessage / Teams / Matrix"
-    echo ""
-    echo -e "${gl_zi}运行 openclaw channels login 会进入交互式登录流程${gl_bai}"
-    echo -e "${gl_zi}WhatsApp 需要扫码、Telegram 需要 Bot Token 等${gl_bai}"
-    echo ""
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  OpenClaw 频道管理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
 
-    read -e -p "是否现在登录频道？(Y/N): " confirm
-    case "$confirm" in
-        [Yy])
-            echo ""
-            openclaw channels login
-            ;;
-        *)
-            echo "已取消"
-            ;;
-    esac
+        # 显示已配置的频道
+        echo -e "${gl_lv}── 已配置的频道 ──${gl_bai}"
+        openclaw channels list 2>/dev/null || echo "  暂无已配置的频道"
+        echo ""
 
-    break_end
+        echo -e "${gl_kjlan}[配置频道]${gl_bai}"
+        echo "1. Telegram Bot      — 输入 Bot Token"
+        echo "2. WhatsApp          — 终端扫码登录"
+        echo "3. Discord Bot       — 输入 Bot Token"
+        echo "4. Slack             — 输入 App Token + Bot Token"
+        echo ""
+        echo -e "${gl_kjlan}[频道管理]${gl_bai}"
+        echo "5. 查看频道状态"
+        echo "6. 查看频道日志"
+        echo "7. 断开/删除频道"
+        echo ""
+        echo "0. 返回"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择 [0-7]: " ch_choice
+
+        case $ch_choice in
+            1)
+                # Telegram
+                clear
+                echo -e "${gl_kjlan}━━━ 配置 Telegram Bot ━━━${gl_bai}"
+                echo ""
+                echo -e "${gl_zi}📋 获取 Bot Token 步骤:${gl_bai}"
+                echo "  1. 打开 Telegram，搜索 ${gl_huang}@BotFather${gl_bai}"
+                echo "  2. 发送 /newbot 创建新 Bot"
+                echo "  3. 按提示设置 Bot 名称和用户名（用户名必须以 _bot 结尾）"
+                echo "  4. 复制 BotFather 给的 Token"
+                echo ""
+                echo -e "${gl_zi}Token 格式: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz${gl_bai}"
+                echo ""
+
+                read -e -p "请输入 Telegram Bot Token: " tg_token
+                if [ -z "$tg_token" ]; then
+                    echo -e "${gl_hong}❌ Token 不能为空${gl_bai}"
+                    break_end
+                    continue
+                fi
+
+                echo ""
+                echo "正在配置 Telegram 频道..."
+                openclaw channels add --channel telegram --token "$tg_token" 2>&1
+
+                if [ $? -eq 0 ]; then
+                    echo ""
+                    echo -e "${gl_lv}✅ Telegram Bot 配置成功${gl_bai}"
+                    echo ""
+                    echo -e "${gl_zi}下一步: 在 Telegram 中搜索你的 Bot 并发送消息测试${gl_bai}"
+
+                    # 重启服务使配置生效
+                    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                        systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                        sleep 2
+                        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                    fi
+                else
+                    echo ""
+                    echo -e "${gl_hong}❌ 配置失败，请检查 Token 是否正确${gl_bai}"
+                fi
+                break_end
+                ;;
+            2)
+                # WhatsApp
+                clear
+                echo -e "${gl_kjlan}━━━ 配置 WhatsApp ━━━${gl_bai}"
+                echo ""
+                echo -e "${gl_zi}📋 登录步骤:${gl_bai}"
+                echo "  1. 终端会显示 QR 二维码"
+                echo "  2. 打开手机 WhatsApp → 设置 → 已关联设备 → 关联设备"
+                echo "  3. 扫描终端中的 QR 码（60秒内有效，超时重新运行）"
+                echo ""
+                echo -e "${gl_huang}⚠ 注意事项:${gl_bai}"
+                echo "  • 需要使用真实手机号，虚拟号码可能被封禁"
+                echo "  • 一个 WhatsApp 号码只能绑定一个 OpenClaw 网关"
+                echo ""
+
+                read -e -p "准备好了吗？(Y/N): " confirm
+                case "$confirm" in
+                    [Yy])
+                        echo ""
+                        openclaw channels login --channel whatsapp
+                        echo ""
+
+                        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                            systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                            sleep 2
+                            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                        fi
+                        ;;
+                    *)
+                        echo "已取消"
+                        ;;
+                esac
+                break_end
+                ;;
+            3)
+                # Discord
+                clear
+                echo -e "${gl_kjlan}━━━ 配置 Discord Bot ━━━${gl_bai}"
+                echo ""
+                echo -e "${gl_zi}📋 获取 Bot Token 步骤:${gl_bai}"
+                echo "  1. 打开 ${gl_huang}https://discord.com/developers/applications${gl_bai}"
+                echo "  2. 点击 New Application → 输入名称 → 创建"
+                echo "  3. 左侧 Bot 页面 → Reset Token → 复制 Token"
+                echo "  4. 开启 ${gl_huang}Privileged Gateway Intents${gl_bai}:"
+                echo "     • Message Content Intent（必须开启）"
+                echo "     • Server Members Intent（推荐开启）"
+                echo "  5. OAuth2 → URL Generator → 勾选 bot + applications.commands"
+                echo "     权限: View Channels / Send Messages / Read Message History"
+                echo "  6. 用生成的邀请链接把 Bot 添加到你的服务器"
+                echo ""
+
+                read -e -p "请输入 Discord Bot Token: " dc_token
+                if [ -z "$dc_token" ]; then
+                    echo -e "${gl_hong}❌ Token 不能为空${gl_bai}"
+                    break_end
+                    continue
+                fi
+
+                echo ""
+                echo "正在配置 Discord 频道..."
+                openclaw channels add --channel discord --token "$dc_token" 2>&1
+
+                if [ $? -eq 0 ]; then
+                    echo ""
+                    echo -e "${gl_lv}✅ Discord Bot 配置成功${gl_bai}"
+                    echo ""
+                    echo -e "${gl_zi}确保已用邀请链接将 Bot 添加到你的 Discord 服务器${gl_bai}"
+
+                    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                        systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                        sleep 2
+                        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                    fi
+                else
+                    echo ""
+                    echo -e "${gl_hong}❌ 配置失败，请检查 Token 是否正确${gl_bai}"
+                fi
+                break_end
+                ;;
+            4)
+                # Slack
+                clear
+                echo -e "${gl_kjlan}━━━ 配置 Slack ━━━${gl_bai}"
+                echo ""
+                echo -e "${gl_zi}📋 获取 Token 步骤:${gl_bai}"
+                echo "  1. 打开 ${gl_huang}https://api.slack.com/apps${gl_bai} → Create New App → From Scratch"
+                echo "  2. 开启 ${gl_huang}Socket Mode${gl_bai}"
+                echo "  3. Basic Information → App-Level Tokens → Generate Token"
+                echo "     Scope: connections:write → 复制 App Token（${gl_huang}xapp-${gl_bai} 开头）"
+                echo "  4. OAuth & Permissions → 添加 Bot Token Scopes:"
+                echo "     chat:write / channels:history / groups:history"
+                echo "     im:history / channels:read / users:read"
+                echo "  5. Install to Workspace → 复制 Bot Token（${gl_huang}xoxb-${gl_bai} 开头）"
+                echo "  6. Event Subscriptions → Enable → Subscribe to message.* events"
+                echo ""
+                echo -e "${gl_huang}Slack 需要两个 Token:${gl_bai}"
+                echo ""
+
+                read -e -p "App Token (xapp-开头): " slack_app_token
+                if [ -z "$slack_app_token" ]; then
+                    echo -e "${gl_hong}❌ App Token 不能为空${gl_bai}"
+                    break_end
+                    continue
+                fi
+
+                read -e -p "Bot Token (xoxb-开头): " slack_bot_token
+                if [ -z "$slack_bot_token" ]; then
+                    echo -e "${gl_hong}❌ Bot Token 不能为空${gl_bai}"
+                    break_end
+                    continue
+                fi
+
+                echo ""
+                echo "正在配置 Slack 频道..."
+
+                # 写入环境变量文件持久化
+                if [ -f "$OPENCLAW_ENV_FILE" ]; then
+                    sed -i '/^SLACK_APP_TOKEN=/d' "$OPENCLAW_ENV_FILE"
+                    sed -i '/^SLACK_BOT_TOKEN=/d' "$OPENCLAW_ENV_FILE"
+                fi
+                echo "SLACK_APP_TOKEN=${slack_app_token}" >> "$OPENCLAW_ENV_FILE"
+                echo "SLACK_BOT_TOKEN=${slack_bot_token}" >> "$OPENCLAW_ENV_FILE"
+
+                # 使用 CLI 添加频道
+                export SLACK_APP_TOKEN="$slack_app_token"
+                export SLACK_BOT_TOKEN="$slack_bot_token"
+                openclaw channels add --channel slack 2>&1
+
+                echo ""
+                echo -e "${gl_lv}✅ Slack 配置已保存${gl_bai}"
+
+                if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                    systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                    sleep 2
+                    echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                fi
+                break_end
+                ;;
+            5)
+                # 查看频道状态
+                clear
+                echo -e "${gl_kjlan}━━━ 频道状态 ━━━${gl_bai}"
+                echo ""
+                openclaw channels status 2>&1 || echo "无法获取频道状态"
+                echo ""
+                break_end
+                ;;
+            6)
+                # 查看频道日志
+                clear
+                echo -e "${gl_kjlan}━━━ 频道日志（最近 50 行）━━━${gl_bai}"
+                echo ""
+                openclaw channels logs 2>&1 || echo "无法获取频道日志"
+                echo ""
+                break_end
+                ;;
+            7)
+                # 断开/删除频道
+                clear
+                echo -e "${gl_kjlan}━━━ 断开频道 ━━━${gl_bai}"
+                echo ""
+                echo "选择要断开的频道:"
+                echo "1. Telegram"
+                echo "2. WhatsApp"
+                echo "3. Discord"
+                echo "4. Slack"
+                echo ""
+                echo "0. 取消"
+                echo ""
+
+                read -e -p "请选择 [0-4]: " rm_choice
+                local channel_name=""
+                case $rm_choice in
+                    1) channel_name="telegram" ;;
+                    2) channel_name="whatsapp" ;;
+                    3) channel_name="discord" ;;
+                    4) channel_name="slack" ;;
+                    0) continue ;;
+                    *)
+                        echo "无效选择"
+                        break_end
+                        continue
+                        ;;
+                esac
+
+                echo ""
+                read -e -p "确认断开 ${channel_name}？(Y/N): " confirm
+                case "$confirm" in
+                    [Yy])
+                        echo ""
+                        openclaw channels remove --channel "$channel_name" 2>&1 || \
+                        openclaw channels logout --channel "$channel_name" 2>&1
+                        echo ""
+                        echo -e "${gl_lv}✅ 已断开 ${channel_name}${gl_bai}"
+
+                        # Slack 额外清理环境变量
+                        if [ "$channel_name" = "slack" ] && [ -f "$OPENCLAW_ENV_FILE" ]; then
+                            sed -i '/^SLACK_APP_TOKEN=/d' "$OPENCLAW_ENV_FILE"
+                            sed -i '/^SLACK_BOT_TOKEN=/d' "$OPENCLAW_ENV_FILE"
+                        fi
+
+                        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                            systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                            sleep 2
+                            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                        fi
+                        ;;
+                    *)
+                        echo "已取消"
+                        ;;
+                esac
+                break_end
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
 }
 
 # 查看当前配置
