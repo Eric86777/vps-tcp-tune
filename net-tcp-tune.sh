@@ -4055,58 +4055,65 @@ dns_purify_and_harden() {
     fi
 
     # ==================== 已有配置检测 ====================
-    local dns_already_ok=true
+    local dns_has_config=false
     local dns_is_legacy=false
+    local dns_all_healthy=true
     local current_mode_name=""
     local svc_file="/etc/systemd/system/dns-purify-persist.service"
 
-    # 检查1: 持久化服务是否存在且已启用
-    if ! systemctl is-enabled --quiet dns-purify-persist.service 2>/dev/null; then
-        dns_already_ok=false
+    # 第一步：检测是否存在 DNS 净化配置（不管健不健康）
+    if systemctl is-enabled --quiet dns-purify-persist.service 2>/dev/null \
+       || [ -f "$svc_file" ] \
+       || [ -x /usr/local/bin/dns-purify-apply.sh ]; then
+        dns_has_config=true
     fi
 
-    # 检查2: 持久化脚本是否存在
-    if [ ! -x /usr/local/bin/dns-purify-apply.sh ]; then
-        dns_already_ok=false
-    fi
-
-    # 检查3: systemd-resolved 是否正常运行
-    if ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        dns_already_ok=false
-    fi
-
-    # 检查4: resolv.conf 是否指向 stub（resolved 托管）
-    if [ ! -L /etc/resolv.conf ] || [[ "$(readlink /etc/resolv.conf 2>/dev/null)" != *"stub-resolv.conf"* ]]; then
-        dns_already_ok=false
-    fi
-
-    # 检查5: DNS 解析是否正常工作
-    if [ "$dns_already_ok" = true ]; then
-        local dns_resolve_ok=false
-        if command -v getent >/dev/null 2>&1; then
-            if getent hosts google.com >/dev/null 2>&1 || getent hosts baidu.com >/dev/null 2>&1; then
-                dns_resolve_ok=true
-            fi
-        fi
-        if [ "$dns_resolve_ok" = false ]; then
-            dns_already_ok=false
-        fi
-    fi
-
-    # 检查6: 区分新版/老版持久化（关键安全检查）
-    if [ "$dns_already_ok" = true ]; then
-        # 老版特征1: 服务文件用 Requires 而非 Wants（重启时 resolved 稍慢就整体失败）
+    # 第二步：如果存在配置，立即检查是新版还是老版（独立于DNS健康状态）
+    if [ "$dns_has_config" = true ]; then
+        # 老版特征1: 服务文件用 Requires 而非 Wants
         if [ -f "$svc_file" ] && grep -q "Requires=systemd-resolved" "$svc_file" 2>/dev/null; then
             dns_is_legacy=true
         fi
         # 老版特征2: 持久化脚本缺少 resolvectl 可用性检查
-        if ! grep -q "command -v resolvectl" /usr/local/bin/dns-purify-apply.sh 2>/dev/null; then
+        if [ -x /usr/local/bin/dns-purify-apply.sh ] && ! grep -q "command -v resolvectl" /usr/local/bin/dns-purify-apply.sh 2>/dev/null; then
             dns_is_legacy=true
         fi
     fi
 
+    # 第三步：健康检查（仅在有配置时执行）
+    if [ "$dns_has_config" = true ]; then
+        # 持久化服务已启用？
+        if ! systemctl is-enabled --quiet dns-purify-persist.service 2>/dev/null; then
+            dns_all_healthy=false
+        fi
+        # 持久化脚本存在？
+        if [ ! -x /usr/local/bin/dns-purify-apply.sh ]; then
+            dns_all_healthy=false
+        fi
+        # resolved 运行中？
+        if ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+            dns_all_healthy=false
+        fi
+        # resolv.conf 指向 stub？
+        if [ ! -L /etc/resolv.conf ] || [[ "$(readlink /etc/resolv.conf 2>/dev/null)" != *"stub-resolv.conf"* ]]; then
+            dns_all_healthy=false
+        fi
+        # DNS 解析正常？
+        if [ "$dns_all_healthy" = true ]; then
+            local dns_resolve_ok=false
+            if command -v getent >/dev/null 2>&1; then
+                if getent hosts google.com >/dev/null 2>&1 || getent hosts baidu.com >/dev/null 2>&1; then
+                    dns_resolve_ok=true
+                fi
+            fi
+            if [ "$dns_resolve_ok" = false ]; then
+                dns_all_healthy=false
+            fi
+        fi
+    fi
+
     # 检测当前模式
-    if [ "$dns_already_ok" = true ] && [ -f /etc/systemd/resolved.conf ]; then
+    if [ "$dns_has_config" = true ] && [ -f /etc/systemd/resolved.conf ]; then
         local cur_dot
         cur_dot=$(sed -nE 's/^DNSOverTLS=(.+)/\1/p' /etc/systemd/resolved.conf 2>/dev/null)
         case "$cur_dot" in
@@ -4116,24 +4123,32 @@ dns_purify_and_harden() {
         esac
     fi
 
-    # 显示检测结果
-    if [ "$dns_already_ok" = true ] && [ "$dns_is_legacy" = true ]; then
-        # 老版配置：当前能用但重启有隐患
+    # ==================== 显示检测结果 ====================
+    if [ "$dns_has_config" = true ] && [ "$dns_is_legacy" = true ]; then
+        # 老版配置（不管DNS当前是否健康，都必须警告）
         echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_hong}  ⚠️  检测到老版 DNS 净化配置，重启后可能导致 DNS 失效！${gl_bai}"
         echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo ""
-        echo -e "  当前模式:    ${gl_lv}${current_mode_name}${gl_bai}"
-        echo -e "  resolved:    ${gl_lv}✅ 运行中${gl_bai}"
-        echo -e "  resolv.conf: ${gl_lv}✅ 指向 stub${gl_bai}"
-        echo -e "  DNS 解析:    ${gl_lv}✅ 当前正常${gl_bai}"
+        [ -n "$current_mode_name" ] && echo -e "  当前模式:    ${gl_huang}${current_mode_name}${gl_bai}"
+        if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+            echo -e "  resolved:    ${gl_lv}✅ 运行中${gl_bai}"
+        else
+            echo -e "  resolved:    ${gl_hong}❌ 未运行${gl_bai}"
+        fi
+        if [ "$dns_all_healthy" = true ]; then
+            echo -e "  DNS 解析:    ${gl_lv}✅ 当前正常${gl_bai}"
+        else
+            echo -e "  DNS 解析:    ${gl_hong}❌ 当前异常${gl_bai}"
+        fi
         echo -e "  开机持久化:  ${gl_hong}⚠️  老版（重启有风险）${gl_bai}"
         echo ""
         echo -e "${gl_huang}原因：老版持久化服务存在已知bug，重启后可能导致DNS断连${gl_bai}"
-        echo -e "${gl_lv}建议：重新执行功能5，新版会自动替换为安全的持久化机制${gl_bai}"
+        echo -e "${gl_lv}建议：继续执行功能5，新版会自动替换为安全的持久化机制${gl_bai}"
         echo ""
-    elif [ "$dns_already_ok" = true ]; then
-        # 新版配置：完美状态
+
+    elif [ "$dns_has_config" = true ] && [ "$dns_all_healthy" = true ]; then
+        # 新版配置 + 全部健康：完美状态
         echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_lv}  ✅ DNS净化已完美配置，无需重复执行！${gl_bai}"
         echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
