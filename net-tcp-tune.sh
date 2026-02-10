@@ -20386,6 +20386,322 @@ openclaw_edit_config() {
     break_end
 }
 
+# 快速替换 API（保留现有设置）
+openclaw_quick_api() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  快速替换 API（保留端口/频道等现有设置）${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if ! command -v openclaw &>/dev/null; then
+        echo -e "${gl_hong}❌ OpenClaw 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if [ ! -f "$OPENCLAW_CONFIG_FILE" ]; then
+        echo -e "${gl_hong}❌ 配置文件不存在，请先执行「一键部署」${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 显示当前 API 配置
+    echo -e "${gl_lv}── 当前 API 配置 ──${gl_bai}"
+    node -e "
+        const fs = require('fs');
+        const content = fs.readFileSync('${OPENCLAW_CONFIG_FILE}', 'utf-8');
+        const stripped = content.replace(/\/\/.*$/gm, '');
+        try {
+            const config = new Function('return (' + stripped + ')')();
+            const providers = config.models && config.models.providers || {};
+            const keys = Object.keys(providers);
+            if (keys.length === 0) { console.log('  暂无 API 配置'); }
+            for (const name of keys) {
+                const p = providers[name];
+                console.log('  Provider:  ' + name);
+                console.log('  API 类型:  ' + (p.api || 'unknown'));
+                console.log('  地址:      ' + (p.baseUrl || 'unknown'));
+                const models = p.models || [];
+                if (models.length > 0) {
+                    console.log('  模型:      ' + models.map(m => m.id).join(', '));
+                }
+            }
+        } catch(e) { console.log('  无法解析当前配置'); }
+    " 2>/dev/null || echo "  无法读取当前配置"
+    echo ""
+
+    # 选择新的 API
+    echo -e "${gl_huang}选择要配置的 API:${gl_bai}"
+    echo ""
+    echo -e "${gl_lv}── 已验证可用的反代 ──${gl_bai}"
+    echo "1. CRS 反代 (Claude)         — anthropic-messages"
+    echo "2. sub2api 反代 (Gemini)      — google-generative-ai"
+    echo "3. sub2api 反代 (GPT)         — openai-responses"
+    echo ""
+    echo -e "${gl_huang}── 通用配置 ──${gl_bai}"
+    echo "4. 自定义 Anthropic 反代"
+    echo "5. 自定义 OpenAI 兼容"
+    echo ""
+
+    read -e -p "请选择 [1-5]: " api_choice
+
+    local api_type="" provider_name="" preset_mode=""
+    local base_url="" api_key="" model_id="" model_name=""
+    local model_reasoning="false" model_input="200000" model_cost_input="3" model_cost_output="15"
+    local model_cost_cache_read="0.3" model_cost_cache_write="3.75"
+    local model_context="200000" model_max_tokens="16384"
+
+    case $api_choice in
+        1)
+            preset_mode="crs"
+            api_type="anthropic-messages"
+            provider_name="crs-claude"
+            echo ""
+            echo -e "${gl_lv}已选择: CRS 反代 (Claude)${gl_bai}"
+            echo -e "${gl_zi}地址格式: http://IP:端口/api${gl_bai}"
+            ;;
+        2)
+            preset_mode="sub2api-gemini"
+            api_type="google-generative-ai"
+            provider_name="sub2api-gemini"
+            echo ""
+            echo -e "${gl_lv}已选择: sub2api 反代 (Gemini)${gl_bai}"
+            echo -e "${gl_zi}地址格式: https://你的sub2api域名${gl_bai}"
+            ;;
+        3)
+            preset_mode="sub2api-gpt"
+            api_type="openai-responses"
+            provider_name="sub2api-gpt"
+            echo ""
+            echo -e "${gl_lv}已选择: sub2api 反代 (GPT)${gl_bai}"
+            echo -e "${gl_zi}地址格式: https://你的sub2api域名${gl_bai}"
+            ;;
+        4)
+            api_type="anthropic-messages"
+            provider_name="custom-anthropic"
+            echo ""
+            echo -e "${gl_zi}地址格式: https://your-proxy.com${gl_bai}"
+            ;;
+        5)
+            api_type="openai-completions"
+            provider_name="custom-openai"
+            echo ""
+            echo -e "${gl_zi}地址格式: https://your-proxy.com/v1${gl_bai}"
+            ;;
+        *)
+            echo "无效选择"
+            break_end
+            return
+            ;;
+    esac
+
+    # 输入地址
+    echo ""
+    read -e -p "反代地址: " base_url
+    if [ -z "$base_url" ]; then
+        echo -e "${gl_hong}❌ 地址不能为空${gl_bai}"
+        break_end
+        return
+    fi
+    base_url="${base_url%/}"
+
+    # 自动添加后缀
+    if [ "$api_type" = "google-generative-ai" ]; then
+        if [[ ! "$base_url" =~ /v1beta$ ]] && [[ ! "$base_url" =~ /v1$ ]]; then
+            base_url="${base_url}/v1beta"
+            echo -e "${gl_lv}已自动添加后缀: ${base_url}${gl_bai}"
+        fi
+    elif [ "$preset_mode" = "sub2api-gpt" ]; then
+        if [[ ! "$base_url" =~ /v1$ ]]; then
+            base_url="${base_url}/v1"
+            echo -e "${gl_lv}已自动添加后缀: ${base_url}${gl_bai}"
+        fi
+    fi
+
+    # 输入 Key
+    echo ""
+    read -e -p "API Key: " api_key
+    if [ -z "$api_key" ]; then
+        echo -e "${gl_hong}❌ Key 不能为空${gl_bai}"
+        break_end
+        return
+    fi
+
+    # 快速模型选择
+    echo ""
+    echo -e "${gl_kjlan}选择模型:${gl_bai}"
+    if [ "$preset_mode" = "crs" ]; then
+        echo "1. claude-sonnet-4-5 (推荐)"
+        echo "2. claude-opus-4-6"
+        echo "3. claude-haiku-4-5"
+        echo "4. 自定义"
+        read -e -p "请选择 [1-4]: " m_choice
+        case $m_choice in
+            1) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            2) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
+            3) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5" ;;
+            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+        esac
+    elif [ "$preset_mode" = "sub2api-gemini" ]; then
+        echo "1. gemini-2.5-pro (推荐)"
+        echo "2. gemini-2.5-flash"
+        echo "3. gemini-2.0-flash"
+        echo "4. 自定义"
+        read -e -p "请选择 [1-4]: " m_choice
+        case $m_choice in
+            1) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
+            2) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash" ;;
+            3) model_id="gemini-2.0-flash"; model_name="Gemini 2.0 Flash" ;;
+            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
+        esac
+    elif [ "$preset_mode" = "sub2api-gpt" ]; then
+        echo "1. gpt-4o (推荐)"
+        echo "2. o3"
+        echo "3. gpt-5.3-codex"
+        echo "4. 自定义"
+        read -e -p "请选择 [1-4]: " m_choice
+        case $m_choice in
+            1) model_id="gpt-4o"; model_name="GPT-4o" ;;
+            2) model_id="o3"; model_name="o3" ;;
+            3) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex" ;;
+            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="gpt-4o"; model_name="GPT-4o" ;;
+        esac
+    else
+        read -e -p "模型 ID: " model_id
+        model_name="$model_id"
+    fi
+
+    if [ -z "$model_id" ]; then
+        echo -e "${gl_hong}❌ 模型不能为空${gl_bai}"
+        break_end
+        return
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}━━━ 确认配置 ━━━${gl_bai}"
+    echo -e "API 类型:   ${gl_huang}${api_type}${gl_bai}"
+    echo -e "反代地址:   ${gl_huang}${base_url}${gl_bai}"
+    echo -e "模型:       ${gl_huang}${model_id}${gl_bai}"
+    echo ""
+
+    read -e -p "确认替换 API 配置？(Y/N): " confirm
+    if [[ ! "$confirm" =~ [Yy] ]]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    # 写入新 provider 数据到临时 JSON 文件
+    local tmp_json=$(mktemp /tmp/openclaw_api_XXXXXX.json)
+    cat > "$tmp_json" <<APIJSON
+{
+    "providers": {
+        "${provider_name}": {
+            "baseUrl": "${base_url}",
+            "apiKey": "\${OPENCLAW_API_KEY}",
+            "api": "${api_type}",
+            "models": [
+                {
+                    "id": "${model_id}",
+                    "name": "${model_name}",
+                    "reasoning": ${model_reasoning},
+                    "input": ${model_input},
+                    "cost": { "input": ${model_cost_input}, "output": ${model_cost_output}, "cacheRead": ${model_cost_cache_read}, "cacheWrite": ${model_cost_cache_write} },
+                    "contextWindow": ${model_context},
+                    "maxTokens": ${model_max_tokens}
+                }
+            ]
+        }
+    },
+    "primaryModel": "${provider_name}/${model_id}"
+}
+APIJSON
+
+    # 用 Node.js 合并配置（只替换 models + agents.defaults.model，保留其他一切）
+    echo ""
+    echo "正在更新配置..."
+    node -e "
+        const fs = require('fs');
+        const configPath = '${OPENCLAW_CONFIG_FILE}';
+        const newDataPath = '${tmp_json}';
+
+        // 读取现有配置（JSON5: 去注释后用 Function 解析）
+        const content = fs.readFileSync(configPath, 'utf-8');
+        const stripped = content.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        let config;
+        try {
+            config = new Function('return (' + stripped + ')')();
+        } catch(e) {
+            console.error('❌ 无法解析现有配置: ' + e.message);
+            process.exit(1);
+        }
+
+        // 读取新 provider 数据
+        const newData = JSON.parse(fs.readFileSync(newDataPath, 'utf-8'));
+
+        // 只替换 models.providers 和 agents.defaults.model
+        config.models = config.models || {};
+        config.models.mode = 'merge';
+        config.models.providers = newData.providers;
+
+        config.agents = config.agents || {};
+        config.agents.defaults = config.agents.defaults || {};
+        config.agents.defaults.model = { primary: newData.primaryModel };
+
+        // 写回（保留 gateway/channels 等所有其他配置）
+        const header = '// OpenClaw 配置 - API 由脚本快速配置\n// 文档: https://docs.openclaw.ai/gateway/configuration\n';
+        fs.writeFileSync(configPath, header + JSON.stringify(config, null, 2) + '\n');
+        console.log('✅ 配置文件已更新');
+    " 2>&1
+
+    local node_exit=$?
+    rm -f "$tmp_json"
+
+    if [ $node_exit -ne 0 ]; then
+        echo -e "${gl_hong}❌ 配置更新失败${gl_bai}"
+        break_end
+        return
+    fi
+
+    # 更新 .env 中的 API Key
+    if [ -f "$OPENCLAW_ENV_FILE" ]; then
+        sed -i "s|^OPENCLAW_API_KEY=.*|OPENCLAW_API_KEY=${api_key}|" "$OPENCLAW_ENV_FILE"
+        echo "✅ API Key 已更新"
+    else
+        mkdir -p "$OPENCLAW_HOME_DIR"
+        echo "OPENCLAW_API_KEY=${api_key}" > "$OPENCLAW_ENV_FILE"
+        chmod 600 "$OPENCLAW_ENV_FILE"
+        echo "✅ 环境变量文件已创建"
+    fi
+
+    # 重启服务
+    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+        sleep 2
+        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+            echo -e "${gl_lv}✅ 服务已重启，API 已生效${gl_bai}"
+        else
+            echo -e "${gl_hong}❌ 服务重启失败，查看日志: journalctl -u ${OPENCLAW_SERVICE_NAME} -n 20${gl_bai}"
+        fi
+    else
+        echo -e "${gl_huang}⚠ 服务未运行，请手动启动: systemctl start ${OPENCLAW_SERVICE_NAME}${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}━━━ 替换完成 ━━━${gl_bai}"
+    echo -e "API 类型:   ${gl_huang}${api_type}${gl_bai}"
+    echo -e "反代地址:   ${gl_huang}${base_url}${gl_bai}"
+    echo -e "主力模型:   ${gl_huang}${provider_name}/${model_id}${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}原有的端口、频道、网关 Token 等设置均已保留${gl_bai}"
+
+    break_end
+}
+
 # 安全检查
 openclaw_doctor() {
     clear
@@ -20508,18 +20824,19 @@ manage_openclaw() {
         echo "7. 重启服务"
         echo ""
         echo -e "${gl_kjlan}[配置管理]${gl_bai}"
-        echo "8. 模型配置（反代/API）"
-        echo "9. 频道管理（登录/配置）"
-        echo "10. 查看当前配置"
-        echo "11. 编辑配置文件"
-        echo "12. 安全检查（doctor）"
+        echo "8. 模型配置（完整配置/首次部署）"
+        echo "9. 快速替换 API（保留现有设置）"
+        echo "10. 频道管理（登录/配置）"
+        echo "11. 查看当前配置"
+        echo "12. 编辑配置文件"
+        echo "13. 安全检查（doctor）"
         echo ""
-        echo -e "${gl_hong}13. 卸载 OpenClaw${gl_bai}"
+        echo -e "${gl_hong}14. 卸载 OpenClaw${gl_bai}"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-13]: " choice
+        read -e -p "请选择操作 [0-14]: " choice
 
         case $choice in
             1)
@@ -20567,18 +20884,21 @@ manage_openclaw() {
                 break_end
                 ;;
             9)
-                openclaw_channels
+                openclaw_quick_api
                 ;;
             10)
-                openclaw_show_config
+                openclaw_channels
                 ;;
             11)
-                openclaw_edit_config
+                openclaw_show_config
                 ;;
             12)
-                openclaw_doctor
+                openclaw_edit_config
                 ;;
             13)
+                openclaw_doctor
+                ;;
+            14)
                 openclaw_uninstall
                 ;;
             0)
