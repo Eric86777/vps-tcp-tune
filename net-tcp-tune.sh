@@ -20220,7 +20220,7 @@ openclaw_channels() {
 
                 echo ""
                 echo "正在写入 Telegram 配置..."
-                local tg_json="{\"botToken\":\"${tg_token}\",\"enabled\":true,\"dmPolicy\":\"pairing\"}"
+                local tg_json="{\"botToken\":\"${tg_token}\",\"enabled\":true,\"dmPolicy\":\"pairing\",\"groupPolicy\":\"allowlist\",\"streamMode\":\"partial\",\"textChunkLimit\":4000,\"dmHistoryLimit\":50,\"historyLimit\":50}"
                 openclaw_update_channel "telegram" "$tg_json"
 
                 if [ $? -eq 0 ]; then
@@ -20265,7 +20265,7 @@ openclaw_channels() {
                     [Yy])
                         echo ""
                         echo "正在写入 WhatsApp 配置..."
-                        local wa_json='{"enabled":true,"dmPolicy":"pairing"}'
+                        local wa_json='{"enabled":true,"dmPolicy":"pairing","groupPolicy":"allowlist","streamMode":"partial","historyLimit":50,"dmHistoryLimit":50}'
                         openclaw_update_channel "whatsapp" "$wa_json"
 
                         if [ $? -eq 0 ]; then
@@ -20316,7 +20316,7 @@ openclaw_channels() {
 
                 echo ""
                 echo "正在写入 Discord 配置..."
-                local dc_json="{\"token\":\"${dc_token}\",\"enabled\":true}"
+                local dc_json="{\"token\":\"${dc_token}\",\"enabled\":true,\"dm\":{\"enabled\":true,\"policy\":\"pairing\"},\"groupPolicy\":\"allowlist\",\"textChunkLimit\":2000,\"historyLimit\":20}"
                 openclaw_update_channel "discord" "$dc_json"
 
                 if [ $? -eq 0 ]; then
@@ -20371,7 +20371,7 @@ openclaw_channels() {
 
                 echo ""
                 echo "正在写入 Slack 配置..."
-                local slack_json="{\"appToken\":\"${slack_app_token}\",\"botToken\":\"${slack_bot_token}\",\"enabled\":true}"
+                local slack_json="{\"appToken\":\"${slack_app_token}\",\"botToken\":\"${slack_bot_token}\",\"enabled\":true,\"dmPolicy\":\"pairing\",\"groupPolicy\":\"allowlist\",\"streamMode\":\"partial\",\"historyLimit\":50}"
                 openclaw_update_channel "slack" "$slack_json"
 
                 if [ $? -eq 0 ]; then
