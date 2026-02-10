@@ -2975,7 +2975,12 @@ LIMITSEOF
             # 设置 RPS：将收包分散到所有核心
             for rxq in /sys/class/net/$dev/queues/rx-*/rps_cpus; do
                 if [ -f "$rxq" ]; then
-                    echo "$rps_mask" > "$rxq" 2>/dev/null && rps_ok=1
+                    echo "$rps_mask" > "$rxq" 2>/dev/null
+                    # 写入后读回验证（有些环境 echo 返回0但内核没接受）
+                    local verify_val
+                    verify_val=$(cat "$rxq" 2>/dev/null | tr -d ',' | sed 's/^0*//')
+                    [ -z "$verify_val" ] && verify_val="0"
+                    [ "$verify_val" = "$rps_mask" ] && rps_ok=1
                 fi
             done
             # 设置 RFS：同一连接的包尽量在同一核处理（减少 cache miss）
@@ -2989,7 +2994,7 @@ LIMITSEOF
         if [ $rps_ok -eq 1 ]; then
             echo -e "${gl_lv}✓ RPS/RFS 已启用（${cpu_count} 核，掩码: 0x${rps_mask}，网卡:${rps_devs}）${gl_bai}"
         else
-            echo -e "${gl_huang}⚠️ RPS 设置失败（不影响其他优化）${gl_bai}"
+            echo -e "${gl_huang}⚠️ RPS 设置未生效（当前虚拟化环境可能不支持，不影响其他优化）${gl_bai}"
         fi
     else
         echo -e "${gl_zi}ℹ 单核 CPU，跳过 RPS/RFS（单核无需分担）${gl_bai}"
@@ -3062,7 +3067,9 @@ LIMITSEOF
             esac
             [ -f "/sys/class/net/$vdev/queues/rx-0/rps_cpus" ] || continue
             local rps_val
-            rps_val=$(cat /sys/class/net/$vdev/queues/rx-0/rps_cpus 2>/dev/null | sed 's/^0*//')
+            # rps_cpus 可能返回 "3" 或 "00000003" 或 "00000000,00000003"
+            rps_val=$(cat /sys/class/net/$vdev/queues/rx-0/rps_cpus 2>/dev/null | tr -d ',' | sed 's/^0*//')
+            [ -z "$rps_val" ] && rps_val="0"
             if [ "$rps_val" = "$expected_mask" ]; then
                 rps_verify_devs="${rps_verify_devs} ${vdev}✓"
             else
