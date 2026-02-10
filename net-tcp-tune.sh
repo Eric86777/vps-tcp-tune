@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.8.4 更新: 新增功能66一键全自动优化（两阶段：安装内核→重启→全自动调优3→4→5→6→8） (by Eric86777)
 # v4.8.3 更新: 功能5入口添加配置状态检测+老版持久化风险警告+README更新 (by Eric86777)
 # v4.8.2 更新: 修复功能1"内核已最新"误判，新增运行/已装内核对比提示并增强解析兼容性 (by Eric86777)
 # v4.8.1 更新: 精简功能6(Realm)删除与功能3/4/5重复冲突的代码，功能1添加CPU架构信息展示 (by Eric86777)
 # v4.8.0 更新: 功能1安装/更新内核后自动清理软件源，减少交互确认 (by Eric86777)
-# v4.7.0 更新: 移除6个低质量功能，菜单精简38→32项 (by Eric86777)
 
-SCRIPT_VERSION="4.8.3"
-SCRIPT_LAST_UPDATE="功能5添加配置状态检测+老版持久化风险警告"
+SCRIPT_VERSION="4.8.4"
+SCRIPT_LAST_UPDATE="新增功能66一键全自动优化"
 #=============================================================================
 
 #=============================================================================
@@ -224,6 +224,7 @@ check_root() {
 }
 
 break_end() {
+    [ "$AUTO_MODE" = "1" ] && return
     echo -e "${gl_lv}操作完成${gl_bai}"
     echo "按任意键继续..."
     read -n 1 -s -r -p ""
@@ -1048,8 +1049,12 @@ disable_ipv6_permanent() {
     if [ -f /etc/sysctl.d/99-disable-ipv6.conf ]; then
         echo -e "${gl_huang}⚠️  检测到已存在永久禁用配置${gl_bai}"
         echo ""
-        read -e -p "$(echo -e "${gl_huang}是否重新执行永久禁用？(Y/N): ${gl_bai}")" confirm
-        
+        if [ "$AUTO_MODE" = "1" ]; then
+            confirm=Y
+        else
+            read -e -p "$(echo -e "${gl_huang}是否重新执行永久禁用？(Y/N): ${gl_bai}")" confirm
+        fi
+
         case "$confirm" in
             [Yy])
                 ;;
@@ -1062,8 +1067,12 @@ disable_ipv6_permanent() {
     fi
     
     echo ""
-    read -e -p "$(echo -e "${gl_huang}确认永久禁用IPv6？(Y/N): ${gl_bai}")" confirm
-    
+    if [ "$AUTO_MODE" = "1" ]; then
+        confirm=Y
+    else
+        read -e -p "$(echo -e "${gl_huang}确认永久禁用IPv6？(Y/N): ${gl_bai}")" confirm
+    fi
+
     case "$confirm" in
         [Yy])
             echo ""
@@ -1710,9 +1719,13 @@ mtu_mss_optimization() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
         
-        read -e -p "请选择操作 [1]: " choice
-        choice=${choice:-1}
-        
+        if [ "$AUTO_MODE" = "1" ]; then
+            choice=1
+        else
+            read -e -p "请选择操作 [1]: " choice
+            choice=${choice:-1}
+        fi
+
         case $choice in
             1)
                 # 自动检测并优化
@@ -1726,6 +1739,7 @@ mtu_mss_optimization() {
                      echo -e "${gl_hong}检测失败，无法获取有效的MSS值${gl_bai}"
                      sleep 2
                      break_end
+                     [ "$AUTO_MODE" = "1" ] && return
                      continue
                 fi
 
@@ -1735,8 +1749,12 @@ mtu_mss_optimization() {
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 
                 if [ "$min_mss" -eq "$max_mss" ]; then
-                    read -e -p "是否应用推荐的 MSS = ${min_mss}？(Y/N) [Y]: " confirm
-                    confirm=${confirm:-Y}
+                    if [ "$AUTO_MODE" = "1" ]; then
+                        confirm=Y
+                    else
+                        read -e -p "是否应用推荐的 MSS = ${min_mss}？(Y/N) [Y]: " confirm
+                        confirm=${confirm:-Y}
+                    fi
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then
                         echo ""
                         apply_mss_clamp_with_value "$min_mss"
@@ -1744,6 +1762,7 @@ mtu_mss_optimization() {
                             verify_mss_optimization
                         fi
                         break_end
+                        [ "$AUTO_MODE" = "1" ] && return
                     else
                          echo -e "${gl_huang}已取消应用${gl_bai}"
                          sleep 2
@@ -1774,6 +1793,7 @@ mtu_mss_optimization() {
                             verify_mss_optimization
                         fi
                         break_end
+                        [ "$AUTO_MODE" = "1" ] && return
                     fi
                 fi
                 ;;
@@ -1886,7 +1906,7 @@ detect_bandwidth() {
     
     read -e -p "请输入选择 [1]: " bw_choice
     bw_choice=${bw_choice:-1}
-    
+
     case "$bw_choice" in
         1)
             # 自动检测带宽 - 选择最近服务器
@@ -2426,9 +2446,13 @@ calculate_buffer_size() {
     echo "" >&2
     
     # 询问确认
-    read -e -p "$(echo -e "${gl_huang}是否使用推荐值 ${buffer_mb}MB？(Y/N) [Y]: ${gl_bai}")" confirm
-    confirm=${confirm:-Y}
-    
+    if [ "$AUTO_MODE" = "1" ]; then
+        confirm=Y
+    else
+        read -e -p "$(echo -e "${gl_huang}是否使用推荐值 ${buffer_mb}MB？(Y/N) [Y]: ${gl_bai}")" confirm
+        confirm=${confirm:-Y}
+    fi
+
     case "$confirm" in
         [Yy])
             # 返回缓冲区大小（MB）
@@ -2504,8 +2528,12 @@ check_and_suggest_swap() {
     echo ""
     
     # 询问用户
-    read -e -p "$(echo -e "${gl_huang}是否现在配置虚拟内存？(Y/N): ${gl_bai}")" confirm
-    
+    if [ "$AUTO_MODE" = "1" ]; then
+        confirm=Y
+    else
+        read -e -p "$(echo -e "${gl_huang}是否现在配置虚拟内存？(Y/N): ${gl_bai}")" confirm
+    fi
+
     case "$confirm" in
         [Yy])
             echo ""
@@ -2575,7 +2603,11 @@ check_and_clean_conflicts() {
     done
     [ $has_sysctl_conflict -eq 1 ] && echo "  - /etc/sysctl.conf (含 tcp_rmem/tcp_wmem)"
 
-    read -e -p "是否自动禁用/注释这些覆盖配置？(Y/N): " ans
+    if [ "$AUTO_MODE" = "1" ]; then
+        ans=Y
+    else
+        read -e -p "是否自动禁用/注释这些覆盖配置？(Y/N): " ans
+    fi
     case "$ans" in
         [Yy])
             # 注释 /etc/sysctl.conf 中相关行
@@ -2759,6 +2791,9 @@ net.ipv4.tcp_notsent_lowat=16384
 net.ipv4.tcp_fin_timeout=15
 net.ipv4.tcp_max_tw_buckets=5000
 
+# TCP Fast Open（节省1个RTT，加速连接建立）
+net.ipv4.tcp_fastopen=3
+
 # TCP保活优化（更快检测死连接）
 net.ipv4.tcp_keepalive_time=300
 net.ipv4.tcp_keepalive_intvl=30
@@ -2849,6 +2884,33 @@ fi
 if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
     echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
 fi
+# 优化 TCP 初始拥塞窗口（加速连接起步）
+DEF_ROUTE=$(ip route show default 2>/dev/null | head -1)
+if [ -n "$DEF_ROUTE" ]; then
+    CLEAN_ROUTE=$(echo "$DEF_ROUTE" | sed 's/ initcwnd [0-9]*//g; s/ initrwnd [0-9]*//g')
+    ip route change $CLEAN_ROUTE initcwnd 32 initrwnd 32 2>/dev/null
+fi
+# RPS/RFS 多核网络优化（遍历所有物理网卡）
+CPU_COUNT=$(nproc 2>/dev/null || echo 1)
+if [ "$CPU_COUNT" -gt 1 ]; then
+    RPS_MASK=$(printf '%x' $((2**CPU_COUNT - 1)))
+    FLOW_ENTRIES=$((4096 * CPU_COUNT))
+    echo "$FLOW_ENTRIES" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+    for D in /sys/class/net/*; do
+        [ -e "$D" ] || continue
+        DEV=$(basename "$D")
+        case "$DEV" in
+            lo|docker*|veth*|br-*|virbr*|zt*|tailscale*|wg*|tun*|tap*) continue;;
+        esac
+        [ -d "/sys/class/net/$DEV/queues" ] || continue
+        for RXQ in /sys/class/net/$DEV/queues/rx-*/rps_cpus; do
+            [ -f "$RXQ" ] && echo "$RPS_MASK" > "$RXQ" 2>/dev/null
+        done
+        for RXQ_DIR in /sys/class/net/$DEV/queues/rx-*/; do
+            [ -f "${RXQ_DIR}rps_flow_cnt" ] && echo "$((FLOW_ENTRIES / CPU_COUNT))" > "${RXQ_DIR}rps_flow_cnt" 2>/dev/null
+        done
+    done
+fi
 APPLYEOF
     chmod +x /usr/local/bin/bbr-optimize-apply.sh
     systemctl daemon-reload 2>/dev/null
@@ -2870,6 +2932,67 @@ LIMITSEOF
     # 禁用透明大页面（当前运行时）
     if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
         echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
+    fi
+
+    # 优化 TCP 初始拥塞窗口（加速连接起步，节省1-2个RTT）
+    echo "正在优化 TCP 初始拥塞窗口..."
+    local def_route
+    def_route=$(ip route show default 2>/dev/null | head -1)
+    if [ -n "$def_route" ]; then
+        # 清除已有的 initcwnd/initrwnd 再重新设置，避免重复
+        local clean_route
+        clean_route=$(echo "$def_route" | sed 's/ initcwnd [0-9]*//g; s/ initrwnd [0-9]*//g')
+        if ip route change $clean_route initcwnd 32 initrwnd 32 2>/dev/null; then
+            echo -e "${gl_lv}✓ initcwnd=32 initrwnd=32 已应用（加速 TCP 连接起步）${gl_bai}"
+        else
+            echo -e "${gl_huang}⚠️ initcwnd 设置失败（不影响其他优化）${gl_bai}"
+        fi
+    else
+        echo -e "${gl_huang}⚠️ 未检测到默认路由，跳过 initcwnd 优化${gl_bai}"
+    fi
+
+    # RPS/RFS 多核网络优化（将网卡收包分散到所有 CPU 核心）
+    local cpu_count
+    cpu_count=$(nproc 2>/dev/null || echo 1)
+    if [ "$cpu_count" -gt 1 ]; then
+        echo "正在配置 RPS/RFS 多核网络优化..."
+        # 计算 CPU 掩码（所有核心参与）：2核=3, 4核=f, 8核=ff
+        local rps_mask
+        rps_mask=$(printf '%x' $((2**cpu_count - 1)))
+        local flow_entries=$((4096 * cpu_count))
+        echo "$flow_entries" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+        # 遍历所有物理网卡（排除虚拟/隧道接口）
+        local rps_ok=0
+        local rps_devs=""
+        local dev
+        for d in /sys/class/net/*; do
+            [ -e "$d" ] || continue
+            dev=$(basename "$d")
+            case "$dev" in
+                lo|docker*|veth*|br-*|virbr*|zt*|tailscale*|wg*|tun*|tap*) continue;;
+            esac
+            [ -d "/sys/class/net/$dev/queues" ] || continue
+            # 设置 RPS：将收包分散到所有核心
+            for rxq in /sys/class/net/$dev/queues/rx-*/rps_cpus; do
+                if [ -f "$rxq" ]; then
+                    echo "$rps_mask" > "$rxq" 2>/dev/null && rps_ok=1
+                fi
+            done
+            # 设置 RFS：同一连接的包尽量在同一核处理（减少 cache miss）
+            for rxq_dir in /sys/class/net/$dev/queues/rx-*/; do
+                if [ -f "${rxq_dir}rps_flow_cnt" ]; then
+                    echo "$((flow_entries / cpu_count))" > "${rxq_dir}rps_flow_cnt" 2>/dev/null
+                fi
+            done
+            rps_devs="${rps_devs} ${dev}"
+        done
+        if [ $rps_ok -eq 1 ]; then
+            echo -e "${gl_lv}✓ RPS/RFS 已启用（${cpu_count} 核，掩码: 0x${rps_mask}，网卡:${rps_devs}）${gl_bai}"
+        else
+            echo -e "${gl_huang}⚠️ RPS 设置失败（不影响其他优化）${gl_bai}"
+        fi
+    else
+        echo -e "${gl_zi}ℹ 单核 CPU，跳过 RPS/RFS（单核无需分担）${gl_bai}"
     fi
 
     # 步骤 5：验证配置是否真正生效
@@ -2913,9 +3036,55 @@ LIMITSEOF
     else
         echo -e "接收缓冲区: ${gl_huang}${actual_rmem_mb}MB (期望: ${buffer_mb}MB) ⚠${gl_bai}"
     fi
-    
+
+    # 验证 initcwnd
+    local actual_initcwnd
+    actual_initcwnd=$(ip route show default 2>/dev/null | head -1 | grep -oP 'initcwnd \K[0-9]+')
+    if [ "$actual_initcwnd" = "32" ]; then
+        echo -e "初始窗口:   ${gl_lv}initcwnd=$actual_initcwnd ✓${gl_bai}"
+    elif [ -n "$actual_initcwnd" ]; then
+        echo -e "初始窗口:   ${gl_huang}initcwnd=$actual_initcwnd (期望: 32) ⚠${gl_bai}"
+    else
+        echo -e "初始窗口:   ${gl_huang}未设置 (期望: initcwnd=32) ⚠${gl_bai}"
+    fi
+
+    # 验证 RPS
+    if [ "$cpu_count" -gt 1 ]; then
+        local expected_mask
+        expected_mask=$(printf '%x' $((2**cpu_count - 1)))
+        local rps_verify_devs=""
+        local rps_all_ok=1
+        for d in /sys/class/net/*; do
+            [ -e "$d" ] || continue
+            local vdev=$(basename "$d")
+            case "$vdev" in
+                lo|docker*|veth*|br-*|virbr*|zt*|tailscale*|wg*|tun*|tap*) continue;;
+            esac
+            [ -f "/sys/class/net/$vdev/queues/rx-0/rps_cpus" ] || continue
+            local rps_val
+            rps_val=$(cat /sys/class/net/$vdev/queues/rx-0/rps_cpus 2>/dev/null | sed 's/^0*//')
+            if [ "$rps_val" = "$expected_mask" ]; then
+                rps_verify_devs="${rps_verify_devs} ${vdev}✓"
+            else
+                rps_verify_devs="${rps_verify_devs} ${vdev}✗"
+                rps_all_ok=0
+            fi
+        done
+        if [ -n "$rps_verify_devs" ]; then
+            if [ $rps_all_ok -eq 1 ]; then
+                echo -e "RPS/RFS:    ${gl_lv}${cpu_count}核分担 (0x${expected_mask})${rps_verify_devs} ✓${gl_bai}"
+            else
+                echo -e "RPS/RFS:    ${gl_huang}部分网卡未生效:${rps_verify_devs} ⚠${gl_bai}"
+            fi
+        else
+            echo -e "RPS/RFS:    ${gl_huang}未检测到物理网卡 ⚠${gl_bai}"
+        fi
+    else
+        echo -e "RPS/RFS:    ${gl_zi}单核跳过${gl_bai}"
+    fi
+
     echo ""
-    
+
     # 最终判断
     if [ "$actual_qdisc" = "fq" ] && [ "$actual_cc" = "bbr" ] && \
        [ "$actual_wmem" = "$buffer_bytes" ] && [ "$actual_rmem" = "$buffer_bytes" ]; then
@@ -4161,6 +4330,9 @@ dns_purify_and_harden() {
         echo ""
         echo -e "${gl_huang}提示：重启后 DNS 会自动恢复，无需担心${gl_bai}"
         echo ""
+        if [ "$AUTO_MODE" = "1" ]; then
+            return
+        fi
         read -e -p "$(echo -e "${gl_huang}如需重新配置请输入 y，返回主菜单按回车: ${gl_bai}")" dns_reconfig
         if [[ ! "$dns_reconfig" =~ ^[Yy]$ ]]; then
             return
@@ -4181,18 +4353,26 @@ dns_purify_and_harden() {
     echo "     备用：无"
     echo "     加密：无（国内DNS不支持DoT/DNSSEC）"
     echo ""
-    read -e -p "$(echo -e "${gl_huang}请选择 (1/2，默认1): ${gl_bai}")" dns_mode_choice
-    dns_mode_choice=${dns_mode_choice:-1}
-    
+    if [ "$AUTO_MODE" = "1" ]; then
+        dns_mode_choice=1
+    else
+        read -e -p "$(echo -e "${gl_huang}请选择 (1/2，默认1): ${gl_bai}")" dns_mode_choice
+        dns_mode_choice=${dns_mode_choice:-1}
+    fi
+
     # 验证输入
     if [[ ! "$dns_mode_choice" =~ ^[1-2]$ ]]; then
         dns_mode_choice=1
     fi
-    
+
     echo ""
-    
-    read -e -p "$(echo -e "${gl_huang}是否继续执行？(y/n): ${gl_bai}")" confirm
-    
+
+    if [ "$AUTO_MODE" = "1" ]; then
+        confirm=y
+    else
+        read -e -p "$(echo -e "${gl_huang}是否继续执行？(y/n): ${gl_bai}")" confirm
+    fi
+
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${gl_huang}已取消操作${gl_bai}"
         return
@@ -5053,8 +5233,12 @@ DBUS_FIX
         echo "  1) 尝试强制修复（会重启systemd-resolved，有临时DNS保护）"
         echo "  2) 跳过网卡配置（安全，全局DNS已生效，推荐）"
         echo ""
-        read -e -p "$(echo -e "${gl_huang}请选择 (1/2，默认2): ${gl_bai}")" force_fix_choice
-        force_fix_choice=${force_fix_choice:-2}
+        if [ "$AUTO_MODE" = "1" ]; then
+            force_fix_choice=2
+        else
+            read -e -p "$(echo -e "${gl_huang}请选择 (1/2，默认2): ${gl_bai}")" force_fix_choice
+            force_fix_choice=${force_fix_choice:-2}
+        fi
         
         if [[ "$force_fix_choice" == "1" ]]; then
             echo ""
@@ -5755,7 +5939,11 @@ realm_fix_timeout() {
     echo "  • DNS 管理 → 功能5已配置"
     echo "  • tcp_fin_timeout / tcp_fastopen → 功能3已配置"
     echo ""
-    read -e -p "是否继续执行修复？(y/n): " confirm
+    if [ "$AUTO_MODE" = "1" ]; then
+        confirm=y
+    else
+        read -e -p "是否继续执行修复？(y/n): " confirm
+    fi
 
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${gl_huang}已取消操作${gl_bai}"
@@ -6546,6 +6734,95 @@ ai_proxy_menu() {
 }
 
 #=============================================================================
+#=============================================================================
+# 一键全自动优化
+#=============================================================================
+
+one_click_optimize() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}   ⭐ 一键全自动优化 (BBR v3 + 网络调优)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 检测当前是否已运行 XanMod 内核
+    local xanmod_running=0
+    if uname -r | grep -qi 'xanmod'; then
+        xanmod_running=1
+    fi
+
+    if [ $xanmod_running -eq 0 ]; then
+        # ===== 阶段1：安装内核 =====
+        echo -e "${gl_huang}▶ 阶段 1/2：安装 XanMod + BBR v3 内核${gl_bai}"
+        echo ""
+        echo "安装完成后需要重启服务器"
+        echo "重启后再次执行 66 即可进入阶段2（全自动优化）"
+        echo ""
+
+        install_xanmod_kernel
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+            echo -e "${gl_lv}  ✅ 内核安装完成！${gl_bai}"
+            echo -e "${gl_lv}  重启后执行 66 继续自动优化${gl_bai}"
+            echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+            echo ""
+            server_reboot
+        fi
+    else
+        # ===== 阶段2：全自动优化 =====
+        echo -e "${gl_lv}✅ 检测到 XanMod 内核已运行：$(uname -r)${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}▶ 阶段 2/2：全自动网络优化${gl_bai}"
+        echo "将依次执行："
+        echo "  [1/5] 功能3 - BBR 直连优化（自动检测带宽）"
+        echo "  [2/5] 功能4 - MTU/MSS 优化（自动检测+保守方案）"
+        echo "  [3/5] 功能5 - DNS 净化（纯国外模式）"
+        echo "  [4/5] 功能6 - Realm 转发修复"
+        echo "  [5/5] 功能8 - 永久禁用 IPv6"
+        echo ""
+        sleep 3
+
+        AUTO_MODE=1
+
+        echo -e "${gl_kjlan}━━━━━━ [1/5] BBR 直连优化 ━━━━━━${gl_bai}"
+        bbr_configure_direct
+
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━ [2/5] MTU/MSS 优化 ━━━━━━${gl_bai}"
+        mtu_mss_optimization
+
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━ [3/5] DNS 净化 ━━━━━━${gl_bai}"
+        dns_purify_and_harden
+
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━ [4/5] Realm 转发修复 ━━━━━━${gl_bai}"
+        realm_fix_timeout
+
+        AUTO_MODE=""
+
+        echo ""
+        echo -e "${gl_kjlan}━━━━━━ [5/5] 禁用 IPv6（可选） ━━━━━━${gl_bai}"
+        read -e -p "$(echo -e "${gl_huang}是否永久禁用 IPv6？(Y/N) [Y]: ${gl_bai}")" ipv6_choice
+        ipv6_choice=${ipv6_choice:-Y}
+        if [[ "$ipv6_choice" =~ ^[Yy]$ ]]; then
+            AUTO_MODE=1
+            disable_ipv6_permanent
+            AUTO_MODE=""
+        else
+            echo -e "${gl_huang}已跳过 IPv6 禁用${gl_bai}"
+        fi
+
+        echo ""
+        echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_lv}  ✅ 全部优化完成！${gl_bai}"
+        echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        break_end
+    fi
+}
+
 # 主菜单
 #=============================================================================
 
@@ -6616,6 +6893,9 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━ AI 代理服务 ━━━━━━━━━${gl_bai}"
     echo "32. AI代理工具箱 ▶ (Claude/WebUI/CRS/Fuclaude/Caddy) ⭐ 推荐"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━ 一键优化 ━━━━━━━━━${gl_bai}"
+    echo "66. ⭐ 一键全自动优化 (BBR v3 + 网络调优)"
     echo ""
     echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_hong}99. 完全卸载脚本（卸载所有内容）${gl_bai}"
@@ -6732,6 +7012,9 @@ show_main_menu() {
             ;;
         32)
             ai_proxy_menu
+            ;;
+        66)
+            one_click_optimize
             ;;
         99)
             uninstall_all
