@@ -20509,7 +20509,7 @@ const server = http.createServer(async (req, res) => {
                 stream: false
             };
             if (chatReq.max_tokens) respReq.max_output_tokens = chatReq.max_tokens;
-            if (chatReq.temperature !== undefined) respReq.temperature = chatReq.temperature;
+            // 不转发 temperature/top_p 等参数，部分上游不支持会导致 502
 
             const upstreamEndpoint = upstream_url.replace(/\/+$/, '') + '/v1/responses';
             const authHeader = `Bearer ${api_key}`;
