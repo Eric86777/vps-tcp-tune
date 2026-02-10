@@ -19227,7 +19227,7 @@ manage_caddy() {
 # =====================================================
 
 # 常量定义
-OPENCLAW_SERVICE_NAME="openclaw"
+OPENCLAW_SERVICE_NAME="openclaw-gateway"
 OPENCLAW_HOME_DIR="${HOME}/.openclaw"
 OPENCLAW_CONFIG_FILE="${HOME}/.openclaw/openclaw.json"
 OPENCLAW_ENV_FILE="${HOME}/.openclaw/.env"
@@ -19724,9 +19724,7 @@ EOF
   // 网关设置
   gateway: {
     port: ${port},
-    mode: "local",
     auth: {
-      mode: "token",
       token: "${gateway_token}"
     }
   },
@@ -19932,7 +19930,7 @@ openclaw_update() {
     echo ""
 
     echo "正在更新..."
-    npm update -g openclaw@latest 2>&1 | tail -10
+    npm install -g openclaw@latest 2>&1 | tail -10
 
     local new_ver=$(openclaw --version 2>/dev/null || echo "unknown")
     echo ""
@@ -20604,7 +20602,7 @@ openclaw_quick_api() {
 
     local api_type="" provider_name="" preset_mode=""
     local base_url="" api_key="" model_id="" model_name=""
-    local model_reasoning="false" model_input="200000" model_cost_input="3" model_cost_output="15"
+    local model_reasoning="false" model_input='["text"]' model_cost_input="3" model_cost_output="15"
     local model_cost_cache_read="0.3" model_cost_cache_write="3.75"
     local model_context="200000" model_max_tokens="16384"
 
@@ -20911,7 +20909,7 @@ openclaw_doctor() {
     case "$confirm" in
         [Yy])
             echo ""
-            openclaw doctor --fix
+            openclaw doctor --yes
             ;;
     esac
 
