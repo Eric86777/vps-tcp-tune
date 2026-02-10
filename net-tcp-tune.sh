@@ -19724,6 +19724,7 @@ EOF
   // 网关设置
   gateway: {
     port: ${port},
+    mode: "local",
     auth: {
       token: "${gateway_token}"
     }
