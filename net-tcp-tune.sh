@@ -20963,7 +20963,7 @@ openclaw_doctor() {
     case "$confirm" in
         [Yy])
             echo ""
-            openclaw doctor --yes
+            openclaw doctor --fix
             ;;
     esac
 
