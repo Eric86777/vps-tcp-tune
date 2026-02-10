@@ -20591,16 +20591,18 @@ SVCEOF
     sleep 2
 
     if systemctl is-active "$RESP_PROXY_SERVICE" &>/dev/null; then
+        local server_ip
+        server_ip=$(curl -s4 --max-time 3 ifconfig.me 2>/dev/null || curl -s4 --max-time 3 ip.sb 2>/dev/null || echo "你的IP")
         echo ""
         echo -e "${gl_lv}✅ 转换代理部署成功！${gl_bai}"
         echo ""
-        echo -e "代理地址: ${gl_huang}http://$(curl -s4 ifconfig.me 2>/dev/null || echo '你的IP'):${proxy_port}${gl_bai}"
+        echo -e "代理地址: ${gl_huang}http://${server_ip}:${proxy_port}/v1/chat/completions${gl_bai}"
         echo ""
         echo "沉浸式翻译配置："
         echo -e "  翻译服务: ${gl_zi}OpenAI${gl_bai}"
-        echo -e "  API URL:  ${gl_zi}http://你的IP:${proxy_port}/v1/chat/completions${gl_bai}"
+        echo -e "  API URL:  ${gl_zi}http://${server_ip}:${proxy_port}/v1/chat/completions${gl_bai}"
         echo -e "  API Key:  ${gl_zi}${api_key}${gl_bai}"
-        echo -e "  模型:     ${gl_zi}按上游支持的模型填写${gl_bai}"
+        echo -e "  模型:     ${gl_zi}按上游支持的模型填写 (如 gpt-5.3-codex / o3)${gl_bai}"
     else
         echo -e "${gl_hong}❌ 服务启动失败，请检查日志：journalctl -u ${RESP_PROXY_SERVICE} -n 20${gl_bai}"
     fi
@@ -20870,9 +20872,27 @@ manage_resp_proxy() {
             8)
                 clear
                 if [ -f "$RESP_PROXY_CONFIG" ]; then
-                    echo -e "${gl_kjlan}配置文件 (${RESP_PROXY_CONFIG}):${gl_bai}"
+                    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                    echo -e "${gl_kjlan}  原始反代 API 配置${gl_bai}"
+                    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
                     echo ""
                     cat "$RESP_PROXY_CONFIG"
+                    echo ""
+                    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                    echo -e "${gl_kjlan}  转换后的代理信息${gl_bai}"
+                    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                    echo ""
+                    local cfg_port cfg_key cfg_ip
+                    cfg_port=$(resp_proxy_get_port)
+                    cfg_key=$(grep -o '"api_key"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_PROXY_CONFIG" | sed 's/.*"api_key"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//')
+                    cfg_ip=$(curl -s4 --max-time 3 ifconfig.me 2>/dev/null || curl -s4 --max-time 3 ip.sb 2>/dev/null || echo "你的IP")
+                    echo -e "代理地址: ${gl_huang}http://${cfg_ip}:${cfg_port}/v1/chat/completions${gl_bai}"
+                    echo ""
+                    echo -e "${gl_kjlan}沉浸式翻译配置:${gl_bai}"
+                    echo -e "  翻译服务: ${gl_zi}OpenAI${gl_bai}"
+                    echo -e "  API URL:  ${gl_zi}http://${cfg_ip}:${cfg_port}/v1/chat/completions${gl_bai}"
+                    echo -e "  API Key:  ${gl_zi}${cfg_key}${gl_bai}"
+                    echo -e "  模型:     ${gl_zi}按上游支持的模型填写 (如 gpt-5.3-codex / o3)${gl_bai}"
                 else
                     echo -e "${gl_huang}配置文件不存在${gl_bai}"
                 fi
