@@ -20470,22 +20470,80 @@ openclaw_show_config() {
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
 
-    if [ -f "$OPENCLAW_CONFIG_FILE" ]; then
-        echo -e "${gl_zi}配置文件: ${OPENCLAW_CONFIG_FILE}${gl_bai}"
-        echo ""
-        cat "$OPENCLAW_CONFIG_FILE"
-    else
+    if [ ! -f "$OPENCLAW_CONFIG_FILE" ]; then
         echo -e "${gl_huang}⚠ 配置文件不存在: ${OPENCLAW_CONFIG_FILE}${gl_bai}"
+        echo ""
+        break_end
+        return
     fi
+
+    # 格式化摘要
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+    local port=$(openclaw_get_port)
+    local gw_token=$(sed -nE 's/.*OPENCLAW_GATEWAY_TOKEN=(.*)/\1/p' "$OPENCLAW_ENV_FILE" 2>/dev/null)
+
+    node -e "
+        const fs = require('fs');
+        const content = fs.readFileSync('${OPENCLAW_CONFIG_FILE}', 'utf-8');
+        try {
+            const config = new Function('return (' + content + ')')();
+            const providers = config.models && config.models.providers || {};
+            const keys = Object.keys(providers);
+            const defaults = config.agents && config.agents.defaults && config.agents.defaults.model || {};
+            for (const name of keys) {
+                const p = providers[name];
+                console.log('  Provider:  ' + name);
+                console.log('  API 类型:  ' + (p.api || 'unknown'));
+                console.log('  反代地址:  ' + (p.baseUrl || 'unknown'));
+                const models = p.models || [];
+                if (models.length > 0) {
+                    console.log('  可用模型:  ' + models.map(m => m.id).join(', '));
+                }
+            }
+            if (defaults.primary) console.log('  主力模型:  ' + defaults.primary);
+
+            const ch = config.channels || {};
+            const chNames = Object.keys(ch);
+            if (chNames.length > 0) {
+                console.log('');
+                console.log('  已配置频道: ' + chNames.map(n => { const e = ch[n].enabled !== false; return (e ? '✅' : '❌') + ' ' + n; }).join('  |  '));
+            }
+        } catch(e) { console.log('  无法解析配置'); }
+    " 2>/dev/null
 
     echo ""
-
-    if [ -f "$OPENCLAW_ENV_FILE" ]; then
-        echo -e "${gl_zi}环境变量: ${OPENCLAW_ENV_FILE}${gl_bai}"
-        echo ""
-        # 脱敏显示 API Key
-        sed 's/\(=\).*/\1****（已隐藏）/' "$OPENCLAW_ENV_FILE"
+    echo -e "${gl_kjlan}━━━ 部署信息 ━━━${gl_bai}"
+    echo -e "网关端口:   ${gl_huang}${port}${gl_bai}"
+    if [ -n "$gw_token" ]; then
+        echo -e "网关 Token: ${gl_huang}${gw_token}${gl_bai}"
     fi
+    echo -e "控制面板:   ${gl_huang}http://${server_ip}:${port}/${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}━━━ 访问方式 ━━━${gl_bai}"
+    echo -e "SSH 隧道:   ${gl_huang}ssh -N -L ${port}:127.0.0.1:${port} root@${server_ip}${gl_bai}"
+    echo -e "然后访问:   ${gl_huang}http://localhost:${port}/${gl_bai}"
+    echo ""
+
+    echo -e "${gl_kjlan}━━━ 管理命令 ━━━${gl_bai}"
+    echo "  状态: systemctl status $OPENCLAW_SERVICE_NAME"
+    echo "  日志: journalctl -u $OPENCLAW_SERVICE_NAME -f"
+    echo "  重启: systemctl restart $OPENCLAW_SERVICE_NAME"
+    echo ""
+
+    # 查看原始文件
+    read -e -p "是否查看原始配置文件？(Y/N): " show_raw
+    case "$show_raw" in
+        [Yy])
+            echo ""
+            echo -e "${gl_zi}── ${OPENCLAW_CONFIG_FILE} ──${gl_bai}"
+            cat "$OPENCLAW_CONFIG_FILE"
+            echo ""
+            if [ -f "$OPENCLAW_ENV_FILE" ]; then
+                echo -e "${gl_zi}── ${OPENCLAW_ENV_FILE}（脱敏）──${gl_bai}"
+                sed 's/\(=\).*/\1****（已隐藏）/' "$OPENCLAW_ENV_FILE"
+            fi
+            ;;
+    esac
 
     echo ""
     break_end
