@@ -20694,9 +20694,25 @@ resp_proxy_status() {
     systemctl status "$RESP_PROXY_SERVICE" --no-pager 2>/dev/null || echo "服务未安装"
     echo ""
     if [ -f "$RESP_PROXY_CONFIG" ]; then
+        local cur_port cur_upstream cur_key server_ip
+        cur_port=$(resp_proxy_get_port)
+        cur_upstream=$(resp_proxy_get_upstream)
+        cur_key=$(grep -o '"api_key"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_PROXY_CONFIG" | sed 's/.*"api_key"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//')
+        server_ip=$(curl -s4 --max-time 3 ifconfig.me 2>/dev/null || curl -s4 --max-time 3 ip.sb 2>/dev/null || echo "你的IP")
+
         echo -e "${gl_kjlan}当前配置:${gl_bai}"
-        echo "  上游地址: $(resp_proxy_get_upstream)"
-        echo "  监听端口: $(resp_proxy_get_port)"
+        echo -e "  上游地址: ${gl_zi}${cur_upstream}${gl_bai}"
+        echo -e "  监听端口: ${gl_zi}${cur_port}${gl_bai}"
+        echo -e "  API Key:  ${gl_zi}${cur_key}${gl_bai}"
+        echo ""
+        echo -e "${gl_kjlan}代理地址:${gl_bai}"
+        echo -e "  ${gl_huang}http://${server_ip}:${cur_port}${gl_bai}"
+        echo ""
+        echo -e "${gl_kjlan}沉浸式翻译配置:${gl_bai}"
+        echo -e "  翻译服务: ${gl_zi}OpenAI${gl_bai}"
+        echo -e "  API URL:  ${gl_zi}http://${server_ip}:${cur_port}/v1/chat/completions${gl_bai}"
+        echo -e "  API Key:  ${gl_zi}${cur_key}${gl_bai}"
+        echo -e "  模型:     ${gl_zi}按上游支持的模型填写 (如 gpt-5.3-codex / o3)${gl_bai}"
     fi
     break_end
 }
