@@ -19349,7 +19349,7 @@ openclaw_install_nodejs() {
 openclaw_install_pkg() {
     echo -e "${gl_kjlan}[2/4] 安装 OpenClaw...${gl_bai}"
 
-    npm install -g openclaw@latest 2>&1 | tail -20
+    npm install -g openclaw@latest
 
     if command -v openclaw &>/dev/null; then
         local ver=$(openclaw --version 2>/dev/null || echo "unknown")
