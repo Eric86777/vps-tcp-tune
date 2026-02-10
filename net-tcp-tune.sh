@@ -19348,8 +19348,10 @@ openclaw_install_nodejs() {
 # 安装 OpenClaw
 openclaw_install_pkg() {
     echo -e "${gl_kjlan}[2/4] 安装 OpenClaw...${gl_bai}"
+    echo -e "${gl_hui}正在下载并安装，可能需要 1-3 分钟...${gl_bai}"
+    echo ""
 
-    npm install -g openclaw@latest
+    npm install -g openclaw@latest --loglevel info
 
     if command -v openclaw &>/dev/null; then
         local ver=$(openclaw --version 2>/dev/null || echo "unknown")
