@@ -20081,6 +20081,12 @@ try {
 if (!config.channels) config.channels = {};
 config.channels[channelName] = newChannelConfig;
 
+// 同时启用对应插件（防止 doctor --fix 禁用后无法自动恢复）
+if (!config.plugins) config.plugins = {};
+if (!config.plugins.entries) config.plugins.entries = {};
+if (!config.plugins.entries[channelName]) config.plugins.entries[channelName] = {};
+config.plugins.entries[channelName].enabled = true;
+
 const output = '// OpenClaw 配置 - 由部署脚本自动生成\n// 文档: https://docs.openclaw.ai/gateway/configuration\n' + JSON.stringify(config, null, 2) + '\n';
 fs.writeFileSync(configPath, output);
 NODESCRIPT
@@ -20117,6 +20123,10 @@ try {
 
 if (config.channels && config.channels[channelName]) {
     delete config.channels[channelName];
+    // 同时禁用对应插件
+    if (config.plugins && config.plugins.entries && config.plugins.entries[channelName]) {
+        config.plugins.entries[channelName].enabled = false;
+    }
     const output = '// OpenClaw 配置 - 由部署脚本自动生成\n// 文档: https://docs.openclaw.ai/gateway/configuration\n' + JSON.stringify(config, null, 2) + '\n';
     fs.writeFileSync(configPath, output);
     console.log('已移除 ' + channelName + ' 频道配置');
