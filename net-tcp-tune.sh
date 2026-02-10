@@ -20069,10 +20069,9 @@ const channelFile = process.argv[4];
 const newChannelConfig = JSON.parse(fs.readFileSync(channelFile, 'utf-8'));
 
 const content = fs.readFileSync(configPath, 'utf-8');
-const stripped = content.replace(/\/\/.*$/gm, '');
 let config;
 try {
-    config = new Function('return (' + stripped + ')')();
+    config = new Function('return (' + content + ')')();
 } catch(e) {
     console.error('无法解析配置文件: ' + e.message);
     process.exit(1);
@@ -20107,10 +20106,9 @@ const configPath = process.argv[2];
 const channelName = process.argv[3];
 
 const content = fs.readFileSync(configPath, 'utf-8');
-const stripped = content.replace(/\/\/.*$/gm, '');
 let config;
 try {
-    config = new Function('return (' + stripped + ')')();
+    config = new Function('return (' + content + ')')();
 } catch(e) {
     console.error('无法解析配置文件');
     process.exit(1);
@@ -20153,9 +20151,8 @@ openclaw_channels() {
             node -e '
                 const fs = require("fs");
                 const content = fs.readFileSync(process.argv[1], "utf-8");
-                const stripped = content.replace(/\/\/.*$/gm, "");
                 try {
-                    const config = new Function("return (" + stripped + ")")();
+                    const config = new Function("return (" + content + ")")();
                     const ch = config.channels || {};
                     const names = Object.keys(ch);
                     if (names.length === 0) { console.log("  暂无已配置的频道"); }
@@ -20564,9 +20561,8 @@ openclaw_quick_api() {
     node -e "
         const fs = require('fs');
         const content = fs.readFileSync('${OPENCLAW_CONFIG_FILE}', 'utf-8');
-        const stripped = content.replace(/\/\/.*$/gm, '');
         try {
-            const config = new Function('return (' + stripped + ')')();
+            const config = new Function('return (' + content + ')')();
             const providers = config.models && config.models.providers || {};
             const keys = Object.keys(providers);
             if (keys.length === 0) { console.log('  暂无 API 配置'); }
@@ -20815,12 +20811,11 @@ APIJSON
         const configPath = '${OPENCLAW_CONFIG_FILE}';
         const newDataPath = '${tmp_json}';
 
-        // 读取现有配置（JSON5: 去注释后用 Function 解析）
+        // 读取现有配置（JSON5: 用 Function 解析，JS 引擎原生支持注释）
         const content = fs.readFileSync(configPath, 'utf-8');
-        const stripped = content.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
         let config;
         try {
-            config = new Function('return (' + stripped + ')')();
+            config = new Function('return (' + content + ')')();
         } catch(e) {
             console.error('❌ 无法解析现有配置: ' + e.message);
             process.exit(1);
