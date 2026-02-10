@@ -4039,7 +4039,7 @@ dns_purify_and_harden() {
     fi
 
     echo -e "${gl_kjlan}功能说明：${gl_bai}"
-    echo "  ✓ 配置安全的DNS服务器（支持国外/国内/混合模式）"
+    echo "  ✓ 配置安全的DNS服务器（支持国外/国内模式）"
     echo "  ✓ 防止DHCP覆盖DNS配置"
     echo "  ✓ 清除厂商残留的DNS配置"
     echo "  ✓ 启用DNS安全功能（DNSSEC + DNS over TLS）"
@@ -4181,16 +4181,11 @@ dns_purify_and_harden() {
     echo "     备用：无"
     echo "     加密：无（国内DNS不支持DoT/DNSSEC）"
     echo ""
-    echo "  3. 🔀 混合模式（最大容错）"
-    echo "     首选：Google DNS + Cloudflare DNS"
-    echo "     备用：阿里云 DNS + 114DNS"
-    echo "     加密：机会性 DNS over TLS"
-    echo ""
-    read -e -p "$(echo -e "${gl_huang}请选择 (1/2/3，默认1): ${gl_bai}")" dns_mode_choice
+    read -e -p "$(echo -e "${gl_huang}请选择 (1/2，默认1): ${gl_bai}")" dns_mode_choice
     dns_mode_choice=${dns_mode_choice:-1}
     
     # 验证输入
-    if [[ ! "$dns_mode_choice" =~ ^[1-3]$ ]]; then
+    if [[ ! "$dns_mode_choice" =~ ^[1-2]$ ]]; then
         dns_mode_choice=1
     fi
     
@@ -4642,16 +4637,6 @@ dns_purify_and_harden() {
             INTERFACE_DNS_PRIMARY="223.5.5.5"
             INTERFACE_DNS_SECONDARY="119.29.29.29"
             ;;
-        3)
-            # 混合模式
-            TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
-            FALLBACK_DNS="223.5.5.5 114.114.114.114"
-            DNS_OVER_TLS="opportunistic"
-            DNSSEC_MODE="no"
-            MODE_NAME="混合模式"
-            INTERFACE_DNS_PRIMARY="8.8.8.8"
-            INTERFACE_DNS_SECONDARY="1.1.1.1"
-            ;;
     esac
 
     # strict DoT 预检：若目标机房到853不可达，直接中止（不自动降级）
@@ -4662,7 +4647,7 @@ dns_purify_and_harden() {
 
         if [[ "$dot_reachable_count" -eq 0 ]]; then
             echo -e "${gl_hong}❌ 预检失败：当前机房无法连通 DoT(853)，已终止执行（未做任何修改）${gl_bai}"
-            echo -e "${gl_huang}建议：改用模式2/3，或放开到 8.8.8.8/1.1.1.1 的 853 出口后再执行模式1${gl_bai}"
+            echo -e "${gl_huang}建议：改用模式2，或放开到 8.8.8.8/1.1.1.1 的 853 出口后再执行模式1${gl_bai}"
             break_end
             return 1
         fi
