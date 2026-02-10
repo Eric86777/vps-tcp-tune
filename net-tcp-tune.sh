@@ -19249,7 +19249,8 @@ openclaw_check_status() {
 # 获取当前端口
 openclaw_get_port() {
     if [ -f "$OPENCLAW_CONFIG_FILE" ]; then
-        local port=$(sed -nE 's/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$OPENCLAW_CONFIG_FILE" 2>/dev/null | head -1)
+        # 兼容 JSON5 格式（key 无引号: port: 19966）和标准 JSON（"port": 19966）
+        local port=$(sed -nE 's/.*"?port"?[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$OPENCLAW_CONFIG_FILE" 2>/dev/null | head -1)
         if [ -n "$port" ]; then
             echo "$port"
             return
@@ -19858,7 +19859,7 @@ openclaw_deploy() {
     echo ""
     echo -e "${gl_kjlan}【安全说明】${gl_bai}"
     echo "  网关默认绑定 loopback，外部访问需 SSH 隧道:"
-    echo -e "  ${gl_huang}ssh -N -L 18789:127.0.0.1:18789 root@${server_ip}${gl_bai}"
+    echo -e "  ${gl_huang}ssh -N -L ${port}:127.0.0.1:${port} root@${server_ip}${gl_bai}"
     echo "  检查安全: openclaw doctor"
     echo ""
     echo -e "${gl_kjlan}管理命令:${gl_bai}"
