@@ -4056,7 +4056,9 @@ dns_purify_and_harden() {
 
     # ==================== 已有配置检测 ====================
     local dns_already_ok=true
+    local dns_is_legacy=false
     local current_mode_name=""
+    local svc_file="/etc/systemd/system/dns-purify-persist.service"
 
     # 检查1: 持久化服务是否存在且已启用
     if ! systemctl is-enabled --quiet dns-purify-persist.service 2>/dev/null; then
@@ -4091,6 +4093,18 @@ dns_purify_and_harden() {
         fi
     fi
 
+    # 检查6: 区分新版/老版持久化（关键安全检查）
+    if [ "$dns_already_ok" = true ]; then
+        # 老版特征1: 服务文件用 Requires 而非 Wants（重启时 resolved 稍慢就整体失败）
+        if [ -f "$svc_file" ] && grep -q "Requires=systemd-resolved" "$svc_file" 2>/dev/null; then
+            dns_is_legacy=true
+        fi
+        # 老版特征2: 持久化脚本缺少 resolvectl 可用性检查
+        if ! grep -q "command -v resolvectl" /usr/local/bin/dns-purify-apply.sh 2>/dev/null; then
+            dns_is_legacy=true
+        fi
+    fi
+
     # 检测当前模式
     if [ "$dns_already_ok" = true ] && [ -f /etc/systemd/resolved.conf ]; then
         local cur_dot
@@ -4102,7 +4116,24 @@ dns_purify_and_harden() {
         esac
     fi
 
-    if [ "$dns_already_ok" = true ]; then
+    # 显示检测结果
+    if [ "$dns_already_ok" = true ] && [ "$dns_is_legacy" = true ]; then
+        # 老版配置：当前能用但重启有隐患
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_hong}  ⚠️  检测到老版 DNS 净化配置，重启后可能导致 DNS 失效！${gl_bai}"
+        echo -e "${gl_hong}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo -e "  当前模式:    ${gl_lv}${current_mode_name}${gl_bai}"
+        echo -e "  resolved:    ${gl_lv}✅ 运行中${gl_bai}"
+        echo -e "  resolv.conf: ${gl_lv}✅ 指向 stub${gl_bai}"
+        echo -e "  DNS 解析:    ${gl_lv}✅ 当前正常${gl_bai}"
+        echo -e "  开机持久化:  ${gl_hong}⚠️  老版（重启有风险）${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}原因：老版持久化服务存在已知bug，重启后可能导致DNS断连${gl_bai}"
+        echo -e "${gl_lv}建议：重新执行功能5，新版会自动替换为安全的持久化机制${gl_bai}"
+        echo ""
+    elif [ "$dns_already_ok" = true ]; then
+        # 新版配置：完美状态
         echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo -e "${gl_lv}  ✅ DNS净化已完美配置，无需重复执行！${gl_bai}"
         echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -4110,7 +4141,7 @@ dns_purify_and_harden() {
         echo -e "  当前模式:    ${gl_lv}${current_mode_name}${gl_bai}"
         echo -e "  resolved:    ${gl_lv}✅ 运行中${gl_bai}"
         echo -e "  resolv.conf: ${gl_lv}✅ 指向 stub（resolved 托管）${gl_bai}"
-        echo -e "  开机持久化:  ${gl_lv}✅ dns-purify-persist 已启用${gl_bai}"
+        echo -e "  开机持久化:  ${gl_lv}✅ dns-purify-persist 已启用（新版）${gl_bai}"
         echo -e "  DNS 解析:    ${gl_lv}✅ 正常${gl_bai}"
         echo ""
         echo -e "${gl_huang}提示：重启后 DNS 会自动恢复，无需担心${gl_bai}"
