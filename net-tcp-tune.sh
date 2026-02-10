@@ -6704,11 +6704,12 @@ ai_proxy_menu() {
         echo "4. Fuclaude 部署管理 (Claude网页版共享)"
         echo "5. Sub2API 部署管理"
         echo "6. Caddy 多域名反代"
+        echo "7. OpenClaw 部署管理 (AI多渠道消息网关)"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-6]: " choice
+        read -e -p "请选择操作 [0-7]: " choice
 
         case $choice in
             1)
@@ -6728,6 +6729,9 @@ ai_proxy_menu() {
                 ;;
             6)
                 manage_caddy
+                ;;
+            7)
+                manage_openclaw
                 ;;
             0)
                 return
@@ -19201,6 +19205,1098 @@ manage_caddy() {
                 ;;
             10)
                 caddy_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# =====================================================
+# OpenClaw 部署管理 (AI多渠道消息网关)
+# =====================================================
+
+# 常量定义
+OPENCLAW_SERVICE_NAME="openclaw"
+OPENCLAW_HOME_DIR="${HOME}/.openclaw"
+OPENCLAW_CONFIG_FILE="${HOME}/.openclaw/openclaw.json"
+OPENCLAW_ENV_FILE="${HOME}/.openclaw/.env"
+OPENCLAW_DEFAULT_PORT="18789"
+
+# 检测 OpenClaw 状态
+openclaw_check_status() {
+    if ! command -v openclaw &>/dev/null; then
+        echo "not_installed"
+    elif systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo "running"
+    elif systemctl is-enabled "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo "stopped"
+    else
+        echo "installed_no_service"
+    fi
+}
+
+# 获取当前端口
+openclaw_get_port() {
+    if [ -f "$OPENCLAW_CONFIG_FILE" ]; then
+        local port=$(sed -nE 's/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$OPENCLAW_CONFIG_FILE" 2>/dev/null | head -1)
+        if [ -n "$port" ]; then
+            echo "$port"
+            return
+        fi
+    fi
+    echo "$OPENCLAW_DEFAULT_PORT"
+}
+
+# 检查端口是否可用
+openclaw_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 检测并安装 Node.js 22+
+openclaw_install_nodejs() {
+    echo -e "${gl_kjlan}[1/4] 检测 Node.js 环境...${gl_bai}"
+
+    if command -v node &>/dev/null; then
+        local node_version=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [ "$node_version" -ge 22 ]; then
+            echo -e "${gl_lv}✅ Node.js $(node -v) 已安装${gl_bai}"
+            return 0
+        else
+            echo -e "${gl_huang}⚠ Node.js 版本过低 ($(node -v))，OpenClaw 需要 22+${gl_bai}"
+        fi
+    else
+        echo -e "${gl_huang}⚠ Node.js 未安装${gl_bai}"
+    fi
+
+    echo "正在安装 Node.js 22..."
+
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        local os_id="${ID,,}"
+    fi
+
+    local setup_script=$(mktemp)
+    local script_url=""
+
+    if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]]; then
+        script_url="https://deb.nodesource.com/setup_22.x"
+    elif [[ "$os_id" == "centos" || "$os_id" == "rhel" || "$os_id" == "fedora" || "$os_id" == "rocky" || "$os_id" == "alma" ]]; then
+        script_url="https://rpm.nodesource.com/setup_22.x"
+    fi
+
+    if [ -n "$script_url" ]; then
+        if ! curl -fsSL --connect-timeout 15 --max-time 60 "$script_url" -o "$setup_script" 2>/dev/null; then
+            echo -e "${gl_hong}❌ 下载 Node.js 设置脚本失败${gl_bai}"
+            rm -f "$setup_script"
+            return 1
+        fi
+
+        if ! head -1 "$setup_script" | grep -q "^#!"; then
+            echo -e "${gl_hong}❌ 脚本格式验证失败${gl_bai}"
+            rm -f "$setup_script"
+            return 1
+        fi
+
+        chmod +x "$setup_script"
+        bash "$setup_script" >/dev/null 2>&1
+        rm -f "$setup_script"
+    fi
+
+    if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]]; then
+        apt-get install -y nodejs >/dev/null 2>&1
+    elif [[ "$os_id" == "centos" || "$os_id" == "rhel" || "$os_id" == "fedora" || "$os_id" == "rocky" || "$os_id" == "alma" ]]; then
+        if command -v dnf &>/dev/null; then
+            dnf install -y nodejs >/dev/null 2>&1
+        else
+            yum install -y nodejs >/dev/null 2>&1
+        fi
+    else
+        echo -e "${gl_hong}❌ 不支持的系统，请手动安装 Node.js 22+${gl_bai}"
+        return 1
+    fi
+
+    if command -v node &>/dev/null; then
+        local installed_ver=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [ "$installed_ver" -ge 22 ]; then
+            echo -e "${gl_lv}✅ Node.js $(node -v) 安装成功${gl_bai}"
+            return 0
+        else
+            echo -e "${gl_hong}❌ 安装的 Node.js 版本仍低于 22，请手动升级${gl_bai}"
+            return 1
+        fi
+    else
+        echo -e "${gl_hong}❌ Node.js 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 安装 OpenClaw
+openclaw_install_pkg() {
+    echo -e "${gl_kjlan}[2/4] 安装 OpenClaw...${gl_bai}"
+
+    npm install -g openclaw@latest 2>&1 | tail -20
+
+    if command -v openclaw &>/dev/null; then
+        local ver=$(openclaw --version 2>/dev/null || echo "unknown")
+        echo -e "${gl_lv}✅ OpenClaw ${ver} 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ OpenClaw 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 交互式模型配置
+openclaw_config_model() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 模型配置${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 步骤1: 选择 API 来源
+    echo -e "${gl_kjlan}[步骤1] 选择你的 API 来源${gl_bai}"
+    echo ""
+    echo -e "${gl_lv}── 已验证可用的反代 ──${gl_bai}"
+    echo "1. CRS 反代 (Claude)         — anthropic-messages 协议"
+    echo "2. sub2api 反代 (Gemini)      — google-generative-ai 协议"
+    echo "3. sub2api 反代 (GPT)         — openai-responses 协议"
+    echo ""
+    echo -e "${gl_huang}── 通用配置 ──${gl_bai}"
+    echo "4. Anthropic 直连反代（自建 Nginx/Caddy 反代）"
+    echo "5. OpenAI 兼容中转（new-api / one-api / LiteLLM 等）"
+    echo "6. OpenRouter"
+    echo "7. Google Gemini 反代（其他 Gemini 代理）"
+    echo ""
+    echo -e "${gl_zi}── 官方直连 ──${gl_bai}"
+    echo "8. Anthropic 官方 API Key"
+    echo "9. Google Gemini 官方 API Key"
+    echo "10. OpenAI 官方 API Key"
+    echo ""
+    read -e -p "请选择 [1-10]: " api_choice
+
+    local api_type=""
+    local base_url=""
+    local provider_name="my-proxy"
+    local need_base_url=true
+    local need_api_key=true
+    local preset_mode=""  # crs / sub2api-gemini / 空=手动
+
+    case "$api_choice" in
+        1)
+            # CRS 反代 (Claude) - 已验证
+            preset_mode="crs"
+            api_type="anthropic-messages"
+            provider_name="crs-claude"
+            echo ""
+            echo -e "${gl_lv}已选择: CRS 反代 (Claude)${gl_bai}"
+            echo -e "${gl_zi}协议: anthropic-messages | 只需输入 CRS 地址和 API Key${gl_bai}"
+            echo ""
+            echo -e "${gl_zi}地址格式示例: http://IP:端口/api${gl_bai}"
+            echo -e "${gl_zi}Key 格式示例: cr_xxxx...${gl_bai}"
+            ;;
+        2)
+            # sub2api 反代 (Gemini) - 已验证
+            preset_mode="sub2api-gemini"
+            api_type="google-generative-ai"
+            provider_name="sub2api-gemini"
+            echo ""
+            echo -e "${gl_lv}已选择: sub2api 反代 (Gemini)${gl_bai}"
+            echo -e "${gl_zi}协议: google-generative-ai | 只需输入 sub2api 地址和 API Key${gl_bai}"
+            echo ""
+            echo -e "${gl_zi}地址格式示例: https://你的sub2api域名${gl_bai}"
+            echo -e "${gl_zi}Key 格式示例: sk-xxxx...（Gemini 专用 Key）${gl_bai}"
+            echo -e "${gl_huang}注意: sub2api 的 Claude Key 因凭证限制无法用于 OpenClaw，只有 Gemini Key 可用${gl_bai}"
+            ;;
+        3)
+            # sub2api 反代 (GPT) - 已验证
+            preset_mode="sub2api-gpt"
+            api_type="openai-responses"
+            provider_name="sub2api-gpt"
+            echo ""
+            echo -e "${gl_lv}已选择: sub2api 反代 (GPT)${gl_bai}"
+            echo -e "${gl_zi}协议: openai-responses | 只需输入 sub2api 地址和 API Key${gl_bai}"
+            echo ""
+            echo -e "${gl_zi}地址格式示例: https://你的sub2api域名${gl_bai}"
+            echo -e "${gl_zi}Key 格式示例: sk-xxxx...（GPT 专用 Key）${gl_bai}"
+            ;;
+        4)
+            api_type="anthropic-messages"
+            echo ""
+            echo -e "${gl_zi}提示: 反代地址一般不需要 /v1 后缀${gl_bai}"
+            echo -e "${gl_huang}注意: 使用 Claude Code 凭证的反代（如 sub2api Claude）无法用于 OpenClaw${gl_bai}"
+            ;;
+        5)
+            api_type="openai-completions"
+            echo ""
+            echo -e "${gl_zi}提示: 中转地址一般需要 /v1 后缀${gl_bai}"
+            ;;
+        6)
+            api_type="openai-completions"
+            base_url="https://openrouter.ai/api/v1"
+            provider_name="openrouter"
+            need_base_url=false
+            echo ""
+            echo -e "${gl_lv}已预填 OpenRouter 地址: ${base_url}${gl_bai}"
+            ;;
+        7)
+            api_type="google-generative-ai"
+            echo ""
+            echo -e "${gl_zi}提示: Gemini 反代地址会自动添加 /v1beta 后缀${gl_bai}"
+            ;;
+        8)
+            api_type="anthropic-messages"
+            base_url="https://api.anthropic.com"
+            provider_name="anthropic"
+            need_base_url=false
+            echo ""
+            echo -e "${gl_lv}使用 Anthropic 官方 API${gl_bai}"
+            ;;
+        9)
+            api_type="google-generative-ai"
+            base_url="https://generativelanguage.googleapis.com/v1beta"
+            provider_name="google"
+            need_base_url=false
+            echo ""
+            echo -e "${gl_lv}使用 Google Gemini 官方 API${gl_bai}"
+            ;;
+        10)
+            api_type="openai-responses"
+            base_url="https://api.openai.com/v1"
+            provider_name="openai"
+            need_base_url=false
+            echo ""
+            echo -e "${gl_lv}使用 OpenAI 官方 API${gl_bai}"
+            ;;
+        *)
+            echo -e "${gl_hong}无效选择${gl_bai}"
+            break_end
+            return 1
+            ;;
+    esac
+
+    # 步骤2: 输入反代地址
+    if [ "$need_base_url" = true ]; then
+        echo ""
+        echo -e "${gl_kjlan}[步骤2] 输入反代地址${gl_bai}"
+        if [ "$preset_mode" = "crs" ]; then
+            echo -e "${gl_zi}示例: http://IP:端口/api（CRS 默认格式）${gl_bai}"
+        elif [ "$preset_mode" = "sub2api-gemini" ]; then
+            echo -e "${gl_zi}示例: https://你的sub2api域名（/v1beta 会自动添加）${gl_bai}"
+        elif [ "$preset_mode" = "sub2api-gpt" ]; then
+            echo -e "${gl_zi}示例: https://你的sub2api域名（/v1 会自动添加）${gl_bai}"
+        elif [ "$api_type" = "google-generative-ai" ]; then
+            echo -e "${gl_zi}示例: https://your-proxy.com（/v1beta 会自动添加）${gl_bai}"
+        else
+            echo -e "${gl_zi}示例: https://your-proxy.com 或 https://your-proxy.com/v1${gl_bai}"
+        fi
+        echo ""
+        read -e -p "反代地址: " base_url
+        if [ -z "$base_url" ]; then
+            echo -e "${gl_hong}❌ 反代地址不能为空${gl_bai}"
+            break_end
+            return 1
+        fi
+        # 去除末尾的 /
+        base_url="${base_url%/}"
+        # 自动添加 API 路径后缀
+        if [ "$api_type" = "google-generative-ai" ]; then
+            if [[ ! "$base_url" =~ /v1beta$ ]] && [[ ! "$base_url" =~ /v1$ ]]; then
+                base_url="${base_url}/v1beta"
+                echo -e "${gl_lv}已自动添加后缀: ${base_url}${gl_bai}"
+            fi
+        elif [ "$preset_mode" = "sub2api-gpt" ]; then
+            if [[ ! "$base_url" =~ /v1$ ]]; then
+                base_url="${base_url}/v1"
+                echo -e "${gl_lv}已自动添加后缀: ${base_url}${gl_bai}"
+            fi
+        fi
+    fi
+
+    # 步骤3: 输入 API Key
+    echo ""
+    echo -e "${gl_kjlan}[步骤3] 输入 API Key${gl_bai}"
+    if [ "$preset_mode" = "crs" ]; then
+        echo -e "${gl_zi}CRS Key 格式: cr_xxxx...${gl_bai}"
+    elif [ "$preset_mode" = "sub2api-gemini" ]; then
+        echo -e "${gl_zi}sub2api Gemini Key 格式: sk-xxxx...${gl_bai}"
+    elif [ "$preset_mode" = "sub2api-gpt" ]; then
+        echo -e "${gl_zi}sub2api GPT Key 格式: sk-xxxx...${gl_bai}"
+    fi
+    echo ""
+    read -e -p "API Key: " api_key
+    if [ -z "$api_key" ]; then
+        echo -e "${gl_hong}❌ API Key 不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 步骤4: 选择模型
+    echo ""
+    echo -e "${gl_kjlan}[步骤4] 选择主力模型${gl_bai}"
+    echo ""
+
+    local model_id=""
+    local model_name=""
+    local model_reasoning="false"
+    local model_input='["text"]'
+    local model_cost_input="3"
+    local model_cost_output="15"
+    local model_cost_cache_read="0.3"
+    local model_cost_cache_write="3.75"
+    local model_context="200000"
+    local model_max_tokens="16384"
+
+    if [ "$api_type" = "anthropic-messages" ]; then
+        echo "1. claude-opus-4-6 (Opus 4.6 最强)"
+        echo "2. claude-sonnet-4-5 (Sonnet 4.5 均衡)"
+        echo "3. claude-haiku-4-5 (Haiku 4.5 快速)"
+        echo "4. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-4]: " model_choice
+        case "$model_choice" in
+            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
+            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            3) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5"; model_cost_input="0.8"; model_cost_output="4"; model_cost_cache_read="0.08"; model_cost_cache_write="1" ;;
+            4)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                ;;
+            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+        esac
+    elif [ "$api_type" = "google-generative-ai" ]; then
+        echo "1. gemini-2.5-pro (最强推理)"
+        echo "2. gemini-2.5-flash (快速均衡)"
+        echo "3. gemini-2.0-flash (轻量)"
+        echo "4. gemini-3-pro-preview (预览版)"
+        echo "5. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-5]: " model_choice
+        case "$model_choice" in
+            1) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            2) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
+            3) model_id="gemini-2.0-flash"; model_name="Gemini 2.0 Flash"; model_reasoning="false"; model_input='["text", "image"]'; model_cost_input="0.1"; model_cost_output="0.4"; model_cost_cache_read="0.025"; model_cost_cache_write="0.5"; model_context="1000000"; model_max_tokens="8192" ;;
+            4) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="7.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            5)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                model_reasoning="true"; model_input='["text", "image"]'; model_context="1000000"; model_max_tokens="65536"
+                ;;
+            *) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
+        esac
+    elif [ "$api_type" = "openai-responses" ]; then
+        echo "1. gpt-5.3-codex (Codex 最强)"
+        echo "2. o3 (推理增强)"
+        echo "3. gpt-4o"
+        echo "4. gpt-4o-mini"
+        echo "5. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-5]: " model_choice
+        case "$model_choice" in
+            1) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            2) model_id="o3"; model_name="O3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="10"; model_cost_output="40"; model_cost_cache_read="2.5"; model_cost_cache_write="10"; model_max_tokens="100000" ;;
+            3) model_id="gpt-4o"; model_name="GPT-4o"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="10"; model_cost_cache_read="1.25"; model_cost_cache_write="2.5"; model_context="128000"; model_max_tokens="16384" ;;
+            4) model_id="gpt-4o-mini"; model_name="GPT-4o Mini"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.075"; model_cost_cache_write="0.15"; model_context="128000"; model_max_tokens="16384" ;;
+            5)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                model_reasoning="true"; model_input='["text", "image"]'; model_max_tokens="32768"
+                ;;
+            *) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+        esac
+    elif [ "$api_type" = "openai-completions" ]; then
+        echo "1. claude-opus-4-6 (通过中转)"
+        echo "2. claude-sonnet-4-5 (通过中转)"
+        echo "3. gpt-4o"
+        echo "4. gpt-4o-mini"
+        echo "5. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-5]: " model_choice
+        case "$model_choice" in
+            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
+            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            3) model_id="gpt-4o"; model_name="GPT-4o"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="10"; model_cost_cache_read="1.25"; model_cost_cache_write="2.5"; model_context="128000"; model_max_tokens="16384" ;;
+            4) model_id="gpt-4o-mini"; model_name="GPT-4o Mini"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.075"; model_cost_cache_write="0.15"; model_context="128000"; model_max_tokens="16384" ;;
+            5)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                ;;
+            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+        esac
+    fi
+
+    if [ -z "$model_id" ]; then
+        echo -e "${gl_hong}❌ 模型 ID 不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 步骤5: 选择端口
+    echo ""
+    echo -e "${gl_kjlan}[步骤5] 设置网关端口${gl_bai}"
+    local port="$OPENCLAW_DEFAULT_PORT"
+    read -e -p "网关端口 [${OPENCLAW_DEFAULT_PORT}]: " input_port
+    if [ -n "$input_port" ]; then
+        port="$input_port"
+    fi
+
+    # 生成配置
+    echo ""
+    echo -e "${gl_kjlan}正在生成配置...${gl_bai}"
+
+    mkdir -p "$OPENCLAW_HOME_DIR"
+
+    # 生成网关 token
+    local gateway_token=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+
+    # 写入环境变量
+    cat > "$OPENCLAW_ENV_FILE" <<EOF
+# OpenClaw 环境变量 - 由部署脚本自动生成
+OPENCLAW_API_KEY=${api_key}
+OPENCLAW_GATEWAY_TOKEN=${gateway_token}
+EOF
+    chmod 600 "$OPENCLAW_ENV_FILE"
+
+    # 生成 openclaw.json 配置（JSON5 格式）
+    cat > "$OPENCLAW_CONFIG_FILE" <<EOF
+// OpenClaw 配置 - 由部署脚本自动生成
+// 文档: https://docs.openclaw.ai/gateway/configuration
+{
+  // 网关设置
+  gateway: {
+    port: ${port},
+    mode: "local",
+    auth: {
+      mode: "token",
+      token: "${gateway_token}"
+    }
+  },
+
+  // 模型配置
+  models: {
+    mode: "merge",
+    providers: {
+      "${provider_name}": {
+        baseUrl: "${base_url}",
+        apiKey: "\${OPENCLAW_API_KEY}",
+        api: "${api_type}",
+        models: [
+          { id: "${model_id}", name: "${model_name}", reasoning: ${model_reasoning}, input: ${model_input}, cost: { input: ${model_cost_input}, output: ${model_cost_output}, cacheRead: ${model_cost_cache_read}, cacheWrite: ${model_cost_cache_write} }, contextWindow: ${model_context}, maxTokens: ${model_max_tokens} }
+        ]
+      }
+    }
+  },
+
+  // Agent 默认配置
+  agents: {
+    defaults: {
+      model: {
+        primary: "${provider_name}/${model_id}"
+      }
+    }
+  }
+}
+EOF
+    chmod 600 "$OPENCLAW_CONFIG_FILE"
+    chmod 700 "$OPENCLAW_HOME_DIR"
+
+    echo -e "${gl_lv}✅ 配置文件已生成${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}配置文件: ${OPENCLAW_CONFIG_FILE}${gl_bai}"
+    echo -e "${gl_zi}环境变量: ${OPENCLAW_ENV_FILE}${gl_bai}"
+    echo ""
+
+    # 显示配置摘要
+    echo -e "${gl_kjlan}━━━ 配置摘要 ━━━${gl_bai}"
+    if [ -n "$preset_mode" ]; then
+        echo -e "配置预设:   ${gl_lv}${preset_mode}（已验证可用）${gl_bai}"
+    fi
+    echo -e "API 类型:   ${gl_huang}${api_type}${gl_bai}"
+    echo -e "反代地址:   ${gl_huang}${base_url}${gl_bai}"
+    echo -e "主力模型:   ${gl_huang}${provider_name}/${model_id}${gl_bai}"
+    echo -e "模型名称:   ${gl_huang}${model_name}${gl_bai}"
+    echo -e "网关端口:   ${gl_huang}${port}${gl_bai}"
+    echo -e "网关Token:  ${gl_huang}${gateway_token}${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+    return 0
+}
+
+# 执行 onboard 初始化
+openclaw_onboard() {
+    local port=$(openclaw_get_port)
+    echo -e "${gl_kjlan}[4/4] 创建 systemd 服务并启动网关...${gl_bai}"
+    echo ""
+
+    # 创建必要的目录
+    mkdir -p "${OPENCLAW_HOME_DIR}/agents/main/sessions"
+    mkdir -p "${OPENCLAW_HOME_DIR}/credentials"
+    mkdir -p "${OPENCLAW_HOME_DIR}/workspace"
+
+    # 获取 openclaw 实际路径
+    local openclaw_bin=$(which openclaw 2>/dev/null || echo "/usr/bin/openclaw")
+
+    # 创建 systemd 服务
+    cat > "/etc/systemd/system/${OPENCLAW_SERVICE_NAME}.service" <<EOF
+[Unit]
+Description=OpenClaw Gateway
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${openclaw_bin} gateway --port ${port} --verbose
+Restart=always
+RestartSec=5
+Environment=HOME=${HOME}
+WorkingDirectory=${HOME}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$OPENCLAW_SERVICE_NAME" >/dev/null 2>&1
+    systemctl start "$OPENCLAW_SERVICE_NAME"
+
+    sleep 5
+
+    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ OpenClaw 网关已启动${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 网关启动失败，查看日志:${gl_bai}"
+        journalctl -u "$OPENCLAW_SERVICE_NAME" -n 10 --no-pager
+        return 1
+    fi
+}
+
+# 一键部署
+openclaw_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 一键部署${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(openclaw_check_status)
+    if [ "$status" = "running" ]; then
+        echo -e "${gl_huang}⚠ OpenClaw 已在运行中${gl_bai}"
+        echo ""
+        read -e -p "是否重新部署？(Y/N): " confirm
+        case "$confirm" in
+            [Yy]) ;;
+            *) return ;;
+        esac
+        echo ""
+        systemctl stop "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+    fi
+
+    # 步骤1: Node.js
+    openclaw_install_nodejs || { break_end; return 1; }
+    echo ""
+
+    # 步骤2: 安装 OpenClaw
+    openclaw_install_pkg || { break_end; return 1; }
+    echo ""
+
+    # 步骤3: 交互式模型配置
+    echo -e "${gl_kjlan}[3/4] 配置模型与 API...${gl_bai}"
+    echo ""
+    openclaw_config_model || { break_end; return 1; }
+    echo ""
+
+    # 步骤4: 初始化并启动
+    openclaw_onboard || { break_end; return 1; }
+
+    # 获取服务器 IP
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+    local port=$(openclaw_get_port)
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ OpenClaw 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "控制面板: ${gl_huang}http://${server_ip}:${port}/${gl_bai}"
+    echo ""
+
+    # 显示 gateway token
+    local gw_token=$(sed -nE 's/.*OPENCLAW_GATEWAY_TOKEN=(.*)/\1/p' "$OPENCLAW_ENV_FILE" 2>/dev/null)
+    if [ -n "$gw_token" ]; then
+        echo -e "网关 Token: ${gl_huang}${gw_token}${gl_bai}"
+        echo -e "${gl_zi}（远程访问控制面板时需要此 Token）${gl_bai}"
+        echo ""
+    fi
+
+    echo -e "${gl_kjlan}【下一步】连接消息频道${gl_bai}"
+    echo "  运行: openclaw channels login"
+    echo "  支持: WhatsApp / Telegram / Discord / Slack 等"
+    echo ""
+    echo -e "${gl_kjlan}【聊天命令】（在消息平台中使用）${gl_bai}"
+    echo "  /status  — 查看会话状态"
+    echo "  /new     — 清空上下文"
+    echo "  /think   — 调整推理级别"
+    echo ""
+    echo -e "${gl_kjlan}【安全说明】${gl_bai}"
+    echo "  网关默认绑定 loopback，外部访问需 SSH 隧道:"
+    echo -e "  ${gl_huang}ssh -N -L 18789:127.0.0.1:18789 root@${server_ip}${gl_bai}"
+    echo "  检查安全: openclaw doctor"
+    echo ""
+    echo -e "${gl_kjlan}管理命令:${gl_bai}"
+    echo "  状态: systemctl status $OPENCLAW_SERVICE_NAME"
+    echo "  日志: journalctl -u $OPENCLAW_SERVICE_NAME -f"
+    echo "  重启: systemctl restart $OPENCLAW_SERVICE_NAME"
+    echo ""
+
+    break_end
+}
+
+# 更新 OpenClaw
+openclaw_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 OpenClaw${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if ! command -v openclaw &>/dev/null; then
+        echo -e "${gl_hong}❌ OpenClaw 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local old_ver=$(openclaw --version 2>/dev/null || echo "unknown")
+    echo -e "当前版本: ${gl_huang}${old_ver}${gl_bai}"
+    echo ""
+
+    echo "正在更新..."
+    npm update -g openclaw@latest 2>&1 | tail -10
+
+    local new_ver=$(openclaw --version 2>/dev/null || echo "unknown")
+    echo ""
+
+    if [ "$old_ver" = "$new_ver" ]; then
+        echo -e "${gl_lv}✅ 已是最新版本 (${new_ver})${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ 已更新: ${old_ver} → ${new_ver}${gl_bai}"
+    fi
+
+    echo ""
+    echo "正在重启服务..."
+    systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+
+    sleep 2
+    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+    else
+        echo -e "${gl_huang}⚠ 服务未通过 systemctl 管理，请手动重启${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+openclaw_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 服务状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if command -v openclaw &>/dev/null; then
+        echo -e "版本: ${gl_huang}$(openclaw --version 2>/dev/null || echo 'unknown')${gl_bai}"
+        echo ""
+    fi
+
+    systemctl status "$OPENCLAW_SERVICE_NAME" --no-pager 2>/dev/null || \
+        echo -e "${gl_huang}⚠ systemd 服务不存在，可能需要重新执行 onboard${gl_bai}"
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+openclaw_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 日志（按 Ctrl+C 退出）${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    journalctl -u "$OPENCLAW_SERVICE_NAME" -f 2>/dev/null || \
+        echo -e "${gl_huang}⚠ 无法读取日志，服务可能未通过 systemd 管理${gl_bai}"
+}
+
+# 启动服务
+openclaw_start() {
+    echo "正在启动服务..."
+    systemctl start "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+    sleep 2
+
+    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已启动${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务启动失败，查看日志: journalctl -u $OPENCLAW_SERVICE_NAME -n 20${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 停止服务
+openclaw_stop() {
+    echo "正在停止服务..."
+    systemctl stop "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+
+    if ! systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务停止失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 重启服务
+openclaw_restart() {
+    echo "正在重启服务..."
+
+    local port=$(openclaw_get_port)
+    local pid=$(ss -lntp 2>/dev/null | grep ":${port} " | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1)
+    local service_pid=$(systemctl show -p MainPID "$OPENCLAW_SERVICE_NAME" 2>/dev/null | cut -d= -f2)
+
+    if [ -n "$pid" ] && [ "$pid" != "$service_pid" ] && [ "$pid" != "0" ]; then
+        echo -e "${gl_huang}⚠ 端口 ${port} 被 PID ${pid} 占用，正在释放...${gl_bai}"
+        kill "$pid" 2>/dev/null
+        sleep 1
+        if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+            kill -9 "$pid" 2>/dev/null
+            sleep 1
+        fi
+    fi
+
+    systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+    sleep 2
+
+    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
+        echo "查看日志: journalctl -u $OPENCLAW_SERVICE_NAME -n 20"
+    fi
+
+    break_end
+}
+
+# 频道管理
+openclaw_channels() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 频道管理${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if ! command -v openclaw &>/dev/null; then
+        echo -e "${gl_hong}❌ OpenClaw 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_kjlan}支持的频道:${gl_bai}"
+    echo "  WhatsApp / Telegram / Discord / Slack / Signal"
+    echo "  Google Chat / iMessage / Teams / Matrix"
+    echo ""
+    echo -e "${gl_zi}运行 openclaw channels login 会进入交互式登录流程${gl_bai}"
+    echo -e "${gl_zi}WhatsApp 需要扫码、Telegram 需要 Bot Token 等${gl_bai}"
+    echo ""
+
+    read -e -p "是否现在登录频道？(Y/N): " confirm
+    case "$confirm" in
+        [Yy])
+            echo ""
+            openclaw channels login
+            ;;
+        *)
+            echo "已取消"
+            ;;
+    esac
+
+    break_end
+}
+
+# 查看当前配置
+openclaw_show_config() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 当前配置${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ -f "$OPENCLAW_CONFIG_FILE" ]; then
+        echo -e "${gl_zi}配置文件: ${OPENCLAW_CONFIG_FILE}${gl_bai}"
+        echo ""
+        cat "$OPENCLAW_CONFIG_FILE"
+    else
+        echo -e "${gl_huang}⚠ 配置文件不存在: ${OPENCLAW_CONFIG_FILE}${gl_bai}"
+    fi
+
+    echo ""
+
+    if [ -f "$OPENCLAW_ENV_FILE" ]; then
+        echo -e "${gl_zi}环境变量: ${OPENCLAW_ENV_FILE}${gl_bai}"
+        echo ""
+        # 脱敏显示 API Key
+        sed 's/\(=\).*/\1****（已隐藏）/' "$OPENCLAW_ENV_FILE"
+    fi
+
+    echo ""
+    break_end
+}
+
+# 编辑配置文件
+openclaw_edit_config() {
+    if [ ! -f "$OPENCLAW_CONFIG_FILE" ]; then
+        echo -e "${gl_huang}⚠ 配置文件不存在，是否创建默认配置？${gl_bai}"
+        read -e -p "(Y/N): " confirm
+        case "$confirm" in
+            [Yy])
+                mkdir -p "$OPENCLAW_HOME_DIR"
+                echo '{}' > "$OPENCLAW_CONFIG_FILE"
+                ;;
+            *)
+                return
+                ;;
+        esac
+    fi
+
+    local editor="nano"
+    if command -v vim &>/dev/null; then
+        editor="vim"
+    fi
+    if command -v nano &>/dev/null; then
+        editor="nano"
+    fi
+
+    $editor "$OPENCLAW_CONFIG_FILE"
+
+    echo ""
+    echo -e "${gl_zi}提示: 修改配置后需重启服务生效 (systemctl restart $OPENCLAW_SERVICE_NAME)${gl_bai}"
+
+    read -e -p "是否现在重启服务？(Y/N): " confirm
+    case "$confirm" in
+        [Yy])
+            systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+            sleep 2
+            if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+            else
+                echo -e "${gl_hong}❌ 服务重启失败，请检查配置是否正确${gl_bai}"
+            fi
+            ;;
+    esac
+
+    break_end
+}
+
+# 安全检查
+openclaw_doctor() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OpenClaw 安全检查${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if ! command -v openclaw &>/dev/null; then
+        echo -e "${gl_hong}❌ OpenClaw 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    openclaw doctor
+    echo ""
+
+    read -e -p "是否自动修复发现的问题？(Y/N): " confirm
+    case "$confirm" in
+        [Yy])
+            echo ""
+            openclaw doctor --fix
+            ;;
+    esac
+
+    break_end
+}
+
+# 卸载 OpenClaw
+openclaw_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 OpenClaw${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}警告: 此操作将删除 OpenClaw 及其所有配置！${gl_bai}"
+    echo ""
+    echo "将删除以下内容:"
+    echo "  - OpenClaw 全局包"
+    echo "  - systemd 服务"
+    echo "  - 配置目录 ${OPENCLAW_HOME_DIR}"
+    echo ""
+
+    read -e -p "确认卸载？(输入 yes 确认): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "已取消"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在停止服务..."
+    systemctl stop "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+    systemctl disable "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+
+    echo "正在删除 systemd 服务..."
+    rm -f "/etc/systemd/system/${OPENCLAW_SERVICE_NAME}.service"
+    systemctl daemon-reload 2>/dev/null
+
+    echo "正在卸载 OpenClaw..."
+    npm uninstall -g openclaw 2>/dev/null
+
+    echo ""
+    read -e -p "是否同时删除配置目录 ${OPENCLAW_HOME_DIR}？(Y/N): " del_config
+    case "$del_config" in
+        [Yy])
+            rm -rf "$OPENCLAW_HOME_DIR"
+            echo -e "${gl_lv}✅ 配置目录已删除${gl_bai}"
+            ;;
+        *)
+            echo -e "${gl_zi}配置目录已保留，下次安装可复用${gl_bai}"
+            ;;
+    esac
+
+    echo ""
+    echo -e "${gl_lv}✅ OpenClaw 卸载完成${gl_bai}"
+
+    break_end
+}
+
+# OpenClaw 主菜单
+manage_openclaw() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  OpenClaw 部署管理 (AI多渠道消息网关)${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(openclaw_check_status)
+        local port=$(openclaw_get_port)
+
+        case "$status" in
+            "not_installed")
+                echo -e "当前状态: ${gl_huang}⚠ 未安装${gl_bai}"
+                ;;
+            "installed_no_service")
+                echo -e "当前状态: ${gl_huang}⚠ 已安装但服务未配置${gl_bai}"
+                ;;
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: ${port})"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新版本"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置管理]${gl_bai}"
+        echo "8. 模型配置（反代/API）"
+        echo "9. 频道管理（登录/配置）"
+        echo "10. 查看当前配置"
+        echo "11. 编辑配置文件"
+        echo "12. 安全检查（doctor）"
+        echo ""
+        echo -e "${gl_hong}13. 卸载 OpenClaw${gl_bai}"
+        echo ""
+        echo "0. 返回主菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-13]: " choice
+
+        case $choice in
+            1)
+                openclaw_deploy
+                ;;
+            2)
+                openclaw_update
+                ;;
+            3)
+                openclaw_status
+                ;;
+            4)
+                openclaw_logs
+                ;;
+            5)
+                openclaw_start
+                ;;
+            6)
+                openclaw_stop
+                ;;
+            7)
+                openclaw_restart
+                ;;
+            8)
+                openclaw_config_model
+                echo ""
+                read -e -p "是否重启服务使配置生效？(Y/N): " confirm
+                case "$confirm" in
+                    [Yy])
+                        systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                        sleep 2
+                        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                        else
+                            echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
+                        fi
+                        ;;
+                esac
+                break_end
+                ;;
+            9)
+                openclaw_channels
+                ;;
+            10)
+                openclaw_show_config
+                ;;
+            11)
+                openclaw_edit_config
+                ;;
+            12)
+                openclaw_doctor
+                ;;
+            13)
+                openclaw_uninstall
                 ;;
             0)
                 return
