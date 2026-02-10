@@ -20274,18 +20274,24 @@ manage_openclaw() {
             8)
                 openclaw_config_model
                 echo ""
-                read -e -p "是否重启服务使配置生效？(Y/N): " confirm
-                case "$confirm" in
-                    [Yy])
-                        systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
-                        sleep 2
-                        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
-                            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
-                        else
-                            echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
-                        fi
-                        ;;
-                esac
+                # 检查服务是否存在再决定重启
+                if systemctl list-unit-files "${OPENCLAW_SERVICE_NAME}.service" &>/dev/null && \
+                   systemctl cat "$OPENCLAW_SERVICE_NAME" &>/dev/null 2>&1; then
+                    read -e -p "是否重启服务使配置生效？(Y/N): " confirm
+                    case "$confirm" in
+                        [Yy])
+                            systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                            sleep 2
+                            if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                                echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                            else
+                                echo -e "${gl_hong}❌ 服务重启失败，查看日志: journalctl -u ${OPENCLAW_SERVICE_NAME} -n 20${gl_bai}"
+                            fi
+                            ;;
+                    esac
+                else
+                    echo -e "${gl_huang}⚠ systemd 服务尚未创建，请先运行「1. 一键部署」完成完整部署${gl_bai}"
+                fi
                 break_end
                 ;;
             9)
