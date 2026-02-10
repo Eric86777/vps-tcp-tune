@@ -8,14 +8,15 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.8.6 更新: AI代理工具箱新增OpenAI Responses API转换代理，支持Chat Completions客户端对接Responses API服务 (by Eric86777)
 # v4.8.5 更新: AI代理工具箱新增OpenClaw部署管理，支持CRS/sub2api(Gemini/GPT)等反代预设一键配置 (by Eric86777)
 # v4.8.4 更新: 新增功能66一键全自动优化（两阶段：安装内核→重启→全自动调优3→4→5→6→8） (by Eric86777)
 # v4.8.3 更新: 功能5入口添加配置状态检测+老版持久化风险警告+README更新 (by Eric86777)
 # v4.8.2 更新: 修复功能1"内核已最新"误判，新增运行/已装内核对比提示并增强解析兼容性 (by Eric86777)
 # v4.8.1 更新: 精简功能6(Realm)删除与功能3/4/5重复冲突的代码，功能1添加CPU架构信息展示 (by Eric86777)
 
-SCRIPT_VERSION="4.8.5"
-SCRIPT_LAST_UPDATE="新增OpenClaw部署管理(AI多渠道消息网关)"
+SCRIPT_VERSION="4.8.6"
+SCRIPT_LAST_UPDATE="新增OpenAI Responses API转换代理"
 #=============================================================================
 
 #=============================================================================
@@ -6705,11 +6706,12 @@ ai_proxy_menu() {
         echo "5. Sub2API 部署管理"
         echo "6. Caddy 多域名反代"
         echo "7. OpenClaw 部署管理 (AI多渠道消息网关)"
+        echo "8. OpenAI Responses API 转换代理"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-7]: " choice
+        read -e -p "请选择操作 [0-8]: " choice
 
         case $choice in
             1)
@@ -6732,6 +6734,9 @@ ai_proxy_menu() {
                 ;;
             7)
                 manage_openclaw
+                ;;
+            8)
+                manage_resp_proxy
                 ;;
             0)
                 return
@@ -20297,6 +20302,568 @@ manage_openclaw() {
                 ;;
             13)
                 openclaw_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# ============================================================================
+# OpenAI Responses API → Chat Completions 转换代理
+# ============================================================================
+
+RESP_PROXY_INSTALL_DIR="/opt/openai-resp-proxy"
+RESP_PROXY_SCRIPT="${RESP_PROXY_INSTALL_DIR}/proxy.mjs"
+RESP_PROXY_CONFIG="${RESP_PROXY_INSTALL_DIR}/config.json"
+RESP_PROXY_SERVICE="openai-resp-proxy"
+RESP_PROXY_DEFAULT_PORT="18790"
+
+# 检测转换代理状态
+resp_proxy_check_status() {
+    if [ ! -f "$RESP_PROXY_SCRIPT" ]; then
+        echo "not_installed"
+    elif systemctl is-active "$RESP_PROXY_SERVICE" &>/dev/null; then
+        echo "running"
+    else
+        echo "stopped"
+    fi
+}
+
+# 获取转换代理端口
+resp_proxy_get_port() {
+    if [ -f "$RESP_PROXY_CONFIG" ]; then
+        local port
+        port=$(grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' "$RESP_PROXY_CONFIG" | grep -o '[0-9]*$')
+        echo "${port:-$RESP_PROXY_DEFAULT_PORT}"
+    else
+        echo "$RESP_PROXY_DEFAULT_PORT"
+    fi
+}
+
+# 获取上游地址
+resp_proxy_get_upstream() {
+    if [ -f "$RESP_PROXY_CONFIG" ]; then
+        grep -o '"upstream_url"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_PROXY_CONFIG" | sed 's/.*"upstream_url"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//'
+    fi
+}
+
+# 部署转换代理
+resp_proxy_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  部署 OpenAI Responses API 转换代理${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "此代理将 Responses API (/v1/responses) 转换为"
+    echo "Chat Completions API (/v1/chat/completions)，使沉浸式翻译"
+    echo "等只支持旧版协议的工具也能使用 Responses API 的服务。"
+    echo ""
+
+    # 检查 Node.js
+    if ! command -v node &>/dev/null; then
+        echo -e "${gl_huang}未检测到 Node.js，正在安装...${gl_bai}"
+        if command -v apt &>/dev/null; then
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+            apt install -y nodejs
+        elif command -v yum &>/dev/null; then
+            curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+            yum install -y nodejs
+        else
+            echo -e "${gl_hong}❌ 无法自动安装 Node.js，请手动安装后重试${gl_bai}"
+            break_end
+            return 1
+        fi
+    fi
+
+    local node_ver
+    node_ver=$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+    if [ "$node_ver" -lt 18 ] 2>/dev/null; then
+        echo -e "${gl_hong}❌ Node.js 版本过低 ($(node -v))，需要 v18+${gl_bai}"
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✓ Node.js $(node -v)${gl_bai}"
+
+    # 配置上游地址
+    echo ""
+    echo -e "${gl_kjlan}配置上游 Responses API 服务${gl_bai}"
+    echo ""
+    echo "请输入提供 /v1/responses 端点的上游服务地址"
+    echo -e "${gl_hui}例: https://api.openai.com  或  https://你的反代域名${gl_bai}"
+    echo ""
+    read -e -p "上游服务地址: " upstream_url
+
+    if [ -z "$upstream_url" ]; then
+        echo -e "${gl_hong}❌ 地址不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+    # 去除末尾斜杠
+    upstream_url="${upstream_url%/}"
+
+    echo ""
+    read -e -p "API Key: " api_key
+    if [ -z "$api_key" ]; then
+        echo -e "${gl_hong}❌ API Key 不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    read -e -p "代理监听端口 [${RESP_PROXY_DEFAULT_PORT}]: " proxy_port
+    proxy_port="${proxy_port:-$RESP_PROXY_DEFAULT_PORT}"
+
+    # 创建目录
+    mkdir -p "$RESP_PROXY_INSTALL_DIR"
+
+    # 写入配置文件
+    cat > "$RESP_PROXY_CONFIG" << CONFIGEOF
+{
+    "upstream_url": "${upstream_url}",
+    "api_key": "${api_key}",
+    "port": ${proxy_port}
+}
+CONFIGEOF
+
+    # 写入代理脚本
+    cat > "$RESP_PROXY_SCRIPT" << 'PROXYEOF'
+import http from 'node:http';
+import https from 'node:https';
+import fs from 'node:fs';
+import { URL } from 'node:url';
+
+const CONFIG_PATH = '/opt/openai-resp-proxy/config.json';
+const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+const { upstream_url, api_key, port } = config;
+
+function forwardRequest(upstreamUrl, reqData, authHeader) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(upstreamUrl);
+        const httpModule = parsedUrl.protocol === 'https:' ? https : http;
+        const proxyReq = httpModule.request(upstreamUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': authHeader,
+                'Content-Length': Buffer.byteLength(reqData)
+            }
+        }, (proxyRes) => {
+            let body = '';
+            proxyRes.on('data', chunk => body += chunk);
+            proxyRes.on('end', () => resolve({ statusCode: proxyRes.statusCode, body }));
+        });
+        proxyReq.on('error', reject);
+        proxyReq.write(reqData);
+        proxyReq.end();
+    });
+}
+
+const server = http.createServer(async (req, res) => {
+    // CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+    // 模型列表（简易）
+    if (req.url === '/v1/models' && req.method === 'GET') {
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({
+            object: 'list',
+            data: [
+                { id: 'gpt-5.3-codex', object: 'model' },
+                { id: 'o3', object: 'model' },
+                { id: 'gpt-4o', object: 'model' },
+                { id: 'gpt-4o-mini', object: 'model' }
+            ]
+        }));
+        return;
+    }
+
+    // 仅处理 /v1/chat/completions
+    if (req.method !== 'POST' || !req.url.startsWith('/v1/chat/completions')) {
+        res.writeHead(404, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({ error: { message: 'Use POST /v1/chat/completions', type: 'not_found' } }));
+        return;
+    }
+
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+        try {
+            const chatReq = JSON.parse(body);
+
+            // 转换 Chat Completions → Responses API
+            const respReq = {
+                model: chatReq.model,
+                input: (chatReq.messages || []).map(m => ({
+                    role: m.role === 'system' ? 'developer' : m.role,
+                    content: m.content
+                })),
+                stream: false
+            };
+            if (chatReq.max_tokens) respReq.max_output_tokens = chatReq.max_tokens;
+            if (chatReq.temperature !== undefined) respReq.temperature = chatReq.temperature;
+
+            const upstreamEndpoint = upstream_url.replace(/\/+$/, '') + '/v1/responses';
+            const authHeader = `Bearer ${api_key}`;
+
+            const result = await forwardRequest(upstreamEndpoint, JSON.stringify(respReq), authHeader);
+
+            if (result.statusCode !== 200) {
+                res.writeHead(result.statusCode, {'Content-Type': 'application/json'});
+                res.end(result.body);
+                return;
+            }
+
+            const respData = JSON.parse(result.body);
+
+            // 提取文本
+            let text = '';
+            if (respData.output) {
+                for (const item of respData.output) {
+                    if (item.type === 'message' && item.content) {
+                        for (const c of item.content) {
+                            if (c.type === 'output_text') text += c.text;
+                        }
+                    }
+                }
+            }
+
+            // 包装为 Chat Completions 响应
+            const chatResp = {
+                id: respData.id || 'chatcmpl-proxy',
+                object: 'chat.completion',
+                created: Math.floor(Date.now() / 1000),
+                model: respData.model || chatReq.model,
+                choices: [{
+                    index: 0,
+                    message: { role: 'assistant', content: text },
+                    finish_reason: 'stop'
+                }],
+                usage: respData.usage || {}
+            };
+
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify(chatResp));
+
+        } catch (e) {
+            res.writeHead(502, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({ error: { message: e.message, type: 'proxy_error' } }));
+        }
+    });
+});
+
+server.listen(port, () => {
+    console.log(`[Responses → Chat Completions] proxy on port ${port}`);
+    console.log(`Upstream: ${upstream_url}/v1/responses`);
+});
+PROXYEOF
+
+    echo ""
+    echo "正在创建 systemd 服务..."
+
+    cat > "/etc/systemd/system/${RESP_PROXY_SERVICE}.service" << SVCEOF
+[Unit]
+Description=OpenAI Responses to Chat Completions Proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$(which node) ${RESP_PROXY_SCRIPT}
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=${RESP_PROXY_INSTALL_DIR}
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+    systemctl daemon-reload
+    systemctl enable "$RESP_PROXY_SERVICE" 2>/dev/null
+    systemctl start "$RESP_PROXY_SERVICE"
+    sleep 2
+
+    if systemctl is-active "$RESP_PROXY_SERVICE" &>/dev/null; then
+        echo ""
+        echo -e "${gl_lv}✅ 转换代理部署成功！${gl_bai}"
+        echo ""
+        echo -e "代理地址: ${gl_huang}http://$(curl -s4 ifconfig.me 2>/dev/null || echo '你的IP'):${proxy_port}${gl_bai}"
+        echo ""
+        echo "沉浸式翻译配置："
+        echo -e "  翻译服务: ${gl_zi}OpenAI${gl_bai}"
+        echo -e "  API URL:  ${gl_zi}http://你的IP:${proxy_port}/v1/chat/completions${gl_bai}"
+        echo -e "  API Key:  ${gl_zi}${api_key}${gl_bai}"
+        echo -e "  模型:     ${gl_zi}按上游支持的模型填写${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 服务启动失败，请检查日志：journalctl -u ${RESP_PROXY_SERVICE} -n 20${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 修改转换代理配置
+resp_proxy_config() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  修改转换代理配置${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 显示当前配置
+    if [ -f "$RESP_PROXY_CONFIG" ]; then
+        local cur_upstream cur_port
+        cur_upstream=$(resp_proxy_get_upstream)
+        cur_port=$(resp_proxy_get_port)
+        echo -e "当前上游地址: ${gl_zi}${cur_upstream}${gl_bai}"
+        echo -e "当前监听端口: ${gl_zi}${cur_port}${gl_bai}"
+        echo ""
+    fi
+
+    echo "请输入提供 /v1/responses 端点的上游服务地址"
+    echo -e "${gl_hui}例: https://api.openai.com  或  https://你的反代域名${gl_bai}"
+    echo -e "${gl_hui}直接回车保持不变${gl_bai}"
+    echo ""
+    read -e -p "上游服务地址: " new_upstream
+    new_upstream="${new_upstream%/}"
+
+    echo ""
+    read -e -p "API Key: " new_key
+
+    echo ""
+    read -e -p "代理监听端口 [$(resp_proxy_get_port)]: " new_port
+
+    # 读取现有值作为默认
+    local final_upstream final_key final_port
+    if [ -f "$RESP_PROXY_CONFIG" ]; then
+        final_upstream="${new_upstream:-$(resp_proxy_get_upstream)}"
+        final_key="${new_key:-$(grep -o '"api_key"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_PROXY_CONFIG" | sed 's/.*"api_key"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//')}"
+        final_port="${new_port:-$(resp_proxy_get_port)}"
+    else
+        final_upstream="$new_upstream"
+        final_key="$new_key"
+        final_port="${new_port:-$RESP_PROXY_DEFAULT_PORT}"
+    fi
+
+    if [ -z "$final_upstream" ] || [ -z "$final_key" ]; then
+        echo -e "${gl_hong}❌ 上游地址和 API Key 不能为空${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    cat > "$RESP_PROXY_CONFIG" << CONFIGEOF
+{
+    "upstream_url": "${final_upstream}",
+    "api_key": "${final_key}",
+    "port": ${final_port}
+}
+CONFIGEOF
+
+    echo ""
+    echo -e "${gl_lv}✅ 配置已更新${gl_bai}"
+    echo ""
+    read -e -p "是否重启服务使配置生效？(Y/N): " confirm
+    case "$confirm" in
+        [Yy])
+            systemctl restart "$RESP_PROXY_SERVICE" 2>/dev/null
+            sleep 2
+            if systemctl is-active "$RESP_PROXY_SERVICE" &>/dev/null; then
+                echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+            else
+                echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
+            fi
+            ;;
+    esac
+
+    break_end
+}
+
+# 查看转换代理状态
+resp_proxy_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  转换代理状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    systemctl status "$RESP_PROXY_SERVICE" --no-pager 2>/dev/null || echo "服务未安装"
+    echo ""
+    if [ -f "$RESP_PROXY_CONFIG" ]; then
+        echo -e "${gl_kjlan}当前配置:${gl_bai}"
+        echo "  上游地址: $(resp_proxy_get_upstream)"
+        echo "  监听端口: $(resp_proxy_get_port)"
+    fi
+    break_end
+}
+
+# 查看转换代理日志
+resp_proxy_logs() {
+    clear
+    echo -e "${gl_huang}按 Ctrl+C 退出日志${gl_bai}"
+    echo ""
+    journalctl -u "$RESP_PROXY_SERVICE" -f --no-pager
+}
+
+# 启动转换代理
+resp_proxy_start() {
+    systemctl start "$RESP_PROXY_SERVICE" 2>/dev/null
+    sleep 1
+    if systemctl is-active "$RESP_PROXY_SERVICE" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已启动${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+    break_end
+}
+
+# 停止转换代理
+resp_proxy_stop() {
+    systemctl stop "$RESP_PROXY_SERVICE" 2>/dev/null
+    echo -e "${gl_lv}✅ 服务已停止${gl_bai}"
+    break_end
+}
+
+# 重启转换代理
+resp_proxy_restart() {
+    systemctl restart "$RESP_PROXY_SERVICE" 2>/dev/null
+    sleep 1
+    if systemctl is-active "$RESP_PROXY_SERVICE" &>/dev/null; then
+        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+    break_end
+}
+
+# 卸载转换代理
+resp_proxy_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载转换代理${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}警告: 此操作将删除转换代理及其所有配置！${gl_bai}"
+    echo ""
+
+    read -e -p "确认卸载？(输入 yes 确认): " confirm
+    if [ "$confirm" != "yes" ]; then
+        echo "已取消"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在停止服务..."
+    systemctl stop "$RESP_PROXY_SERVICE" 2>/dev/null
+    systemctl disable "$RESP_PROXY_SERVICE" 2>/dev/null
+
+    echo "正在删除 systemd 服务..."
+    rm -f "/etc/systemd/system/${RESP_PROXY_SERVICE}.service"
+    systemctl daemon-reload 2>/dev/null
+
+    echo "正在删除代理文件..."
+    rm -rf "$RESP_PROXY_INSTALL_DIR"
+
+    echo ""
+    echo -e "${gl_lv}✅ 转换代理卸载完成${gl_bai}"
+
+    break_end
+}
+
+# 转换代理主菜单
+manage_resp_proxy() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  OpenAI Responses API 转换代理${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo -e "${gl_hui}将 Responses API → Chat Completions API"
+        echo -e "让沉浸式翻译等工具使用仅支持 Responses API 的服务${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status
+        status=$(resp_proxy_check_status)
+
+        case "$status" in
+            "not_installed")
+                echo -e "当前状态: ${gl_huang}⚠ 未安装${gl_bai}"
+                ;;
+            "running")
+                local port upstream
+                port=$(resp_proxy_get_port)
+                upstream=$(resp_proxy_get_upstream)
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: ${port})"
+                echo -e "上游地址: ${gl_zi}${upstream}${gl_bai}"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "2. 查看状态"
+        echo "3. 查看日志"
+        echo "4. 启动服务"
+        echo "5. 停止服务"
+        echo "6. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置]${gl_bai}"
+        echo "7. 修改配置（上游地址/Key/端口）"
+        echo "8. 查看当前配置文件"
+        echo ""
+        echo -e "${gl_hong}9. 卸载${gl_bai}"
+        echo ""
+        echo "0. 返回上级菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-9]: " choice
+
+        case $choice in
+            1)
+                resp_proxy_deploy
+                ;;
+            2)
+                resp_proxy_status
+                ;;
+            3)
+                resp_proxy_logs
+                ;;
+            4)
+                resp_proxy_start
+                ;;
+            5)
+                resp_proxy_stop
+                ;;
+            6)
+                resp_proxy_restart
+                ;;
+            7)
+                resp_proxy_config
+                ;;
+            8)
+                clear
+                if [ -f "$RESP_PROXY_CONFIG" ]; then
+                    echo -e "${gl_kjlan}配置文件 (${RESP_PROXY_CONFIG}):${gl_bai}"
+                    echo ""
+                    cat "$RESP_PROXY_CONFIG"
+                else
+                    echo -e "${gl_huang}配置文件不存在${gl_bai}"
+                fi
+                break_end
+                ;;
+            9)
+                resp_proxy_uninstall
                 ;;
             0)
                 return
