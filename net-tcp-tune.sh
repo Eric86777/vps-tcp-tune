@@ -8,15 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.0 更新: OpenClaw全面重构：对照官方文档修正服务名/配置格式/频道插件，新增Antigravity预设+模型列表更新+查看部署信息 (by Eric86777)
 # v4.8.7 更新: OpenClaw新增频道管理功能，支持Telegram/WhatsApp/Discord/Slack一键配置 (by Eric86777)
 # v4.8.6 更新: AI代理工具箱新增OpenAI Responses API转换代理，支持Chat Completions客户端对接Responses API服务 (by Eric86777)
 # v4.8.4 更新: 新增功能66一键全自动优化（两阶段：安装内核→重启→全自动调优3→4→5→6→8） (by Eric86777)
 # v4.8.3 更新: 功能5入口添加配置状态检测+老版持久化风险警告+README更新 (by Eric86777)
-# v4.8.2 更新: 修复功能1"内核已最新"误判，新增运行/已装内核对比提示并增强解析兼容性 (by Eric86777)
-# v4.8.1 更新: 精简功能6(Realm)删除与功能3/4/5重复冲突的代码，功能1添加CPU架构信息展示 (by Eric86777)
 
-SCRIPT_VERSION="4.8.7"
-SCRIPT_LAST_UPDATE="OpenClaw新增频道管理(Telegram/WhatsApp/Discord/Slack)"
+SCRIPT_VERSION="4.9.0"
+SCRIPT_LAST_UPDATE="OpenClaw全面重构+Antigravity预设+模型更新+部署信息查看"
 #=============================================================================
 
 #=============================================================================

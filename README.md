@@ -1,10 +1,10 @@
-# BBR v3 优化脚本 - Ultimate Edition v4.8.4
+# BBR v3 优化脚本 - Ultimate Edition v4.9.0
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 32 项实用功能，优化你的 VPS 服务器。
 
-> **版本**: v4.8.4
+> **版本**: v4.9.0
 
 ---
 
@@ -86,7 +86,7 @@ chmod +x net-tcp-tune.sh
 - **两种模式**：
   - `1. 纯国外模式`：Google + Cloudflare，强制 DoT 加密（**抗污染推荐**）
   - `2. 纯国内模式`：阿里云 + 腾讯 DNSPod，无加密（国内DNS不支持DoT）
-- **安全说明**：v4.8.3 已内置完整的事务性回滚机制（执行前全量快照 → 任意步骤失败自动恢复原始状态），重启持久化也已修复。如仍有顾虑，建议在有 VNC/控制台的情况下首次使用。
+- **安全说明**：已内置完整的事务性回滚机制（执行前全量快照 → 任意步骤失败自动恢复原始状态），重启持久化也已修复。如仍有顾虑，建议在有 VNC/控制台的情况下首次使用。
 
 ---
 
@@ -165,12 +165,14 @@ AI 代理工具箱包含：
 - **CRS 部署管理**：Claude API 多账户中转/拼车服务
 - **Fuclaude**：Claude 网页版共享工具
 - **Caddy 多域名反代**：HTTPS 反向代理，自动 SSL 证书
+- **OpenAI Responses API 转换代理**：Chat Completions → Responses API 转换
+- **OpenClaw 部署管理**：AI 多渠道消息网关，支持 Telegram/WhatsApp/Discord/Slack
 
 ---
 
 ## 核心特性详解
 
-### 1. Snell v5 多实例管理 (功能 18)
+### 1. Snell v5 多实例管理 (功能 12)
 脚本内置了最新的 **Snell v5.0.1** 管理功能，提供比官方脚本更灵活的功能：
 - **多实例支持**：可以在同一台机器上通过不同端口运行多个 Snell 节点
 - **自定义配置**：支持自定义端口、自定义节点名称
@@ -202,6 +204,15 @@ AI 代理工具箱包含：
 - 用好线路 VPS 反代垃圾线路服务，加速访问
 - 为 HTTP 服务快速添加 HTTPS 支持
 - 多个后端服务统一使用 443 端口对外
+
+### 5. OpenClaw AI 多渠道消息网关 (功能 32 子菜单)
+自托管的 AI 多渠道消息网关，让你通过 Telegram/WhatsApp/Discord/Slack 与 AI 对话：
+- **一键部署**: 自动安装 Node.js 22+、npm 全局安装、systemd 服务配置
+- **多渠道支持**: Telegram Bot、WhatsApp、Discord Bot、Slack App 一键配置
+- **灵活模型接入**: 支持 Anthropic 直连/反代、OpenAI 兼容中转（new-api/one-api/LiteLLM）、OpenRouter
+- **Antigravity 预设**: 内置 Antigravity Claude Proxy 快速接入模板
+- **快速替换 API**: 一键更换反代地址和 API Key，无需重新配置
+- **部署信息查看**: 格式化展示当前配置、SSH 隧道命令、管理命令
 
 ---
 
