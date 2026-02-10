@@ -4044,7 +4044,7 @@ dns_purify_and_harden() {
     echo "  ✓ 清除厂商残留的DNS配置"
     echo "  ✓ 启用DNS安全功能（DNSSEC + DNS over TLS）"
     echo ""
-    
+
     if [ "$IS_SSH" = true ]; then
         echo -e "${gl_lv}SSH安全保证：${gl_bai}"
         echo "  ✓ 不会停止或重启网络服务"
@@ -4053,7 +4053,75 @@ dns_purify_and_harden() {
         echo "  ✓ 提供完整的回滚机制"
         echo ""
     fi
-    
+
+    # ==================== 已有配置检测 ====================
+    local dns_already_ok=true
+    local current_mode_name=""
+
+    # 检查1: 持久化服务是否存在且已启用
+    if ! systemctl is-enabled --quiet dns-purify-persist.service 2>/dev/null; then
+        dns_already_ok=false
+    fi
+
+    # 检查2: 持久化脚本是否存在
+    if [ ! -x /usr/local/bin/dns-purify-apply.sh ]; then
+        dns_already_ok=false
+    fi
+
+    # 检查3: systemd-resolved 是否正常运行
+    if ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        dns_already_ok=false
+    fi
+
+    # 检查4: resolv.conf 是否指向 stub（resolved 托管）
+    if [ ! -L /etc/resolv.conf ] || [[ "$(readlink /etc/resolv.conf 2>/dev/null)" != *"stub-resolv.conf"* ]]; then
+        dns_already_ok=false
+    fi
+
+    # 检查5: DNS 解析是否正常工作
+    if [ "$dns_already_ok" = true ]; then
+        local dns_resolve_ok=false
+        if command -v getent >/dev/null 2>&1; then
+            if getent hosts google.com >/dev/null 2>&1 || getent hosts baidu.com >/dev/null 2>&1; then
+                dns_resolve_ok=true
+            fi
+        fi
+        if [ "$dns_resolve_ok" = false ]; then
+            dns_already_ok=false
+        fi
+    fi
+
+    # 检测当前模式
+    if [ "$dns_already_ok" = true ] && [ -f /etc/systemd/resolved.conf ]; then
+        local cur_dot
+        cur_dot=$(sed -nE 's/^DNSOverTLS=(.+)/\1/p' /etc/systemd/resolved.conf 2>/dev/null)
+        case "$cur_dot" in
+            yes)           current_mode_name="纯国外模式（强制DoT）" ;;
+            no)            current_mode_name="纯国内模式" ;;
+            opportunistic) current_mode_name="混合模式（机会性DoT）" ;;
+        esac
+    fi
+
+    if [ "$dns_already_ok" = true ]; then
+        echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_lv}  ✅ DNS净化已完美配置，无需重复执行！${gl_bai}"
+        echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+        echo -e "  当前模式:    ${gl_lv}${current_mode_name}${gl_bai}"
+        echo -e "  resolved:    ${gl_lv}✅ 运行中${gl_bai}"
+        echo -e "  resolv.conf: ${gl_lv}✅ 指向 stub（resolved 托管）${gl_bai}"
+        echo -e "  开机持久化:  ${gl_lv}✅ dns-purify-persist 已启用${gl_bai}"
+        echo -e "  DNS 解析:    ${gl_lv}✅ 正常${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}提示：重启后 DNS 会自动恢复，无需担心${gl_bai}"
+        echo ""
+        read -e -p "$(echo -e "${gl_huang}如需重新配置请输入 y，返回主菜单按回车: ${gl_bai}")" dns_reconfig
+        if [[ ! "$dns_reconfig" =~ ^[Yy]$ ]]; then
+            return
+        fi
+        echo ""
+    fi
+
     # ==================== DNS模式选择 ====================
     echo -e "${gl_kjlan}请选择 DNS 配置模式：${gl_bai}"
     echo ""
