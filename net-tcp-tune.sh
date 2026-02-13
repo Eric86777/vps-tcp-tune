@@ -11394,6 +11394,105 @@ SOCKS5_CONFIG_DIR="/etc/sbox_socks5"
 SOCKS5_CONFIG_FILE="${SOCKS5_CONFIG_DIR}/config.json"
 SOCKS5_SERVICE_NAME="sbox-socks5"
 
+# 检测 sing-box 二进制程序（公共函数）
+# 成功时设置全局变量 DETECTED_SINGBOX_CMD 并返回 0
+# 失败时返回 1
+# 参数: $1 = "verbose" 时显示详细检测过程
+detect_singbox_cmd() {
+    local verbose="${1:-}"
+    DETECTED_SINGBOX_CMD=""
+    local detection_debug=""
+
+    # 优先查找常见的二进制程序位置
+    for path in /etc/sing-box/sing-box /usr/local/bin/sing-box /opt/sing-box/sing-box; do
+        detection_debug+="正在检测: $path ... "
+
+        if [ ! -e "$path" ]; then
+            detection_debug+="不存在\n"
+            continue
+        fi
+
+        if [ ! -x "$path" ]; then
+            detection_debug+="存在但不可执行（尝试添加执行权限）\n"
+            chmod +x "$path" 2>/dev/null
+            if [ ! -x "$path" ]; then
+                detection_debug+="  └─ 无法添加执行权限，跳过\n"
+                continue
+            fi
+        fi
+
+        # 如果是符号链接，解析实际路径
+        if [ -L "$path" ]; then
+            local real_path=$(readlink -f "$path")
+            detection_debug+="是符号链接 → $real_path\n"
+            path="$real_path"
+        fi
+
+        # 验证是 ELF 二进制文件（如果 file 命令可用）
+        if command -v file >/dev/null 2>&1; then
+            local file_type=$(file "$path" 2>/dev/null)
+            if echo "$file_type" | grep -q "ELF"; then
+                DETECTED_SINGBOX_CMD="$path"
+                break
+            else
+                detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
+            fi
+        else
+            DETECTED_SINGBOX_CMD="$path"
+            break
+        fi
+    done
+
+    # 如果没找到，检查 PATH 中的命令
+    if [ -z "$DETECTED_SINGBOX_CMD" ]; then
+        for cmd in sing-box sb; do
+            if command -v "$cmd" &>/dev/null; then
+                local cmd_path=$(which "$cmd")
+                detection_debug+="正在检测 PATH 命令: $cmd → $cmd_path ... "
+
+                if [ -L "$cmd_path" ]; then
+                    local real_path=$(readlink -f "$cmd_path")
+                    detection_debug+="是符号链接 → $real_path\n"
+                    cmd_path="$real_path"
+                fi
+
+                if command -v file >/dev/null 2>&1; then
+                    local file_type=$(file "$cmd_path" 2>/dev/null)
+                    if echo "$file_type" | grep -q "ELF"; then
+                        DETECTED_SINGBOX_CMD="$cmd_path"
+                        break
+                    else
+                        detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
+                    fi
+                else
+                    DETECTED_SINGBOX_CMD="$cmd_path"
+                    break
+                fi
+            fi
+        done
+    fi
+
+    if [ -n "$DETECTED_SINGBOX_CMD" ]; then
+        [ "$verbose" = "verbose" ] && echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $DETECTED_SINGBOX_CMD${gl_bai}"
+        return 0
+    else
+        [ "$verbose" = "verbose" ] && echo -e "${gl_hong}❌ 未找到 sing-box 二进制程序${gl_bai}"
+        # 提供调试信息
+        if [ "$verbose" = "verbose" ]; then
+            read -e -p "$(echo -e "${gl_zi}是否查看详细检测过程？(y/N): ${gl_bai}")" show_debug
+            if [[ "$show_debug" =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "检测过程："
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo -e "$detection_debug"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+            fi
+        fi
+        return 1
+    fi
+}
+
 # 查看 SOCKS5 配置信息
 view_socks5() {
     clear
@@ -11463,6 +11562,15 @@ view_socks5() {
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
+    echo -e "${gl_lv}快捷复制（代理URL）：${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "socks5://${username}:${password}@${server_ip}:${port}"
+    echo ""
+    echo "socks5h://${username}:${password}@${server_ip}:${port}"
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
     echo -e "${gl_zi}测试连接命令：${gl_bai}"
     echo "curl --socks5-hostname ${username}:${password}@${server_ip}:${port} http://httpbin.org/ip"
     echo ""
@@ -11471,7 +11579,7 @@ view_socks5() {
     echo "  重启服务: systemctl restart ${SOCKS5_SERVICE_NAME}"
     echo "  停止服务: systemctl stop ${SOCKS5_SERVICE_NAME}"
     echo ""
-    
+
     break_end
 }
 
@@ -11646,34 +11754,21 @@ modify_socks5() {
         return 0
     fi
     
-    # 检测 sing-box 二进制程序
-    local SINGBOX_CMD=""
-    for path in /etc/sing-box/sing-box /usr/local/bin/sing-box /opt/sing-box/sing-box; do
-        if [ -x "$path" ]; then
-            SINGBOX_CMD="$path"
-            break
-        fi
-    done
-    
-    if [ -z "$SINGBOX_CMD" ]; then
-        for cmd in sing-box sb; do
-            if command -v "$cmd" &>/dev/null; then
-                SINGBOX_CMD=$(which "$cmd")
-                break
-            fi
-        done
-    fi
-    
-    if [ -z "$SINGBOX_CMD" ]; then
+    # 检测 sing-box 二进制程序（使用公共函数）
+    if ! detect_singbox_cmd; then
         echo -e "${gl_hong}❌ 未找到 sing-box 程序${gl_bai}"
         break_end
         return 1
     fi
-    
+    local SINGBOX_CMD="$DETECTED_SINGBOX_CMD"
+
+    # 读取现有的 listen 地址（保留用户之前的 IPv4/IPv6 选择）
+    local current_listen=$(jq -r '.inbounds[0].listen // "0.0.0.0"' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+
     # 更新配置文件
     echo ""
     echo -e "${gl_zi}正在更新配置...${gl_bai}"
-    
+
     cat > "$SOCKS5_CONFIG_FILE" << CONFIGEOF
 {
   "log": {
@@ -11684,7 +11779,7 @@ modify_socks5() {
     {
       "type": "socks",
       "tag": "socks5-in",
-      "listen": "0.0.0.0",
+      "listen": "${current_listen}",
       "listen_port": ${new_port},
       "users": [
         {
@@ -12105,120 +12200,25 @@ deploy_socks5() {
     echo "此功能将部署一个独立的SOCKS5代理服务"
     echo "------------------------------------------------"
     echo ""
-    
-    # 步骤1：检测 sing-box 二进制程序
+
+    # 步骤1：检测 sing-box 二进制程序（使用公共函数）
     echo -e "${gl_zi}[步骤 1/7] 检测 sing-box 安装...${gl_bai}"
     echo ""
-    
+
     local SINGBOX_CMD=""
-    local detection_debug=""
-    
-    # 优先查找常见的二进制程序位置
-    for path in /etc/sing-box/sing-box /usr/local/bin/sing-box /opt/sing-box/sing-box; do
-        detection_debug+="正在检测: $path ... "
-        
-        # 检查文件是否存在
-        if [ ! -e "$path" ]; then
-            detection_debug+="不存在\n"
-            continue
-        fi
-        
-        # 检查是否可执行
-        if [ ! -x "$path" ]; then
-            detection_debug+="存在但不可执行（尝试添加执行权限）\n"
-            chmod +x "$path" 2>/dev/null
-            if [ ! -x "$path" ]; then
-                detection_debug+="  └─ 无法添加执行权限，跳过\n"
-                continue
-            fi
-        fi
-        
-        # 如果是符号链接，解析实际路径
-        if [ -L "$path" ]; then
-            local real_path=$(readlink -f "$path")
-            detection_debug+="是符号链接 → $real_path\n"
-            path="$real_path"
-        fi
-        
-        # 验证是 ELF 二进制文件（如果 file 命令可用）
-        if command -v file >/dev/null 2>&1; then
-            local file_type=$(file "$path" 2>/dev/null)
-            if echo "$file_type" | grep -q "ELF"; then
-                SINGBOX_CMD="$path"
-                echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
-                break
-            else
-                detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
-            fi
-        else
-            # file 命令不可用，直接使用（已经检查过可执行权限）
-            SINGBOX_CMD="$path"
-            echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
-            break
-        fi
-    done
-    
-    # 如果没找到，检查 PATH 中的命令
-    if [ -z "$SINGBOX_CMD" ]; then
-        for cmd in sing-box sb; do
-            if command -v "$cmd" &>/dev/null; then
-                local cmd_path=$(which "$cmd")
-                detection_debug+="正在检测 PATH 命令: $cmd → $cmd_path ... "
-                
-                # 如果是符号链接，解析实际路径
-                if [ -L "$cmd_path" ]; then
-                    local real_path=$(readlink -f "$cmd_path")
-                    detection_debug+="是符号链接 → $real_path\n"
-                    cmd_path="$real_path"
-                fi
-                
-                # 验证文件类型（如果 file 命令可用）
-                if command -v file >/dev/null 2>&1; then
-                    local file_type=$(file "$cmd_path" 2>/dev/null)
-                    if echo "$file_type" | grep -q "ELF"; then
-                        SINGBOX_CMD="$cmd_path"
-                        echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
-                        break
-                    else
-                        echo -e "${gl_huang}⚠️  $cmd_path 是脚本，跳过${gl_bai}"
-                        detection_debug+="  └─ 不是 ELF 二进制文件（类型: $file_type），跳过\n"
-                    fi
-                else
-                    # file 命令不可用，直接使用
-                    SINGBOX_CMD="$cmd_path"
-                    echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [ -z "$SINGBOX_CMD" ]; then
-        echo -e "${gl_hong}❌ 未找到 sing-box 二进制程序${gl_bai}"
-        echo ""
-        
-        # 显示检测过程（可选）
-        read -e -p "$(echo -e "${gl_zi}是否查看详细检测过程？(y/N): ${gl_bai}")" show_debug
-        if [[ "$show_debug" =~ ^[Yy]$ ]]; then
-            echo ""
-            echo "检测过程："
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo -e "$detection_debug"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo ""
-        fi
-        
+
+    if detect_singbox_cmd "verbose"; then
+        SINGBOX_CMD="$DETECTED_SINGBOX_CMD"
+    else
         # 调用纯净安装函数（仅二进制）
         if install_singbox_binary; then
             # 安装成功，重新检测
             echo ""
             echo -e "${gl_zi}重新检测 sing-box...${gl_bai}"
             echo ""
-            
-            SINGBOX_CMD="/etc/sing-box/sing-box"
-            if [ -x "$SINGBOX_CMD" ]; then
-                echo -e "${gl_lv}✅ 找到 sing-box 二进制程序: $SINGBOX_CMD${gl_bai}"
-                echo ""
+
+            if detect_singbox_cmd "verbose"; then
+                SINGBOX_CMD="$DETECTED_SINGBOX_CMD"
             else
                 echo -e "${gl_hong}❌ 安装后仍未找到 sing-box${gl_bai}"
                 echo ""
@@ -12233,21 +12233,42 @@ deploy_socks5() {
             return 1
         fi
     fi
-    
+
     # 显示版本信息
     echo ""
     $SINGBOX_CMD version 2>/dev/null | head -n 1
     echo ""
-    
+
     # 步骤2：配置参数输入
     echo -e "${gl_zi}[步骤 2/7] 配置 SOCKS5 参数...${gl_bai}"
     echo ""
-    
+
+    # 选择监听模式（IPv4 / IPv6）
+    local listen_addr=""
+    echo -e "${gl_huang}请选择监听模式：${gl_bai}"
+    echo "  1. IPv4 only (0.0.0.0)  — 适用于有 IPv4 地址的服务器（默认）"
+    echo "  2. IPv6 only (::)       — 适用于纯 IPv6 服务器"
+    echo ""
+    read -e -p "$(echo -e "${gl_huang}请输入选项 [1/2，回车默认1]: ${gl_bai}")" listen_choice
+
+    case "$listen_choice" in
+        2)
+            listen_addr="::"
+            echo -e "${gl_lv}✅ 监听模式: IPv6 only (::)${gl_bai}"
+            ;;
+        *)
+            listen_addr="0.0.0.0"
+            echo -e "${gl_lv}✅ 监听模式: IPv4 only (0.0.0.0)${gl_bai}"
+            ;;
+    esac
+
+    echo ""
+
     # 输入端口（支持回车使用随机端口）
     local socks5_port=""
     while true; do
         read -e -p "$(echo -e "${gl_huang}请输入 SOCKS5 端口 [回车随机生成]: ${gl_bai}")" socks5_port
-        
+
         if [ -z "$socks5_port" ]; then
             # 生成随机端口（10000-65535）
             socks5_port=$(( ((RANDOM<<15) | RANDOM) % 55536 + 10000 ))
@@ -12265,14 +12286,14 @@ deploy_socks5() {
             echo -e "${gl_hong}❌ 无效端口，请输入 1024-65535 之间的数字${gl_bai}"
         fi
     done
-    
+
     echo ""
-    
+
     # 输入用户名
     local socks5_user=""
     while true; do
         read -e -p "$(echo -e "${gl_huang}请输入用户名: ${gl_bai}")" socks5_user
-        
+
         if [ -z "$socks5_user" ]; then
             echo -e "${gl_hong}❌ 用户名不能为空${gl_bai}"
         elif [[ "$socks5_user" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -12282,14 +12303,14 @@ deploy_socks5() {
             echo -e "${gl_hong}❌ 用户名只能包含字母、数字、下划线和连字符${gl_bai}"
         fi
     done
-    
+
     echo ""
-    
+
     # 输入密码
     local socks5_pass=""
     while true; do
         read -e -p "$(echo -e "${gl_huang}请输入密码: ${gl_bai}")" socks5_pass
-        
+
         if [ -z "$socks5_pass" ]; then
             echo -e "${gl_hong}❌ 密码不能为空${gl_bai}"
         elif [ ${#socks5_pass} -lt 6 ]; then
@@ -12301,18 +12322,19 @@ deploy_socks5() {
             break
         fi
     done
-    
+
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_lv}配置信息确认：${gl_bai}"
+    echo -e "  监听地址: ${gl_huang}${listen_addr}${gl_bai}"
     echo -e "  端口: ${gl_huang}${socks5_port}${gl_bai}"
     echo -e "  用户名: ${gl_huang}${socks5_user}${gl_bai}"
     echo -e "  密码: ${gl_huang}${socks5_pass}${gl_bai}"
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
-    
+
     read -e -p "$(echo -e "${gl_huang}确认开始部署？(Y/N): ${gl_bai}")" confirm
-    
+
     case "$confirm" in
         [Yy])
             ;;
@@ -12322,28 +12344,28 @@ deploy_socks5() {
             return 1
             ;;
     esac
-    
+
     # 步骤3：创建目录
     echo ""
     echo -e "${gl_zi}[步骤 3/7] 创建配置目录...${gl_bai}"
-    mkdir -p /etc/sbox_socks5
+    mkdir -p "$SOCKS5_CONFIG_DIR"
     echo -e "${gl_lv}✅ 目录创建成功${gl_bai}"
-    
+
     # 步骤4：创建配置文件
     echo ""
     echo -e "${gl_zi}[步骤 4/7] 创建配置文件...${gl_bai}"
-    
-    cat > /etc/sbox_socks5/config.json << CONFIGEOF
+
+    cat > "$SOCKS5_CONFIG_FILE" << CONFIGEOF
 {
   "log": {
     "level": "info",
-    "output": "/etc/sbox_socks5/socks5.log"
+    "output": "${SOCKS5_CONFIG_DIR}/socks5.log"
   },
   "inbounds": [
     {
       "type": "socks",
       "tag": "socks5-in",
-      "listen": "0.0.0.0",
+      "listen": "${listen_addr}",
       "listen_port": ${socks5_port},
       "users": [
         {
@@ -12361,28 +12383,28 @@ deploy_socks5() {
   ]
 }
 CONFIGEOF
-    
-    chmod 600 /etc/sbox_socks5/config.json
+
+    chmod 600 "$SOCKS5_CONFIG_FILE"
     echo -e "${gl_lv}✅ 配置文件创建成功${gl_bai}"
-    
+
     # 步骤5：验证配置
     echo ""
     echo -e "${gl_zi}[步骤 5/7] 验证配置文件语法...${gl_bai}"
-    
-    if $SINGBOX_CMD check -c /etc/sbox_socks5/config.json >/dev/null 2>&1; then
+
+    if $SINGBOX_CMD check -c "$SOCKS5_CONFIG_FILE" >/dev/null 2>&1; then
         echo -e "${gl_lv}✅ 配置文件语法正确${gl_bai}"
     else
         echo -e "${gl_hong}❌ 配置文件语法错误${gl_bai}"
-        $SINGBOX_CMD check -c /etc/sbox_socks5/config.json
+        $SINGBOX_CMD check -c "$SOCKS5_CONFIG_FILE"
         break_end
         return 1
     fi
-    
+
     # 步骤6：创建服务文件
     echo ""
     echo -e "${gl_zi}[步骤 6/7] 创建 systemd 服务...${gl_bai}"
-    
-    cat > /etc/systemd/system/sbox-socks5.service << SERVICEEOF
+
+    cat > /etc/systemd/system/${SOCKS5_SERVICE_NAME}.service << SERVICEEOF
 [Unit]
 Description=Sing-box SOCKS5 Service
 After=network.target network-online.target
@@ -12390,7 +12412,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${SINGBOX_CMD} run -c /etc/sbox_socks5/config.json
+ExecStart=${SINGBOX_CMD} run -c ${SOCKS5_CONFIG_FILE}
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=5
@@ -12398,59 +12420,59 @@ User=root
 Group=root
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sbox-socks5
+SyslogIdentifier=${SOCKS5_SERVICE_NAME}
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=5s
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/etc/sbox_socks5
+ReadWritePaths=${SOCKS5_CONFIG_DIR}
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
-    
-    chmod 644 /etc/systemd/system/sbox-socks5.service
+
+    chmod 644 /etc/systemd/system/${SOCKS5_SERVICE_NAME}.service
     echo -e "${gl_lv}✅ 服务文件创建成功${gl_bai}"
-    
+
     # 步骤7：启动服务
     echo ""
     echo -e "${gl_zi}[步骤 7/7] 启动服务...${gl_bai}"
-    
+
     systemctl daemon-reload
-    systemctl enable sbox-socks5 >/dev/null 2>&1
-    systemctl reset-failed sbox-socks5 >/dev/null 2>&1
-    
+    systemctl enable "$SOCKS5_SERVICE_NAME" >/dev/null 2>&1
+    systemctl reset-failed "$SOCKS5_SERVICE_NAME" >/dev/null 2>&1
+
     local systemctl_action="start"
-    if systemctl is-active --quiet sbox-socks5; then
+    if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
         systemctl_action="restart"
     fi
-    
-    if ! systemctl "$systemctl_action" sbox-socks5 >/dev/null 2>&1; then
+
+    if ! systemctl "$systemctl_action" "$SOCKS5_SERVICE_NAME" >/dev/null 2>&1; then
         echo -e "${gl_hong}❌ 服务 ${systemctl_action} 命令执行失败，请查看日志${gl_bai}"
     fi
-    
+
     # 等待服务启动
     sleep 3
-    
+
     # 验证部署
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo -e "${gl_lv}验证部署结果：${gl_bai}"
     echo ""
-    
+
     local deploy_success=true
-    
+
     # 检查服务状态
-    if systemctl is-active --quiet sbox-socks5; then
+    if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
         echo -e "  服务状态: ${gl_lv}✅ Running${gl_bai}"
     else
         echo -e "  服务状态: ${gl_hong}❌ Failed${gl_bai}"
         deploy_success=false
     fi
-    
+
     # 检查端口监听
     if ss -tulpn | grep -q ":${socks5_port} "; then
         echo -e "  端口监听: ${gl_lv}✅ ${socks5_port}${gl_bai}"
@@ -12458,18 +12480,25 @@ SERVICEEOF
         echo -e "  端口监听: ${gl_hong}❌ 未监听${gl_bai}"
         deploy_success=false
     fi
-    
+
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    
+
     if [ "$deploy_success" = true ]; then
-        # 获取服务器IP（优先IPv4，fallback到IPv6）
-        local server_ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                          curl -4 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
-                          curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                          curl -6 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
-                          echo "请手动获取")
-        
+        # 根据监听模式获取服务器IP
+        local server_ip=""
+        if [ "$listen_addr" = "::" ]; then
+            server_ip=$(curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                        curl -6 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
+                        echo "请手动获取")
+        else
+            server_ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                        curl -4 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
+                        curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
+                        curl -6 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
+                        echo "请手动获取")
+        fi
+
         echo ""
         echo -e "${gl_lv}🎉 部署成功！${gl_bai}"
         echo ""
@@ -12481,6 +12510,7 @@ SERVICEEOF
         echo -e "  用户名:     ${gl_huang}${socks5_user}${gl_bai}"
         echo -e "  密码:       ${gl_huang}${socks5_pass}${gl_bai}"
         echo -e "  协议:       ${gl_huang}SOCKS5${gl_bai}"
+        echo -e "  监听模式:   ${gl_huang}${listen_addr}${gl_bai}"
         echo ""
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
         echo ""
@@ -12489,25 +12519,25 @@ SERVICEEOF
         echo ""
         echo -e "${gl_huang}⚠️  重要提醒：${gl_bai}"
         echo "  1. 确保云服务商安全组已开放 TCP ${socks5_port} 端口"
-        echo "  2. 查看日志: journalctl -u sbox-socks5 -f"
-        echo "  3. 重启服务: systemctl restart sbox-socks5"
-        echo "  4. 停止服务: systemctl stop sbox-socks5"
-        echo "  5. 卸载服务: systemctl stop sbox-socks5 && systemctl disable sbox-socks5 && rm -rf /etc/sbox_socks5 /etc/systemd/system/sbox-socks5.service"
+        echo "  2. 查看日志: journalctl -u ${SOCKS5_SERVICE_NAME} -f"
+        echo "  3. 重启服务: systemctl restart ${SOCKS5_SERVICE_NAME}"
+        echo "  4. 停止服务: systemctl stop ${SOCKS5_SERVICE_NAME}"
+        echo "  5. 卸载服务: systemctl stop ${SOCKS5_SERVICE_NAME} && systemctl disable ${SOCKS5_SERVICE_NAME} && rm -rf ${SOCKS5_CONFIG_DIR} /etc/systemd/system/${SOCKS5_SERVICE_NAME}.service"
         echo ""
     else
         echo ""
         echo -e "${gl_hong}❌ 部署失败${gl_bai}"
         echo ""
         echo "查看详细错误信息："
-        echo "  journalctl -u sbox-socks5 -n 50 --no-pager"
+        echo "  journalctl -u ${SOCKS5_SERVICE_NAME} -n 50 --no-pager"
         echo ""
         echo "常见问题排查："
         echo "  1. 检查 sing-box 程序是否正确: file ${SINGBOX_CMD}"
         echo "  2. 检查端口是否被占用: ss -tulpn | grep ${socks5_port}"
-        echo "  3. 检查服务日志: systemctl status sbox-socks5 --no-pager"
+        echo "  3. 检查服务日志: systemctl status ${SOCKS5_SERVICE_NAME} --no-pager"
         echo ""
     fi
-    
+
     break_end
 }
 #=============================================================================
