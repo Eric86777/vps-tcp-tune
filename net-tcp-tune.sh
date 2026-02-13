@@ -11493,6 +11493,64 @@ detect_singbox_cmd() {
     fi
 }
 
+# 获取服务器公网IP（带格式验证）
+# 参数: $1 = "ipv4" | "ipv6" | "auto"（默认 auto，优先IPv4）
+# 返回: 输出有效IP地址，失败输出 "IP获取失败"
+get_server_ip() {
+    local mode="${1:-auto}"
+    local result=""
+
+    # IP格式验证函数
+    _is_valid_ip() {
+        local ip="$1"
+        # IPv4: 纯数字和点
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            return 0
+        fi
+        # IPv6: 十六进制和冒号（含压缩格式）
+        if [[ "$ip" =~ ^[0-9a-fA-F:]+$ ]] && [[ "$ip" == *:* ]]; then
+            return 0
+        fi
+        return 1
+    }
+
+    # 尝试获取IP并验证
+    _try_get_ip() {
+        local url="$1"
+        local curl_flag="$2"
+        result=$(curl "$curl_flag" -s --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$result" ] && _is_valid_ip "$result"; then
+            echo "$result"
+            return 0
+        fi
+        return 1
+    }
+
+    case "$mode" in
+        ipv6)
+            _try_get_ip "ifconfig.me" "-6" && return 0
+            _try_get_ip "ip.sb" "-6" && return 0
+            _try_get_ip "ipinfo.io/ip" "-6" && return 0
+            ;;
+        ipv4)
+            _try_get_ip "ifconfig.me" "-4" && return 0
+            _try_get_ip "ip.sb" "-4" && return 0
+            _try_get_ip "ipinfo.io/ip" "-4" && return 0
+            ;;
+        *)
+            # auto: 先IPv4后IPv6
+            _try_get_ip "ifconfig.me" "-4" && return 0
+            _try_get_ip "ip.sb" "-4" && return 0
+            _try_get_ip "ipinfo.io/ip" "-4" && return 0
+            _try_get_ip "ifconfig.me" "-6" && return 0
+            _try_get_ip "ip.sb" "-6" && return 0
+            ;;
+    esac
+
+    echo "IP获取失败"
+    return 1
+}
+
 # 查看 SOCKS5 配置信息
 view_socks5() {
     clear
@@ -11525,11 +11583,14 @@ view_socks5() {
         return 1
     fi
     
-    # 获取服务器IP
-    local server_ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                      curl -4 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
-                      curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                      echo "请手动获取")
+    # 获取服务器IP（带格式验证）
+    local listen_addr=$(jq -r '.inbounds[0].listen // "0.0.0.0"' "$SOCKS5_CONFIG_FILE" 2>/dev/null)
+    local server_ip=""
+    if [ "$listen_addr" = "::" ]; then
+        server_ip=$(get_server_ip "ipv6")
+    else
+        server_ip=$(get_server_ip "auto")
+    fi
     
     # 检查服务状态
     local service_status=""
@@ -12485,18 +12546,12 @@ SERVICEEOF
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
     if [ "$deploy_success" = true ]; then
-        # 根据监听模式获取服务器IP
+        # 根据监听模式获取服务器IP（带格式验证）
         local server_ip=""
         if [ "$listen_addr" = "::" ]; then
-            server_ip=$(curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                        curl -6 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
-                        echo "请手动获取")
+            server_ip=$(get_server_ip "ipv6")
         else
-            server_ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                        curl -4 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
-                        curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || \
-                        curl -6 -s --max-time 3 ipinfo.io/ip 2>/dev/null || \
-                        echo "请手动获取")
+            server_ip=$(get_server_ip "auto")
         fi
 
         echo ""
