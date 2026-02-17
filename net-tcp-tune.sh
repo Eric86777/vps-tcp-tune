@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
 # v4.9.0 更新: OpenClaw全面重构：对照官方文档修正服务名/配置格式/频道插件，新增Antigravity预设+模型列表更新+查看部署信息 (by Eric86777)
 # v4.8.7 更新: OpenClaw新增频道管理功能，支持Telegram/WhatsApp/Discord/Slack一键配置 (by Eric86777)
 # v4.8.6 更新: AI代理工具箱新增OpenAI Responses API转换代理，支持Chat Completions客户端对接Responses API服务 (by Eric86777)
 # v4.8.4 更新: 新增功能66一键全自动优化（两阶段：安装内核→重启→全自动调优3→4→5→6→8） (by Eric86777)
-# v4.8.3 更新: 功能5入口添加配置状态检测+老版持久化风险警告+README更新 (by Eric86777)
 
-SCRIPT_VERSION="4.9.0"
-SCRIPT_LAST_UPDATE="OpenClaw全面重构+Antigravity预设+模型更新+部署信息查看"
+SCRIPT_VERSION="4.9.1"
+SCRIPT_LAST_UPDATE="BBR优化新增地区选择（亚太/美欧）+根据RTT自动计算最优缓冲区"
 #=============================================================================
 
 #=============================================================================
@@ -1931,7 +1931,7 @@ detect_bandwidth() {
                         ;;
                     *)
                         echo -e "${gl_hong}错误: 不支持的架构 ${cpu_arch}${gl_bai}" >&2
-                        echo "将使用通用值 16MB" >&2
+                        echo "将使用通用带宽值 500 Mbps" >&2
                         echo "500"
                         return 1
                         ;;
@@ -2033,7 +2033,7 @@ detect_bandwidth() {
                 echo "" >&2
                 echo -e "${gl_kjlan}默认配置方案：${gl_bai}" >&2
                 echo -e "  带宽:       ${gl_huang}1000 Mbps (1 Gbps)${gl_bai}" >&2
-                echo -e "  缓冲区:     ${gl_huang}16 MB${gl_bai}" >&2
+                echo -e "  缓冲区:     ${gl_huang}根据地区自动计算${gl_bai}" >&2
                 echo -e "  适用场景:   ${gl_zi}标准 1Gbps 服务器（覆盖大多数场景）${gl_bai}" >&2
                 echo "" >&2
                 echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}" >&2
@@ -2046,7 +2046,7 @@ detect_bandwidth() {
                 case "$use_default" in
                     [Yy])
                         echo "" >&2
-                        echo -e "${gl_lv}✅ 使用默认配置: 1000 Mbps（16 MB 缓冲区）${gl_bai}" >&2
+                        echo -e "${gl_lv}✅ 使用默认配置: 1000 Mbps${gl_bai}" >&2
                         echo "1000"
                         return 0
                         ;;
@@ -2220,7 +2220,7 @@ detect_bandwidth() {
                 
                 if [[ "$use_default" =~ ^[Yy]$ ]]; then
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 使用默认配置: 1000 Mbps（16 MB 缓冲区）${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 使用默认配置: 1000 Mbps${gl_bai}" >&2
                     echo "1000"
                     return 0
                 else
@@ -2250,19 +2250,21 @@ detect_bandwidth() {
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
             echo "" >&2
             echo -e "${gl_huang}【小带宽 VPS】${gl_bai}" >&2
-            echo "1. 100 Mbps   → 缓冲区 6 MB   (NAT/极小带宽)" >&2
-            echo "2. 200 Mbps   → 缓冲区 8 MB   (小型VPS)" >&2
-            echo "3. 300 Mbps   → 缓冲区 10 MB  (入门服务器)" >&2
+            echo "1. 100 Mbps   (NAT/极小带宽)" >&2
+            echo "2. 200 Mbps   (小型VPS)" >&2
+            echo "3. 300 Mbps   (入门服务器)" >&2
             echo "" >&2
             echo -e "${gl_huang}【中等带宽】${gl_bai}" >&2
-            echo "4. 500 Mbps   → 缓冲区 12 MB  (标准小带宽)" >&2
-            echo "5. 700 Mbps   → 缓冲区 14 MB  (准千兆)" >&2
-            echo "6. 1 Gbps ⭐  → 缓冲区 16 MB  (标准VPS/最常见)" >&2
+            echo "4. 500 Mbps   (标准小带宽)" >&2
+            echo "5. 700 Mbps   (准千兆)" >&2
+            echo "6. 1 Gbps ⭐  (标准VPS/最常见)" >&2
             echo "" >&2
             echo -e "${gl_huang}【高带宽服务器】${gl_bai}" >&2
-            echo "7. 1.5 Gbps   → 缓冲区 20 MB  (中高端VPS)" >&2
-            echo "8. 2 Gbps     → 缓冲区 24 MB  (高性能VPS)" >&2
-            echo "9. 2.5 Gbps   → 缓冲区 28 MB  (准万兆)" >&2
+            echo "7. 1.5 Gbps   (中高端VPS)" >&2
+            echo "8. 2 Gbps     (高性能VPS)" >&2
+            echo "9. 2.5 Gbps   (准万兆)" >&2
+            echo "" >&2
+            echo -e "${gl_zi}提示: 缓冲区大小将根据后续选择的地区自动计算${gl_bai}" >&2
             echo "" >&2
             echo -e "${gl_zi}【其他选项】${gl_bai}" >&2
             echo "10. 自定义输入（手动指定任意带宽值）" >&2
@@ -2279,55 +2281,55 @@ detect_bandwidth() {
             case "$preset_choice" in
                 1)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 100 Mbps (缓冲区 6 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 100 Mbps${gl_bai}" >&2
                     echo "100"
                     return 0
                     ;;
                 2)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 200 Mbps (缓冲区 8 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 200 Mbps${gl_bai}" >&2
                     echo "200"
                     return 0
                     ;;
                 3)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 300 Mbps (缓冲区 10 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 300 Mbps${gl_bai}" >&2
                     echo "300"
                     return 0
                     ;;
                 4)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 500 Mbps (缓冲区 12 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 500 Mbps${gl_bai}" >&2
                     echo "500"
                     return 0
                     ;;
                 5)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 700 Mbps (缓冲区 14 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 700 Mbps${gl_bai}" >&2
                     echo "700"
                     return 0
                     ;;
                 6)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 1000 Mbps (缓冲区 16 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 1000 Mbps${gl_bai}" >&2
                     echo "1000"
                     return 0
                     ;;
                 7)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 1500 Mbps (缓冲区 20 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 1500 Mbps${gl_bai}" >&2
                     echo "1500"
                     return 0
                     ;;
                 8)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 2000 Mbps (缓冲区 24 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 2000 Mbps${gl_bai}" >&2
                     echo "2000"
                     return 0
                     ;;
                 9)
                     echo "" >&2
-                    echo -e "${gl_lv}✅ 已选择: 2500 Mbps (缓冲区 28 MB)${gl_bai}" >&2
+                    echo -e "${gl_lv}✅ 已选择: 2500 Mbps${gl_bai}" >&2
                     echo "2500"
                     return 0
                     ;;
@@ -2375,73 +2377,121 @@ detect_bandwidth() {
 # 缓冲区大小计算函数
 calculate_buffer_size() {
     local bandwidth=$1
+    local region=${2:-asia}  # asia（亚太）或 overseas（美欧）
     local buffer_mb
     local bandwidth_level
 
     # 输入验证：确保 bandwidth 是正整数
     if ! [[ "$bandwidth" =~ ^[0-9]+$ ]] || [ "$bandwidth" -le 0 ] 2>/dev/null; then
-        echo -e "${gl_huang}⚠️ 带宽值无效 (${bandwidth})，使用默认值 16MB${gl_bai}" >&2
-        echo "16"
+        local fallback_mb=16
+        [ "$region" = "overseas" ] && fallback_mb=64
+        echo -e "${gl_huang}⚠️ 带宽值无效 (${bandwidth})，使用默认值 ${fallback_mb}MB${gl_bai}" >&2
+        echo "$fallback_mb"
         return 0
     fi
 
-    # 优先匹配预设档位（精确匹配）
-    if [ "$bandwidth" -eq 100 ]; then
-        buffer_mb=6
-        bandwidth_level="预设档位（100 Mbps）"
-    elif [ "$bandwidth" -eq 200 ]; then
-        buffer_mb=8
-        bandwidth_level="预设档位（200 Mbps）"
-    elif [ "$bandwidth" -eq 300 ]; then
-        buffer_mb=10
-        bandwidth_level="预设档位（300 Mbps）"
-    elif [ "$bandwidth" -eq 500 ]; then
-        buffer_mb=12
-        bandwidth_level="预设档位（500 Mbps）"
-    elif [ "$bandwidth" -eq 700 ]; then
-        buffer_mb=14
-        bandwidth_level="预设档位（700 Mbps）"
-    elif [ "$bandwidth" -eq 1000 ]; then
-        buffer_mb=16
-        bandwidth_level="预设档位（1 Gbps）"
-    elif [ "$bandwidth" -eq 1500 ]; then
-        buffer_mb=20
-        bandwidth_level="预设档位（1.5 Gbps）"
-    elif [ "$bandwidth" -eq 2000 ]; then
-        buffer_mb=24
-        bandwidth_level="预设档位（2 Gbps）"
-    elif [ "$bandwidth" -eq 2500 ]; then
-        buffer_mb=28
-        bandwidth_level="预设档位（2.5 Gbps）"
-    # 否则使用原有的范围判断（用于自动检测和自定义值）
-    elif [ "$bandwidth" -lt 500 ]; then
-        buffer_mb=8
-        bandwidth_level="小带宽（< 500 Mbps）"
-    elif [ "$bandwidth" -lt 1000 ]; then
-        buffer_mb=12
-        bandwidth_level="中等带宽（500-1000 Mbps）"
-    elif [ "$bandwidth" -lt 2000 ]; then
-        buffer_mb=16
-        bandwidth_level="标准带宽（1-2 Gbps）"
-    elif [ "$bandwidth" -lt 5000 ]; then
-        buffer_mb=24
-        bandwidth_level="高带宽（2-5 Gbps）"
-    elif [ "$bandwidth" -lt 10000 ]; then
-        buffer_mb=28
-        bandwidth_level="超高带宽（5-10 Gbps）"
+    if [ "$region" = "overseas" ]; then
+        # ===== 美国/欧洲档位（RTT ~200ms，buffer ≈ BDP × 2.5，上限 64MB）=====
+        if [ "$bandwidth" -eq 100 ]; then
+            buffer_mb=8
+            bandwidth_level="预设档位（100 Mbps·远距离）"
+        elif [ "$bandwidth" -eq 200 ]; then
+            buffer_mb=16
+            bandwidth_level="预设档位（200 Mbps·远距离）"
+        elif [ "$bandwidth" -eq 300 ]; then
+            buffer_mb=20
+            bandwidth_level="预设档位（300 Mbps·远距离）"
+        elif [ "$bandwidth" -eq 500 ]; then
+            buffer_mb=32
+            bandwidth_level="预设档位（500 Mbps·远距离）"
+        elif [ "$bandwidth" -eq 700 ]; then
+            buffer_mb=48
+            bandwidth_level="预设档位（700 Mbps·远距离）"
+        elif [ "$bandwidth" -eq 1000 ]; then
+            buffer_mb=64
+            bandwidth_level="预设档位（1 Gbps·远距离）"
+        elif [ "$bandwidth" -eq 1500 ]; then
+            buffer_mb=64
+            bandwidth_level="预设档位（1.5 Gbps·远距离）"
+        elif [ "$bandwidth" -eq 2000 ]; then
+            buffer_mb=64
+            bandwidth_level="预设档位（2 Gbps·远距离）"
+        elif [ "$bandwidth" -eq 2500 ]; then
+            buffer_mb=64
+            bandwidth_level="预设档位（2.5 Gbps·远距离）"
+        elif [ "$bandwidth" -lt 500 ]; then
+            buffer_mb=16
+            bandwidth_level="小带宽（< 500 Mbps·远距离）"
+        elif [ "$bandwidth" -lt 1000 ]; then
+            buffer_mb=48
+            bandwidth_level="中等带宽（500-1000 Mbps·远距离）"
+        elif [ "$bandwidth" -lt 2000 ]; then
+            buffer_mb=64
+            bandwidth_level="标准带宽（1-2 Gbps·远距离）"
+        else
+            buffer_mb=64
+            bandwidth_level="高带宽（> 2 Gbps·远距离）"
+        fi
     else
-        buffer_mb=32
-        bandwidth_level="极高带宽（> 10 Gbps）"
+        # ===== 亚太地区档位（RTT ~50ms，原有逻辑不变）=====
+        if [ "$bandwidth" -eq 100 ]; then
+            buffer_mb=6
+            bandwidth_level="预设档位（100 Mbps）"
+        elif [ "$bandwidth" -eq 200 ]; then
+            buffer_mb=8
+            bandwidth_level="预设档位（200 Mbps）"
+        elif [ "$bandwidth" -eq 300 ]; then
+            buffer_mb=10
+            bandwidth_level="预设档位（300 Mbps）"
+        elif [ "$bandwidth" -eq 500 ]; then
+            buffer_mb=12
+            bandwidth_level="预设档位（500 Mbps）"
+        elif [ "$bandwidth" -eq 700 ]; then
+            buffer_mb=14
+            bandwidth_level="预设档位（700 Mbps）"
+        elif [ "$bandwidth" -eq 1000 ]; then
+            buffer_mb=16
+            bandwidth_level="预设档位（1 Gbps）"
+        elif [ "$bandwidth" -eq 1500 ]; then
+            buffer_mb=20
+            bandwidth_level="预设档位（1.5 Gbps）"
+        elif [ "$bandwidth" -eq 2000 ]; then
+            buffer_mb=24
+            bandwidth_level="预设档位（2 Gbps）"
+        elif [ "$bandwidth" -eq 2500 ]; then
+            buffer_mb=28
+            bandwidth_level="预设档位（2.5 Gbps）"
+        elif [ "$bandwidth" -lt 500 ]; then
+            buffer_mb=8
+            bandwidth_level="小带宽（< 500 Mbps）"
+        elif [ "$bandwidth" -lt 1000 ]; then
+            buffer_mb=12
+            bandwidth_level="中等带宽（500-1000 Mbps）"
+        elif [ "$bandwidth" -lt 2000 ]; then
+            buffer_mb=16
+            bandwidth_level="标准带宽（1-2 Gbps）"
+        elif [ "$bandwidth" -lt 5000 ]; then
+            buffer_mb=24
+            bandwidth_level="高带宽（2-5 Gbps）"
+        elif [ "$bandwidth" -lt 10000 ]; then
+            buffer_mb=28
+            bandwidth_level="超高带宽（5-10 Gbps）"
+        else
+            buffer_mb=32
+            bandwidth_level="极高带宽（> 10 Gbps）"
+        fi
     fi
-    
+
     # 显示计算结果（输出到stderr）
+    local region_label="亚太地区"
+    [ "$region" = "overseas" ] && region_label="美国/欧洲"
     echo "" >&2
-    echo -e "${gl_kjlan}根据带宽计算最优缓冲区:${gl_bai}" >&2
+    echo -e "${gl_kjlan}根据带宽和地区计算最优缓冲区:${gl_bai}" >&2
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     echo -e "  检测带宽: ${gl_huang}${bandwidth} Mbps${gl_bai}" >&2
+    echo -e "  服务地区: ${gl_huang}${region_label}${gl_bai}" >&2
     echo -e "  带宽等级: ${bandwidth_level}" >&2
     echo -e "  推荐缓冲区: ${gl_lv}${buffer_mb} MB${gl_bai}" >&2
-    echo -e "  说明: 适合该带宽的最优配置" >&2
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     echo "" >&2
     
@@ -2460,9 +2510,11 @@ calculate_buffer_size() {
             return 0
             ;;
         *)
+            local default_mb=16
+            [ "$region" = "overseas" ] && default_mb=32
             echo "" >&2
-            echo -e "${gl_huang}已取消，将使用通用值 16MB${gl_bai}" >&2
-            echo "16"
+            echo -e "${gl_huang}已取消，将使用通用值 ${default_mb}MB${gl_bai}" >&2
+            echo "$default_mb"
             return 1
             ;;
     esac
@@ -2695,9 +2747,33 @@ bbr_configure_direct() {
     # 步骤 0.5：带宽检测和缓冲区计算
     echo ""
     echo -e "${gl_zi}[步骤 2/6] 检测服务器带宽并计算最优缓冲区...${gl_bai}"
-    
+
     local detected_bandwidth=$(detect_bandwidth)
-    local buffer_mb=$(calculate_buffer_size "$detected_bandwidth")
+
+    # 地区选择（影响缓冲区大小：高延迟地区需要更大缓冲区）
+    local region="asia"
+    local region_choice=""
+    echo ""
+    echo -e "${gl_kjlan}请选择服务器主要服务的地区：${gl_bai}"
+    echo ""
+    echo "1. 亚太地区（港/日/新/韩等）⭐ 推荐"
+    echo "   延迟较低（RTT < 100ms），使用标准缓冲区"
+    echo ""
+    echo "2. 美国/欧洲（跨太平洋/大西洋）"
+    echo "   延迟较高（RTT 150-300ms），使用大缓冲区"
+    echo ""
+    if [ "$AUTO_MODE" = "1" ]; then
+        region_choice=1
+    else
+        read -e -p "请输入选择 [1]: " region_choice
+        region_choice=${region_choice:-1}
+    fi
+    case "$region_choice" in
+        2) region="overseas" ;;
+        *) region="asia" ;;
+    esac
+
+    local buffer_mb=$(calculate_buffer_size "$detected_bandwidth" "$region")
     local buffer_bytes=$((buffer_mb * 1024 * 1024))
     
     echo -e "${gl_lv}✅ 将使用 ${buffer_mb}MB 缓冲区配置${gl_bai}"
@@ -2749,7 +2825,7 @@ bbr_configure_direct() {
     cat > "$SYSCTL_CONF" << EOF
 # BBR v3 Direct/Endpoint Configuration (Intelligent Detection Edition)
 # Generated on $(date)
-# Bandwidth: ${detected_bandwidth} Mbps | Buffer: ${buffer_mb} MB
+# Bandwidth: ${detected_bandwidth} Mbps | Region: ${region} | Buffer: ${buffer_mb} MB
 
 # 队列调度算法
 net.core.default_qdisc=fq
