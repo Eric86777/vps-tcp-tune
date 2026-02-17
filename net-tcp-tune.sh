@@ -2762,12 +2762,8 @@ bbr_configure_direct() {
     echo "2. 美国/欧洲（跨太平洋/大西洋）"
     echo "   延迟较高（RTT 150-300ms），使用大缓冲区"
     echo ""
-    if [ "$AUTO_MODE" = "1" ]; then
-        region_choice=1
-    else
-        read -e -p "请输入选择 [1]: " region_choice
-        region_choice=${region_choice:-1}
-    fi
+    read -e -p "请输入选择 [1]: " region_choice
+    region_choice=${region_choice:-1}
     case "$region_choice" in
         2) region="overseas" ;;
         *) region="asia" ;;
