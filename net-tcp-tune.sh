@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
 # v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
 # v4.9.0 更新: OpenClaw全面重构：对照官方文档修正服务名/配置格式/频道插件，新增Antigravity预设+模型列表更新+查看部署信息 (by Eric86777)
 # v4.8.7 更新: OpenClaw新增频道管理功能，支持Telegram/WhatsApp/Discord/Slack一键配置 (by Eric86777)
 # v4.8.6 更新: AI代理工具箱新增OpenAI Responses API转换代理，支持Chat Completions客户端对接Responses API服务 (by Eric86777)
-# v4.8.4 更新: 新增功能66一键全自动优化（两阶段：安装内核→重启→全自动调优3→4→5→6→8） (by Eric86777)
 
-SCRIPT_VERSION="4.9.1"
-SCRIPT_LAST_UPDATE="BBR优化新增地区选择（亚太/美欧）+根据RTT自动计算最优缓冲区"
+SCRIPT_VERSION="4.9.2"
+SCRIPT_LAST_UPDATE="移除功能4(MTU检测)，启动自动清理旧版MTU残留，功能3已覆盖"
 #=============================================================================
 
 #=============================================================================
@@ -1302,579 +1302,62 @@ manage_ipv6() {
 }
 
 #=============================================================================
-# MTU/MSS 检测与优化功能
-# 用于消除国际链路重传问题
+# 旧版 MTU 优化自动清理（v4.9.2 起移除功能4，保留清理逻辑）
+# 功能3 的 tcp_mtu_probing=1 + clamp-mss-to-pmtu 已覆盖 MTU 智能探测
 #=============================================================================
 
-# 多地区 MTU 路径探测
-detect_path_mtu_multi_region() {
-    clear >&2
-    echo -e "${gl_kjlan}==========================================${gl_bai}" >&2
-    echo "      MTU 路径探测（多地区检测）" >&2
-    echo -e "${gl_kjlan}==========================================${gl_bai}" >&2
-    echo "" >&2
-    
-    echo -e "${gl_zi}正在探测到全球多个地区的路径 MTU...${gl_bai}" >&2
-    echo -e "${gl_huang}注意: 已排除 Anycast IP (如 1.1.1.1/8.8.8.8)，确保检测真实物理路径${gl_bai}" >&2
-    echo "" >&2
-    
-    # 定义测试目标 (主IP + 备选IP，确保高可用)
-    # 策略：混合使用大学、ISP骨干网、商业云(非Anycast) IP
-    declare -A targets=(
-        ["香港"]="147.8.17.13 202.45.170.1 103.16.228.1 118.143.1.1"          # HKU, HKIX, HostHatch, PCCW
-        ["日本-东京"]="133.11.0.1 202.232.2.1 103.201.129.1 203.104.128.1"    # U-Tokyo, JAIST, GMO, KDDI
-        ["日本-大阪"]="133.1.138.1 203.178.148.19 61.211.224.1"               # Osaka U, WIDE, K-Opticom
-        ["新加坡"]="137.132.80.25 202.156.0.1 103.25.202.1 118.201.1.1"       # NUS, Singtel, StarHub, M1
-        ["韩国"]="147.46.10.20 211.233.0.1 168.126.63.1 210.117.65.1"         # SNU, KT, KT-DNS, SK Broadband
-        ["美国-西海岸"]="128.97.27.37 128.32.155.2 198.148.161.11 64.125.0.1"  # UCLA, Berkeley, QuadraNet, Zayo
-        ["美国-东海岸"]="18.9.22.69 128.112.128.15 108.61.10.10 23.29.64.1"    # MIT, Princeton, Vultr, Choopa
-        ["欧洲-德国"]="141.14.16.1 194.25.0.125 134.130.4.1 85.10.240.1"      # DFN, Telekom, RWTH, Hetzner
-        ["欧洲-英国"]="131.111.8.46 163.1.0.1 212.58.244.20 193.136.1.1"       # Cambridge, Oxford, BBC, LINX
-        ["澳洲"]="139.130.4.5 203.50.0.1 150.203.1.10 203.2.218.1"             # Telstra, Telstra-2, ANU, Optus
-    )
+auto_cleanup_legacy_mtu() {
+    # 检测旧版功能4的配置文件是否存在
+    [ -f /usr/local/etc/mtu-optimize.conf ] || return 0
 
-    # 防御性验证：确保目标数组不为空
-    if [ ${#targets[@]} -eq 0 ]; then
-        echo -e "${gl_hong}❌ MTU 检测目标列表为空，无法继续${gl_bai}" >&2
-        return 1
-    fi
-
-    # 定义显示顺序
-    local regions_order=("香港" "日本-东京" "日本-大阪" "新加坡" "韩国" "美国-西海岸" "美国-东海岸" "欧洲-德国" "欧洲-英国" "澳洲")
-    
-    # 存储每个目标的 MSS
-    declare -A mss_values
-    local test_count=0
-    local success_count=0
-    
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-    
-    for region in "${regions_order[@]}"; do
-        test_count=$((test_count + 1))
-        local target_list="${targets[$region]}"
-        local active_target=""
-        
-        # 1. 连通性检查 (选择可用的 IP)
-        for ip in $target_list; do
-            if ping -c 1 -W 1 "$ip" &>/dev/null; then
-                active_target="$ip"
-                break
-            fi
-        done
-        
-        echo -e "${gl_huang}[${test_count}/${#regions_order[@]}] ${gl_bai}测试目标: ${gl_kjlan}${region}${gl_bai}" >&2
-        
-        if [ -z "$active_target" ]; then
-             echo -e "  ${gl_huang}⚠️  无法探测 (所有测试IP均不可达，不参与计算)${gl_bai}" >&2
-             echo "" >&2
-             continue
-        fi
-
-        # 2. 开始 MTU 探测（从1472开始=标准1500 MTU，向下探测到1200覆盖多层隧道）
-        local found=0
-        for size in 1472 1460 1452 1440 1420 1400 1380 1360 1340 1320 1300 1280 1260 1240 1220 1200; do
-            if ping -M do -s "$size" -c 1 -W 1 "$active_target" &>/dev/null; then
-                local mtu=$((size + 28))
-                local mss=$((size + 28 - 40))
-                echo -e "  ${gl_lv}✅ MTU=${mtu}, MSS=${mss}${gl_bai} (Target: $active_target)" >&2
-                mss_values[$region]=$mss
-                found=1
-                success_count=$((success_count + 1))
-                break
-            fi
-        done
-
-        if [ $found -eq 0 ]; then
-            echo -e "  ${gl_huang}⚠️  探测失败 (ICMP分片被拦截，不参与计算)${gl_bai}" >&2
-        fi
-        echo "" >&2
-    done
-    
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-    echo "" >&2
-    
-    # 检查是否有任何成功的探测结果
-    if [ ${#mss_values[@]} -eq 0 ]; then
-        echo -e "${gl_hong}❌ 所有地区均探测失败，无法确定MSS值${gl_bai}" >&2
-        echo -e "${gl_huang}建议检查网络连接或使用手动设置${gl_bai}" >&2
-        return 1
-    fi
-
-    # 找出最小的 MSS（只计算成功探测的地区）
-    local min_mss=9999
-    local max_mss=0
-    local min_region=""
-    local max_region=""
-
-    for region in "${!mss_values[@]}"; do
-        local mss=${mss_values[$region]}
-        if [ "$mss" -lt "$min_mss" ]; then
-            min_mss=$mss
-            min_region=$region
-        fi
-        if [ "$mss" -gt "$max_mss" ]; then
-            max_mss=$mss
-            max_region=$region
-        fi
-    done
-
-    # 显示汇总结果
-    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}" >&2
-    echo -e "${gl_lv}✅ 探测完成！${gl_bai}" >&2
-    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}" >&2
-    echo "" >&2
-    echo "各地区 MSS 检测结果：" >&2
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-    for region in "${regions_order[@]}"; do
-        if [ -n "${mss_values[$region]}" ]; then
-            local mss=${mss_values[$region]}
-            echo -e "  ${gl_zi}${region}:${gl_bai} ${mss} bytes" >&2
-        fi
-    done
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-    echo "" >&2
-    
-    # 判断是否一致
-    if [ $min_mss -eq $max_mss ]; then
-        echo -e "${gl_lv}✅ 所有地区 MSS 完全一致！${gl_bai}" >&2
-        echo -e "${gl_kjlan}推荐 MSS:${gl_bai} ${gl_lv}${min_mss}${gl_bai} bytes" >&2
-        echo -e "${gl_zi}说明: 所有地区MTU相同，使用此值性能最优${gl_bai}" >&2
-    else
-        local diff=$((max_mss - min_mss))
-        echo -e "${gl_huang}⚠️  不同地区 MSS 有差异（${diff} bytes）${gl_bai}" >&2
-        echo "" >&2
-        echo -e "  最小值: ${gl_huang}${min_mss}${gl_bai} (${min_region})" >&2
-        echo -e "  最大值: ${gl_huang}${max_mss}${gl_bai} (${max_region})" >&2
-        echo "" >&2
-        echo -e "${gl_kjlan}推荐策略：${gl_bai}" >&2
-        echo -e "  1. ${gl_lv}保守方案:${gl_bai} 使用最小值 ${min_mss} (兼容所有地区)" >&2
-        echo -e "  2. ${gl_huang}激进方案:${gl_bai} 使用最大值 ${max_mss} (性能最优，部分地区可能丢包)" >&2
-        echo -e "  3. ${gl_zi}折中方案:${gl_bai} 使用中间值 $(( (min_mss + max_mss) / 2 ))" >&2
-    fi
-    echo "" >&2
-    
-    # 返回推荐的MSS值（最小值，最大值）
-    echo "$min_mss $max_mss"
-}
-
-# 应用 MTU/MSS 优化（方案A：设置路由 MTU，让 clamp-to-pmtu 自动生效）
-apply_mss_clamp_with_value() {
-    local mss=$1
-
-    # 验证 MSS 值
-    if ! [[ "$mss" =~ ^[0-9]+$ ]] || [ "$mss" -lt 536 ] || [ "$mss" -gt 9000 ]; then
-        echo -e "${gl_hong}错误: MSS 值无效 (${mss})，有效范围 536-9000${gl_bai}"
-        return 1
-    fi
-
-    local mtu=$((mss + 40))
-
-    echo -e "${gl_zi}正在应用 MTU/MSS 优化...${gl_bai}"
-    echo ""
-
-    # 获取默认路由信息
+    # 恢复默认路由 MTU
     local default_route
-    default_route=$(ip -4 route show default | head -1)
-    if [ -z "$default_route" ]; then
-        echo -e "${gl_hong}错误: 无法获取默认路由信息${gl_bai}"
-        return 1
+    default_route=$(ip -4 route show default 2>/dev/null | head -1)
+    if [ -n "$default_route" ]; then
+        local clean_route
+        clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
+        ip route replace $clean_route 2>/dev/null
     fi
 
-    local default_iface
-    default_iface=$(echo "$default_route" | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-    if [ -z "$default_iface" ]; then
-        echo -e "${gl_hong}错误: 无法获取默认网卡${gl_bai}"
-        return 1
+    # 恢复链路 MTU
+    local saved_iface saved_original_mtu
+    saved_iface=$(grep '^DEFAULT_IFACE=' /usr/local/etc/mtu-optimize.conf 2>/dev/null | cut -d= -f2)
+    saved_original_mtu=$(grep '^ORIGINAL_MTU=' /usr/local/etc/mtu-optimize.conf 2>/dev/null | cut -d= -f2)
+    if [ -n "$saved_iface" ] && [ -n "$saved_original_mtu" ]; then
+        ip link set dev "$saved_iface" mtu "$saved_original_mtu" 2>/dev/null
     fi
 
-    # 记录原始 MTU 用于回滚
-    local original_mtu
-    original_mtu=$(ip link show "$default_iface" 2>/dev/null | sed -nE 's/.*mtu ([0-9]+).*/\1/p' | head -1)
-
-    # 清理旧版本的 iptables set-mss 规则（兼容性：从旧版本升级时自动清理）
+    # 清理旧版 iptables set-mss 规则
     if command -v iptables &>/dev/null; then
         local comment_tag="net-tcp-tune-mss"
-        local old_rule_mss
-        while read -r old_rule_mss; do
-            [ -n "$old_rule_mss" ] || continue
-            iptables -t mangle -D OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$old_rule_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
+        local del_mss
+        while read -r del_mss; do
+            [ -n "$del_mss" ] || continue
+            iptables -t mangle -D OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$del_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
         done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "$comment_tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
-        while read -r old_rule_mss; do
-            [ -n "$old_rule_mss" ] || continue
-            iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$old_rule_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
+        while read -r del_mss; do
+            [ -n "$del_mss" ] || continue
+            iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$del_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
         done < <(iptables -t mangle -S POSTROUTING 2>/dev/null | grep "$comment_tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
     fi
 
-    # 保存配置文件（用于持久化和回滚）
-    mkdir -p /usr/local/etc
-    cat > /usr/local/etc/mtu-optimize.conf << EOF
-# MTU优化配置 - 由 net-tcp-tune.sh 自动生成
-# 生成时间: $(date)
-OPTIMIZED_MTU=$mtu
-OPTIMIZED_MSS=$mss
-ORIGINAL_MTU=${original_mtu:-1500}
-DEFAULT_IFACE=$default_iface
-FALLBACK_LINK_MTU=false
-EOF
-    if [ ! -f /usr/local/etc/mtu-optimize.conf ]; then
-        echo -e "${gl_hong}错误: 配置文件写入失败（磁盘满或权限不足）${gl_bai}"
-        return 1
-    fi
-
-    # 设置默认路由 MTU（核心操作：让功能3/6的 clamp-to-pmtu 自动使用正确的值）
-    echo "设置路由 MTU = ${mtu} (对应 MSS = ${mss}) ..."
-    local clean_route
-    clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
-    if ip route replace $clean_route mtu "$mtu" 2>/dev/null; then
-        echo -e "${gl_lv}✅ 默认路由 MTU 已设置为 ${mtu}${gl_bai}"
-    else
-        # 回退：直接设置网卡 MTU（影响该网卡上所有流量，包括 Docker bridge 等）
-        echo -e "${gl_huang}⚠️ 路由 MTU 设置失败，尝试设置网卡链路 MTU...${gl_bai}"
-        if docker ps &>/dev/null || [ -d /sys/class/net/docker0 ]; then
-            echo -e "${gl_huang}⚠️ 检测到 Docker 环境，降低链路 MTU 可能影响容器网络通信${gl_bai}"
-        fi
-        if ip link set dev "$default_iface" mtu "$mtu" 2>/dev/null; then
-            echo -e "${gl_lv}✅ 网卡 ${default_iface} 链路 MTU 已设置为 ${mtu}${gl_bai}"
-            # 标记使用了链路MTU回退，持久化脚本需要知道
-            sed -i 's/^FALLBACK_LINK_MTU=.*/FALLBACK_LINK_MTU=true/' /usr/local/etc/mtu-optimize.conf 2>/dev/null
-        else
-            echo -e "${gl_hong}❌ MTU 设置失败${gl_bai}"
-            return 1
-        fi
-    fi
-    echo ""
-
-    # 确保 clamp-to-pmtu 规则存在（与功能3/6协同，不再使用 set-mss）
-    if command -v iptables &>/dev/null; then
-        if ! iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-            iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-        fi
-        if ! iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-            iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-        fi
-        echo -e "${gl_lv}✅ clamp-to-pmtu 规则已确认（与功能3/6协同）${gl_bai}"
-    fi
-    echo ""
-
-    # 持久化 - 使用独立服务（与功能3彻底解耦）
-    echo "配置重启持久化..."
-
-    # 兼容旧版本：若历史上把 MTU 恢复逻辑写入了 bbr-optimize-apply.sh，则移除
+    # 清理配置文件和持久化服务
+    rm -f /usr/local/etc/mtu-optimize.conf
     if [ -f /usr/local/bin/bbr-optimize-apply.sh ] && grep -q "MTU 优化恢复 (mtu-optimize)" /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null; then
         sed -i '/# MTU 优化恢复 (mtu-optimize)/,/^[[:space:]]*fi[[:space:]]*$/d' /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null || true
     fi
-
-    cat > /usr/local/bin/mtu-optimize-apply.sh << 'MTUAPPLYEOF'
-#!/bin/bash
-# MTU Optimize 重启恢复脚本 - 自动生成，勿手动编辑
-if [ ! -f /usr/local/etc/mtu-optimize.conf ]; then
-    exit 0
-fi
-. /usr/local/etc/mtu-optimize.conf
-[ -n "$OPTIMIZED_MTU" ] || exit 0
-
-sleep 2
-
-# 恢复路由 MTU
-route_ok=false
-default_route=$(ip -4 route show default | head -1)
-if [ -n "$default_route" ]; then
-    clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
-    if ip route replace $clean_route mtu "$OPTIMIZED_MTU" 2>/dev/null; then
-        route_ok=true
-    fi
-fi
-
-# 路由MTU失败或之前使用了链路MTU回退，则设置链路MTU
-if [ "$route_ok" = false ] || [ "${FALLBACK_LINK_MTU:-false}" = "true" ]; then
-    iface="${DEFAULT_IFACE:-$(ip -4 route show default | head -1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')}"
-    if [ -n "$iface" ]; then
-        ip link set dev "$iface" mtu "$OPTIMIZED_MTU" 2>/dev/null || true
-    fi
-fi
-
-# 确保 clamp-to-pmtu 规则存在（OUTPUT + FORWARD 链）
-if command -v iptables >/dev/null 2>&1; then
-    iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
-      || iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-    iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
-      || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-fi
-MTUAPPLYEOF
-    chmod +x /usr/local/bin/mtu-optimize-apply.sh
-    cat > /etc/systemd/system/mtu-optimize-persist.service << 'MTUSVCEOF'
-[Unit]
-Description=MTU Optimize - Restore route MTU after boot
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/bin/mtu-optimize-apply.sh
-
-[Install]
-WantedBy=multi-user.target
-MTUSVCEOF
-    if command -v systemctl &>/dev/null; then
+    if [ -f /etc/systemd/system/mtu-optimize-persist.service ]; then
+        systemctl disable mtu-optimize-persist.service 2>/dev/null
+        rm -f /etc/systemd/system/mtu-optimize-persist.service
+        rm -f /usr/local/bin/mtu-optimize-apply.sh
         systemctl daemon-reload 2>/dev/null
-        systemctl enable mtu-optimize-persist.service 2>/dev/null
-        echo -e "${gl_lv}✅ 已配置独立 mtu-optimize-persist 服务（与功能3解耦）${gl_bai}"
-    else
-        echo -e "${gl_huang}⚠️ 未检测到 systemd，重启持久化不可用，MTU优化仅当前会话生效${gl_bai}"
     fi
-    echo ""
 
-    # 验证
-    echo "验证配置..."
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    local actual_route_mtu
-    actual_route_mtu=$(ip -4 route show default | head -1 | sed -nE 's/.* mtu ([0-9]+).*/\1/p')
-    if [ -n "$actual_route_mtu" ] && [ "$actual_route_mtu" = "$mtu" ]; then
-        echo -e "  路由 MTU:  ${gl_lv}${actual_route_mtu} ✓${gl_bai}"
-    else
-        echo -e "  路由 MTU:  ${gl_huang}${actual_route_mtu:-未设置} (期望: ${mtu}) ⚠${gl_bai}"
-    fi
-    echo -e "  对应 MSS:  ${gl_lv}${mss}${gl_bai}"
-    if command -v iptables &>/dev/null; then
-        local clamp_out clamp_fwd
-        clamp_out=$(iptables -t mangle -S OUTPUT 2>/dev/null | grep -c 'clamp-mss-to-pmtu')
-        clamp_fwd=$(iptables -t mangle -S FORWARD 2>/dev/null | grep -c 'clamp-mss-to-pmtu')
-        [ "$clamp_out" -gt 0 ] && echo -e "  OUTPUT:    ${gl_lv}clamp-to-pmtu ✓${gl_bai}" || echo -e "  OUTPUT:    ${gl_huang}clamp-to-pmtu 未设置 ⚠${gl_bai}"
-        [ "$clamp_fwd" -gt 0 ] && echo -e "  FORWARD:   ${gl_lv}clamp-to-pmtu ✓${gl_bai}" || echo -e "  FORWARD:   ${gl_huang}clamp-to-pmtu 未设置 ⚠${gl_bai}"
-    fi
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo -e "${gl_lv}✅ MTU/MSS 优化完成！${gl_bai}"
-    echo -e "${gl_zi}原理: 路由MTU=${mtu} → 功能3/6的clamp-to-pmtu自动使用 → MSS=${mss}${gl_bai}"
-
-    return 0
+    echo -e "${gl_huang}⚠️ 检测到旧版MTU优化配置（已被功能3的tcp_mtu_probing替代），已自动清理${gl_bai}"
+    sleep 2
 }
 
-# 验证优化效果
-verify_mss_optimization() {
-    echo ""
-    echo -e "${gl_kjlan}==========================================${gl_bai}"
-    echo "      验证优化效果"
-    echo -e "${gl_kjlan}==========================================${gl_bai}"
-    echo ""
-    
-    echo -e "${gl_zi}等待 30 秒让配置生效...${gl_bai}"
-    sleep 30
-    
-    echo ""
-    echo -e "${gl_huang}当前重传统计:${gl_bai}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    ss -s | grep -i "retrans\|segs"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    
-    echo -e "${gl_zi}建议:${gl_bai}"
-    echo "  1. 运行网络测试观察重传率变化"
-    echo "  2. 如果重传率显著降低（80%+），说明优化成功"
-    echo "  3. 如果仍有重传，可能是其他问题（线路质量等）"
-    echo ""
-}
 
-# 主菜单函数
-mtu_mss_optimization() {
-    while true; do
-        clear
-        echo -e "${gl_kjlan}==========================================${gl_bai}"
-        echo "    MTU检测与MSS优化（消除重传）"
-        echo -e "${gl_kjlan}==========================================${gl_bai}"
-        echo ""
-        
-        # 显示当前状态
-        echo -e "${gl_zi}当前状态:${gl_bai}"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        
-        # 检查 MTU 优化是否已设置
-        local route_mtu=$(ip -4 route show default 2>/dev/null | head -1 | sed -nE 's/.* mtu ([0-9]+).*/\1/p')
-        if [ -n "$route_mtu" ]; then
-            local route_mss=$((route_mtu - 40))
-            echo -e "  MTU优化:  ${gl_lv}✅ 已设置 (MTU=${route_mtu}, MSS=${route_mss})${gl_bai}"
-        else
-            echo -e "  MTU优化:  ${gl_huang}❌ 未设置（使用默认MTU）${gl_bai}"
-        fi
-
-        # 显示重传统计
-        local retrans=$(ss -s 2>/dev/null | sed -nE 's/.*retrans[:[:space:]]*([0-9]+).*/\1/p' | head -1)
-        [ -z "$retrans" ] && retrans="0"
-        echo -e "  当前重传: ${retrans} 个"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-
-        echo -e "${gl_huang}提示: 本功能仅优化 IPv4 路由，IPv6 流量不受影响${gl_bai}"
-        echo ""
-        echo -e "${gl_kjlan}功能菜单:${gl_bai}"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "1. 自动检测并优化 ⭐ 推荐"
-        echo "   （多地区MTU探测 + 设置路由MTU）"
-        echo ""
-        echo "2. 移除MTU优化"
-        echo "   （恢复默认路由MTU）"
-        echo ""
-        echo "0. 返回主菜单"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-        
-        if [ "$AUTO_MODE" = "1" ]; then
-            choice=1
-        else
-            read -e -p "请选择操作 [1]: " choice
-            choice=${choice:-1}
-        fi
-
-        case $choice in
-            1)
-                # 自动检测并优化
-                # 执行MTU检测
-                local mss_result=$(detect_path_mtu_multi_region)
-                local min_mss=$(echo "$mss_result" | awk '{print $1}')
-                local max_mss=$(echo "$mss_result" | awk '{print $2}')
-                
-                if [ -z "$min_mss" ] || [ -z "$max_mss" ] || \
-                   ! [[ "$min_mss" =~ ^[0-9]+$ ]] || ! [[ "$max_mss" =~ ^[0-9]+$ ]]; then
-                     echo -e "${gl_hong}检测失败，无法获取有效的MSS值${gl_bai}"
-                     sleep 2
-                     break_end
-                     [ "$AUTO_MODE" = "1" ] && return
-                     continue
-                fi
-
-                local mid_mss=$(( (min_mss + max_mss) / 2 ))
-
-                echo ""
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                
-                if [ "$min_mss" -eq "$max_mss" ]; then
-                    if [ "$AUTO_MODE" = "1" ]; then
-                        confirm=Y
-                    else
-                        read -e -p "是否应用推荐的 MSS = ${min_mss}？(Y/N) [Y]: " confirm
-                        confirm=${confirm:-Y}
-                    fi
-                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                        echo ""
-                        apply_mss_clamp_with_value "$min_mss"
-                        if [ $? -eq 0 ]; then
-                            verify_mss_optimization
-                        fi
-                        break_end
-                        [ "$AUTO_MODE" = "1" ] && return
-                    else
-                         echo -e "${gl_huang}已取消应用${gl_bai}"
-                         sleep 2
-                    fi
-                else
-                    echo "请选择优化策略:"
-                    echo "  1) 保守方案 (${min_mss})"
-                    echo "  2) 激进方案 (${max_mss})"
-                    echo "  3) 折中方案 (${mid_mss})"
-                    echo "  0) 取消"
-                    echo ""
-                    read -e -p "请输入选择 [1]: " strategy
-                    strategy=${strategy:-1}
-                    
-                    local selected_mss=""
-                    case $strategy in
-                        1) selected_mss=$min_mss ;;
-                        2) selected_mss=$max_mss ;;
-                        3) selected_mss=$mid_mss ;;
-                        0) echo -e "${gl_huang}已取消${gl_bai}"; sleep 2; ;;
-                        *) echo -e "${gl_hong}无效选择${gl_bai}"; sleep 2; ;;
-                    esac
-                    
-                    if [ -n "$selected_mss" ]; then
-                        echo ""
-                        apply_mss_clamp_with_value "$selected_mss"
-                        if [ $? -eq 0 ]; then
-                            verify_mss_optimization
-                        fi
-                        break_end
-                        [ "$AUTO_MODE" = "1" ] && return
-                    fi
-                fi
-                ;;
-            2)
-                # 移除MTU优化
-                clear
-                echo -e "${gl_kjlan}==========================================${gl_bai}"
-                echo "      移除 MTU 优化"
-                echo -e "${gl_kjlan}==========================================${gl_bai}"
-                echo ""
-
-                read -e -p "确认要移除 MTU 优化吗？(Y/N) [N]: " confirm
-                if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                    echo ""
-                    echo "正在移除..."
-
-                    # 恢复默认路由 MTU（移除自定义 mtu 设置）
-                    local default_route
-                    default_route=$(ip -4 route show default | head -1)
-                    if [ -n "$default_route" ]; then
-                        local clean_route
-                        clean_route=$(echo "$default_route" | sed 's/ mtu lock [0-9]*//;s/ mtu [0-9]*//')
-                        ip route replace $clean_route 2>/dev/null
-                        echo -e "${gl_lv}✓ 默认路由 MTU 已恢复${gl_bai}"
-                    fi
-
-                    # 恢复链路 MTU（应对 ip link set 回退场景）
-                    if [ -f /usr/local/etc/mtu-optimize.conf ]; then
-                        local saved_iface saved_original_mtu
-                        saved_iface=$(grep '^DEFAULT_IFACE=' /usr/local/etc/mtu-optimize.conf | cut -d= -f2)
-                        saved_original_mtu=$(grep '^ORIGINAL_MTU=' /usr/local/etc/mtu-optimize.conf | cut -d= -f2)
-                        if [ -n "$saved_iface" ] && [ -n "$saved_original_mtu" ]; then
-                            ip link set dev "$saved_iface" mtu "$saved_original_mtu" 2>/dev/null && \
-                                echo -e "${gl_lv}✓ 网卡 ${saved_iface} MTU 已恢复为 ${saved_original_mtu}${gl_bai}"
-                        fi
-                    fi
-
-                    # 清理旧版 iptables set-mss 规则（兼容旧版本）
-                    if command -v iptables &>/dev/null; then
-                        local comment_tag="net-tcp-tune-mss"
-                        local del_mss
-                        while read -r del_mss; do
-                            [ -n "$del_mss" ] || continue
-                            iptables -t mangle -D OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$del_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
-                        done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "$comment_tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
-                        while read -r del_mss; do
-                            [ -n "$del_mss" ] || continue
-                            iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$del_mss" -m comment --comment "$comment_tag" 2>/dev/null || true
-                        done < <(iptables -t mangle -S POSTROUTING 2>/dev/null | grep "$comment_tag" | sed -n 's/.*--set-mss \([0-9]\+\).*/\1/p')
-                    fi
-
-                    # 清理配置文件和持久化
-                    rm -f /usr/local/etc/mtu-optimize.conf
-                    # 兼容旧版本残留：移除 bbr-optimize-apply.sh 里的 MTU 恢复段
-                    if [ -f /usr/local/bin/bbr-optimize-apply.sh ] && grep -q "MTU 优化恢复 (mtu-optimize)" /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null; then
-                        sed -i '/# MTU 优化恢复 (mtu-optimize)/,/^[[:space:]]*fi[[:space:]]*$/d' /usr/local/bin/bbr-optimize-apply.sh 2>/dev/null || true
-                    fi
-                    # 移除独立的 mtu-optimize 服务
-                    if [ -f /etc/systemd/system/mtu-optimize-persist.service ]; then
-                        systemctl disable mtu-optimize-persist.service 2>/dev/null
-                        rm -f /etc/systemd/system/mtu-optimize-persist.service
-                        rm -f /usr/local/bin/mtu-optimize-apply.sh
-                        systemctl daemon-reload 2>/dev/null
-                    fi
-
-                    echo -e "${gl_lv}✅ MTU 优化已移除，已恢复默认配置${gl_bai}"
-                else
-                    echo -e "${gl_huang}已取消${gl_bai}"
-                fi
-                sleep 2
-                ;;
-            0)
-                return 0
-                ;;
-            *)
-                echo -e "${gl_hong}无效选择${gl_bai}"
-                sleep 1
-                ;;
-        esac
-    done
-}
 server_reboot() {
     read -e -p "$(echo -e "${gl_huang}提示: ${gl_bai}现在重启服务器使配置生效吗？(Y/N): ")" rboot
     case "$rboot" in
@@ -6862,35 +6345,30 @@ one_click_optimize() {
         echo ""
         echo -e "${gl_huang}▶ 阶段 2/2：全自动网络优化${gl_bai}"
         echo "将依次执行："
-        echo "  [1/5] 功能3 - BBR 直连优化（自动检测带宽）"
-        echo "  [2/5] 功能4 - MTU/MSS 优化（自动检测+保守方案）"
-        echo "  [3/5] 功能5 - DNS 净化（纯国外模式）"
-        echo "  [4/5] 功能6 - Realm 转发修复"
-        echo "  [5/5] 功能8 - 永久禁用 IPv6"
+        echo "  [1/4] 功能3 - BBR 直连优化（自动检测带宽）"
+        echo "  [2/4] 功能5 - DNS 净化（纯国外模式）"
+        echo "  [3/4] 功能6 - Realm 转发修复"
+        echo "  [4/4] 功能8 - 永久禁用 IPv6"
         echo ""
         sleep 3
 
         AUTO_MODE=1
 
-        echo -e "${gl_kjlan}━━━━━━ [1/5] BBR 直连优化 ━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━ [1/4] BBR 直连优化 ━━━━━━${gl_bai}"
         bbr_configure_direct
 
         echo ""
-        echo -e "${gl_kjlan}━━━━━━ [2/5] MTU/MSS 优化 ━━━━━━${gl_bai}"
-        mtu_mss_optimization
-
-        echo ""
-        echo -e "${gl_kjlan}━━━━━━ [3/5] DNS 净化 ━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━ [2/4] DNS 净化 ━━━━━━${gl_bai}"
         dns_purify_and_harden
 
         echo ""
-        echo -e "${gl_kjlan}━━━━━━ [4/5] Realm 转发修复 ━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━ [3/4] Realm 转发修复 ━━━━━━${gl_bai}"
         realm_fix_timeout
 
         AUTO_MODE=""
 
         echo ""
-        echo -e "${gl_kjlan}━━━━━━ [5/5] 禁用 IPv6（可选） ━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━ [4/4] 禁用 IPv6（可选） ━━━━━━${gl_bai}"
         read -e -p "$(echo -e "${gl_huang}是否永久禁用 IPv6？(Y/N) [Y]: ${gl_bai}")" ipv6_choice
         ipv6_choice=${ipv6_choice:-Y}
         if [[ "$ipv6_choice" =~ ^[Yy]$ ]]; then
@@ -6936,7 +6414,7 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
     echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-    echo "4. MTU检测与MSS优化（消除重传）⭐ 推荐"
+    echo -e "4. ${gl_hui}已移除（功能3已覆盖MTU智能探测）${gl_bai}"
     echo "5. NS论坛-DNS净化（抗污染/驯服DHCP）"
     echo "6. Realm转发timeout修复 ⭐ 推荐"
     echo ""
@@ -7013,7 +6491,8 @@ show_main_menu() {
             break_end
             ;;
         4)
-            mtu_mss_optimization
+            echo -e "${gl_huang}⚠️ 功能4已在v4.9.2移除，功能3的tcp_mtu_probing已覆盖MTU智能探测${gl_bai}"
+            break_end
             ;;
         5)
             dns_purify_and_harden
@@ -21989,6 +21468,9 @@ main() {
 
     # 检查 root 权限
     check_root
+
+    # 自动清理旧版功能4的MTU优化残留
+    auto_cleanup_legacy_mtu
 
     # 加载用户配置（如果存在）
     [ -f "/etc/net-tcp-tune.conf" ] && source "/etc/net-tcp-tune.conf"
