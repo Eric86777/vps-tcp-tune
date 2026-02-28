@@ -21001,8 +21001,9 @@ const server = http.createServer(async (req, res) => {
                 .map(m => ({ role: m.role, content: getTextContent(m.content) }));
 
             // 转换 Chat Completions → Responses API
-            const respReq = { model: chatReq.model, input: inputMessages, stream: false };
-            if (instructions) respReq.instructions = instructions;
+            // instructions 必须非空（sub2api codex passthrough 强制要求）
+            const respReq = { model: chatReq.model, input: inputMessages, stream: false,
+                instructions: instructions || 'You are a helpful assistant.' };
             // 只转发 model/input/stream/instructions，不传 temperature/max_tokens 等额外参数
             // 部分上游（如 sub2api）不支持这些参数会导致 502
 
