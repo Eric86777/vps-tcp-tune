@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.4 更新: 修复Responses API转换代理：兼容SSE流式响应格式，解决502 JSON解析失败 (by Eric86777)
 # v4.9.3 更新: 修复Responses API转换代理：system消息正确提取为instructions字段，修复无system消息时报错 (by Eric86777)
 # v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
 # v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
 # v4.9.0 更新: OpenClaw全面重构：对照官方文档修正服务名/配置格式/频道插件，新增Antigravity预设+模型列表更新+查看部署信息 (by Eric86777)
-# v4.8.7 更新: OpenClaw新增频道管理功能，支持Telegram/WhatsApp/Discord/Slack一键配置 (by Eric86777)
 
-SCRIPT_VERSION="4.9.3"
-SCRIPT_LAST_UPDATE="修复Responses API转换代理instructions字段，重新部署可解决403报错"
+SCRIPT_VERSION="4.9.4"
+SCRIPT_LAST_UPDATE="修复Responses API代理SSE解析，解决502报错，重新部署生效"
 #=============================================================================
 
 #=============================================================================
@@ -20947,6 +20947,51 @@ function forwardRequest(upstreamUrl, reqData, authHeader) {
     });
 }
 
+// 解析上游响应，兼容标准 JSON 和 SSE 流式两种格式
+// sub2api 的 Responses API 端点固定返回 SSE，即使请求了 stream:false
+function parseUpstreamResponse(body) {
+    const trimmed = body.trimStart();
+    if (trimmed.startsWith('event:') || trimmed.startsWith('data:')) {
+        // SSE 格式：从 delta 事件拼文本，从 completed 事件取 usage/model/id
+        let text = '', usage = null, model = null, id = null, status = 'completed';
+        for (const line of body.split('\n')) {
+            const t = line.trim();
+            if (!t.startsWith('data:')) continue;
+            const data = t.slice(5).trim();
+            if (data === '[DONE]') break;
+            try {
+                const ev = JSON.parse(data);
+                if (ev.type === 'response.output_text.delta') {
+                    text += ev.delta || '';
+                } else if (ev.type === 'response.completed' && ev.response) {
+                    const r = ev.response;
+                    if (r.usage)  usage  = r.usage;
+                    if (r.model)  model  = r.model;
+                    if (r.id)     id     = r.id;
+                    if (r.status) status = r.status;
+                } else if (ev.type === 'response.created' && ev.response) {
+                    if (!id    && ev.response.id)    id    = ev.response.id;
+                    if (!model && ev.response.model) model = ev.response.model;
+                }
+            } catch {}
+        }
+        return { text, usage, model, id, status };
+    }
+    // 标准 JSON 格式
+    const respData = JSON.parse(body);
+    let text = '';
+    if (respData.output) {
+        for (const item of respData.output) {
+            if (item.type === 'message' && item.content) {
+                for (const c of item.content) {
+                    if (c.type === 'output_text') text += c.text;
+                }
+            }
+        }
+    }
+    return { text, usage: respData.usage, model: respData.model, id: respData.id, status: respData.status };
+}
+
 const server = http.createServer(async (req, res) => {
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -21018,35 +21063,24 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            const respData = JSON.parse(result.body);
-
-            // 提取文本
-            let text = '';
-            if (respData.output) {
-                for (const item of respData.output) {
-                    if (item.type === 'message' && item.content) {
-                        for (const c of item.content) {
-                            if (c.type === 'output_text') text += c.text;
-                        }
-                    }
-                }
-            }
+            // 解析响应（自动兼容 JSON 和 SSE 两种格式）
+            const { text, usage, model, id, status } = parseUpstreamResponse(result.body);
 
             // 包装为 Chat Completions 响应
             const chatResp = {
-                id: respData.id || 'chatcmpl-proxy',
+                id: id || 'chatcmpl-proxy',
                 object: 'chat.completion',
                 created: Math.floor(Date.now() / 1000),
-                model: respData.model || chatReq.model,
+                model: model || chatReq.model,
                 choices: [{
                     index: 0,
                     message: { role: 'assistant', content: text },
-                    finish_reason: respData.status === 'incomplete' ? 'length' : 'stop'
+                    finish_reason: status === 'incomplete' ? 'length' : 'stop'
                 }],
-                usage: respData.usage ? {
-                    prompt_tokens: respData.usage.input_tokens || 0,
-                    completion_tokens: respData.usage.output_tokens || 0,
-                    total_tokens: (respData.usage.input_tokens || 0) + (respData.usage.output_tokens || 0)
+                usage: usage ? {
+                    prompt_tokens: usage.input_tokens || 0,
+                    completion_tokens: usage.output_tokens || 0,
+                    total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0)
                 } : {}
             };
 
