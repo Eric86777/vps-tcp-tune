@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.3 更新: 修复Responses API转换代理：system消息正确提取为instructions字段，修复无system消息时报错 (by Eric86777)
 # v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
 # v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
 # v4.9.0 更新: OpenClaw全面重构：对照官方文档修正服务名/配置格式/频道插件，新增Antigravity预设+模型列表更新+查看部署信息 (by Eric86777)
 # v4.8.7 更新: OpenClaw新增频道管理功能，支持Telegram/WhatsApp/Discord/Slack一键配置 (by Eric86777)
-# v4.8.6 更新: AI代理工具箱新增OpenAI Responses API转换代理，支持Chat Completions客户端对接Responses API服务 (by Eric86777)
 
-SCRIPT_VERSION="4.9.2"
-SCRIPT_LAST_UPDATE="移除功能4(MTU检测)，启动自动清理旧版MTU残留，功能3已覆盖"
+SCRIPT_VERSION="4.9.3"
+SCRIPT_LAST_UPDATE="修复Responses API转换代理instructions字段，重新部署可解决403报错"
 #=============================================================================
 
 #=============================================================================
