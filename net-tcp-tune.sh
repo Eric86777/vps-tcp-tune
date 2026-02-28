@@ -20982,16 +20982,28 @@ const server = http.createServer(async (req, res) => {
         try {
             const chatReq = JSON.parse(body);
 
-            // 转换 Chat Completions → Responses API
-            const respReq = {
-                model: chatReq.model,
-                input: (chatReq.messages || []).map(m => ({
-                    role: m.role === 'system' ? 'developer' : m.role,
-                    content: m.content
-                })),
-                stream: false
+            // 提取纯文本内容（兼容字符串和多段数组两种格式）
+            const getTextContent = (content) => {
+                if (typeof content === 'string') return content;
+                if (Array.isArray(content)) return content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+                return '';
             };
-            // 只转发 model/input/stream，不传 temperature/max_tokens 等额外参数
+
+            // system 消息 → Responses API 顶层 instructions 字段（不放进 input）
+            const systemParts = (chatReq.messages || [])
+                .filter(m => m.role === 'system')
+                .map(m => getTextContent(m.content));
+            const instructions = systemParts.join('\n');
+
+            // 非 system 消息放入 input
+            const inputMessages = (chatReq.messages || [])
+                .filter(m => m.role !== 'system')
+                .map(m => ({ role: m.role, content: getTextContent(m.content) }));
+
+            // 转换 Chat Completions → Responses API
+            const respReq = { model: chatReq.model, input: inputMessages, stream: false };
+            if (instructions) respReq.instructions = instructions;
+            // 只转发 model/input/stream/instructions，不传 temperature/max_tokens 等额外参数
             // 部分上游（如 sub2api）不支持这些参数会导致 502
 
             const upstreamEndpoint = upstream_url.replace(/\/+$/, '') + '/v1/responses';
@@ -21028,9 +21040,13 @@ const server = http.createServer(async (req, res) => {
                 choices: [{
                     index: 0,
                     message: { role: 'assistant', content: text },
-                    finish_reason: 'stop'
+                    finish_reason: respData.status === 'incomplete' ? 'length' : 'stop'
                 }],
-                usage: respData.usage || {}
+                usage: respData.usage ? {
+                    prompt_tokens: respData.usage.input_tokens || 0,
+                    completion_tokens: respData.usage.output_tokens || 0,
+                    total_tokens: (respData.usage.input_tokens || 0) + (respData.usage.output_tokens || 0)
+                } : {}
             };
 
             res.writeHead(200, {'Content-Type': 'application/json'});
