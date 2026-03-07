@@ -9946,7 +9946,7 @@ main_menu() {
             14) view_xray_log; needs_pause=false ;;
             15) view_all_info ;;
             16) manage_routing_rules ;;
-            17) wget -O vless-server.sh https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh && chmod +x vless-server.sh && bash vless-server.sh; needs_pause=false ;;
+            17) wget -O vless-server.sh https://gitlab.com/chil30-group/vless-all-in-one/-/raw/main/vless-server.sh && chmod +x vless-server.sh && bash vless-server.sh; needs_pause=false ;;
             0) success "感谢使用！"; exit 0 ;;
             *) error "无效选项。请输入 0-17。" ;;
         esac
