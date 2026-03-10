@@ -1,10 +1,10 @@
-# BBR v3 优化脚本 - Ultimate Edition v4.9.2
+# BBR v3 优化脚本 - Ultimate Edition v4.9.6
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 32 项实用功能，优化你的 VPS 服务器。
 
-> **版本**: v4.9.5
+> **版本**: v4.9.6
 
 ---
 
@@ -227,6 +227,7 @@ AI 代理工具箱包含：
 - **灵活模型接入**: 支持 Anthropic 直连/反代、OpenAI 兼容中转（new-api/one-api/LiteLLM）、OpenRouter
 - **Antigravity 预设**: 内置 Antigravity Claude Proxy 快速接入模板
 - **快速替换 API**: 一键更换反代地址和 API Key，无需重新配置
+- **sub2api 兼容补丁**: 部署/更新/切换 API 时自动打补丁，支持手动重打
 - **部署信息查看**: 格式化展示当前配置、SSH 隧道命令、管理命令
 
 ---

@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.5 更新: 修复Responses API代理SSE解析，解决502报错，重新部署生效 (by Eric86777)
 # v4.9.4 更新: 修复Responses API转换代理：兼容SSE流式响应格式，解决502 JSON解析失败 (by Eric86777)
 # v4.9.3 更新: 修复Responses API转换代理：system消息正确提取为instructions字段，修复无system消息时报错 (by Eric86777)
 # v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
 # v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
-# v4.9.0 更新: OpenClaw全面重构：对照官方文档修正服务名/配置格式/频道插件，新增Antigravity预设+模型列表更新+查看部署信息 (by Eric86777)
 
-SCRIPT_VERSION="4.9.5"
-SCRIPT_LAST_UPDATE="修复Responses API代理SSE解析，解决502报错，重新部署生效"
+SCRIPT_VERSION="4.9.6"
+SCRIPT_LAST_UPDATE="OpenClaw新增sub2api兼容补丁：自动打补丁(instructions+max_output_tokens)，部署/更新/切换API均自动适配"
 #=============================================================================
 
 #=============================================================================
@@ -18905,7 +18905,7 @@ openclaw_check_port() {
 
 # 检测并安装 Node.js 22+
 openclaw_install_nodejs() {
-    echo -e "${gl_kjlan}[1/4] 检测 Node.js 环境...${gl_bai}"
+    echo -e "${gl_kjlan}[1/5] 检测 Node.js 环境...${gl_bai}"
 
     if command -v node &>/dev/null; then
         local node_version=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -18983,7 +18983,7 @@ openclaw_install_nodejs() {
 
 # 安装 OpenClaw
 openclaw_install_pkg() {
-    echo -e "${gl_kjlan}[2/4] 安装 OpenClaw...${gl_bai}"
+    echo -e "${gl_kjlan}[2/5] 安装 OpenClaw...${gl_bai}"
     echo -e "${gl_hui}正在下载并安装，可能需要 1-3 分钟...${gl_bai}"
     echo ""
 
@@ -19415,10 +19415,119 @@ EOF
     return 0
 }
 
+# 检测当前配置是否需要 sub2api 兼容补丁
+# 条件: 使用 openai-responses API 且 baseUrl 不是 OpenAI 官方
+# 返回 0 = 需要补丁, 1 = 不需要
+openclaw_needs_patch() {
+    if [ ! -f "$OPENCLAW_CONFIG_FILE" ]; then
+        return 1
+    fi
+    if ! command -v node &>/dev/null; then
+        return 1
+    fi
+
+    local result
+    result=$(node -e "
+        const fs = require('fs');
+        try {
+            const content = fs.readFileSync('${OPENCLAW_CONFIG_FILE}', 'utf-8');
+            const config = new Function('return (' + content + ')')();
+            const providers = (config.models && config.models.providers) || {};
+            for (const [name, p] of Object.entries(providers)) {
+                if (p.api === 'openai-responses' && p.baseUrl && !p.baseUrl.includes('api.openai.com')) {
+                    console.log('yes');
+                    process.exit(0);
+                }
+            }
+        } catch(e) {}
+        console.log('no');
+    " 2>/dev/null)
+
+    if [ "$result" = "yes" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# 为 sub2api 打 openai-responses.js 兼容补丁
+# 补丁1: 添加 instructions 字段 (sub2api 必需)
+# 补丁2: 移除 max_output_tokens (sub2api 不支持)
+# 幂等: 已打过的补丁自动跳过
+openclaw_patch_sub2api() {
+    echo ""
+    echo -e "${gl_kjlan}正在检查 sub2api 兼容补丁...${gl_bai}"
+
+    # 定位 openclaw 安装目录
+    local openclaw_root=""
+    local npm_root
+    npm_root=$(npm root -g 2>/dev/null)
+    if [ -n "$npm_root" ] && [ -d "${npm_root}/openclaw" ]; then
+        openclaw_root="${npm_root}/openclaw"
+    elif [ -d "/usr/lib/node_modules/openclaw" ]; then
+        openclaw_root="/usr/lib/node_modules/openclaw"
+    elif [ -d "/usr/local/lib/node_modules/openclaw" ]; then
+        openclaw_root="/usr/local/lib/node_modules/openclaw"
+    fi
+
+    if [ -z "$openclaw_root" ]; then
+        echo -e "${gl_hong}❌ 找不到 openclaw 安装目录，跳过补丁${gl_bai}"
+        return 1
+    fi
+
+    local patch_file="${openclaw_root}/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses.js"
+
+    if [ ! -f "$patch_file" ]; then
+        echo -e "${gl_huang}⚠ 未找到 openai-responses.js，可能 openclaw 版本已更新文件结构${gl_bai}"
+        echo -e "${gl_zi}  路径: ${patch_file}${gl_bai}"
+        return 1
+    fi
+
+    # 备份
+    cp "$patch_file" "${patch_file}.bak" 2>/dev/null
+
+    local patch_count=0
+
+    # 补丁 1: 添加 instructions 字段
+    if grep -q 'instructions: context\.systemPrompt' "$patch_file"; then
+        echo -e "${gl_lv}  ✅ 补丁 1/2: instructions 已存在，跳过${gl_bai}"
+        patch_count=$((patch_count + 1))
+    else
+        sed -i 's/        input: messages,/        input: messages,\n        instructions: context.systemPrompt || "You are a helpful assistant.",/' "$patch_file"
+        if grep -q 'instructions: context\.systemPrompt' "$patch_file"; then
+            echo -e "${gl_lv}  ✅ 补丁 1/2: 添加 instructions 字段${gl_bai}"
+            patch_count=$((patch_count + 1))
+        else
+            echo -e "${gl_hong}  ❌ 补丁 1/2: instructions 字段添加失败${gl_bai}"
+        fi
+    fi
+
+    # 补丁 2: 非 OpenAI 官方 API 时删除 max_output_tokens
+    if grep -q 'delete params\.max_output_tokens' "$patch_file"; then
+        echo -e "${gl_lv}  ✅ 补丁 2/2: max_output_tokens 补丁已存在，跳过${gl_bai}"
+        patch_count=$((patch_count + 1))
+    else
+        sed -i '/const openaiStream = await client\.responses\.create/i\            // sub2api compat: remove max_output_tokens\n            if (model.baseUrl \&\& !model.baseUrl.includes("api.openai.com")) {\n                delete params.max_output_tokens;\n            }' "$patch_file"
+        if grep -q 'delete params\.max_output_tokens' "$patch_file"; then
+            echo -e "${gl_lv}  ✅ 补丁 2/2: 移除 max_output_tokens${gl_bai}"
+            patch_count=$((patch_count + 1))
+        else
+            echo -e "${gl_hong}  ❌ 补丁 2/2: max_output_tokens 补丁失败${gl_bai}"
+        fi
+    fi
+
+    if [ "$patch_count" -eq 2 ]; then
+        echo -e "${gl_lv}✅ sub2api 兼容补丁已就绪${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_huang}⚠ 部分补丁可能未成功 (${patch_count}/2)${gl_bai}"
+        return 1
+    fi
+}
+
 # 执行 onboard 初始化
 openclaw_onboard() {
     local port=$(openclaw_get_port)
-    echo -e "${gl_kjlan}[4/4] 创建 systemd 服务并启动网关...${gl_bai}"
+    echo -e "${gl_kjlan}[5/5] 创建 systemd 服务并启动网关...${gl_bai}"
     echo ""
 
     # 创建必要的目录
@@ -19496,12 +19605,19 @@ openclaw_deploy() {
     echo ""
 
     # 步骤3: 交互式模型配置
-    echo -e "${gl_kjlan}[3/4] 配置模型与 API...${gl_bai}"
+    echo -e "${gl_kjlan}[3/5] 配置模型与 API...${gl_bai}"
     echo ""
     openclaw_config_model || { break_end; return 1; }
     echo ""
 
-    # 步骤4: 初始化并启动
+    # 步骤4: sub2api 兼容补丁（如需要）
+    if openclaw_needs_patch; then
+        echo -e "${gl_kjlan}[4/5] 打 sub2api 兼容补丁...${gl_bai}"
+        openclaw_patch_sub2api
+        echo ""
+    fi
+
+    # 步骤5: 初始化并启动
     openclaw_onboard || { break_end; return 1; }
 
     # 获取服务器 IP
@@ -19575,6 +19691,11 @@ openclaw_update() {
         echo -e "${gl_lv}✅ 已是最新版本 (${new_ver})${gl_bai}"
     else
         echo -e "${gl_lv}✅ 已更新: ${old_ver} → ${new_ver}${gl_bai}"
+    fi
+
+    # npm 更新会覆盖补丁文件，需要重新打补丁
+    if openclaw_needs_patch; then
+        openclaw_patch_sub2api
     fi
 
     echo ""
@@ -20563,6 +20684,11 @@ APIJSON
         echo "✅ 环境变量文件已创建"
     fi
 
+    # sub2api 兼容补丁（如需要）
+    if [ "$api_type" = "openai-responses" ] && [[ ! "$base_url" =~ api\.openai\.com ]]; then
+        openclaw_patch_sub2api
+    fi
+
     # 重启服务
     if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
         systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
@@ -20715,13 +20841,14 @@ manage_openclaw() {
         echo "11. 查看当前配置"
         echo "12. 编辑配置文件"
         echo "13. 安全检查（doctor）"
+        echo "14. sub2api 兼容补丁（手动重打）"
         echo ""
-        echo -e "${gl_hong}14. 卸载 OpenClaw${gl_bai}"
+        echo -e "${gl_hong}15. 卸载 OpenClaw${gl_bai}"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-14]: " choice
+        read -e -p "请选择操作 [0-15]: " choice
 
         case $choice in
             1)
@@ -20748,6 +20875,11 @@ manage_openclaw() {
             8)
                 openclaw_config_model
                 echo ""
+                # sub2api 兼容补丁（如需要）
+                if openclaw_needs_patch; then
+                    openclaw_patch_sub2api
+                    echo ""
+                fi
                 # 检查服务是否存在再决定重启
                 if systemctl list-unit-files "${OPENCLAW_SERVICE_NAME}.service" &>/dev/null && \
                    systemctl cat "$OPENCLAW_SERVICE_NAME" &>/dev/null 2>&1; then
@@ -20784,6 +20916,52 @@ manage_openclaw() {
                 openclaw_doctor
                 ;;
             14)
+                clear
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo -e "${gl_kjlan}  sub2api 兼容补丁${gl_bai}"
+                echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+                echo ""
+                echo -e "${gl_zi}补丁说明:${gl_bai}"
+                echo "  1. 添加 instructions 字段 (sub2api Responses API 必需)"
+                echo "  2. 移除 max_output_tokens (sub2api 不支持该参数)"
+                echo ""
+                echo -e "${gl_zi}适用场景:${gl_bai}"
+                echo "  • 使用 sub2api GPT 等非 OpenAI 官方的 openai-responses 反代"
+                echo "  • openclaw 更新后补丁被覆盖需要重新打"
+                echo ""
+                if openclaw_needs_patch; then
+                    echo -e "${gl_huang}检测到当前配置使用 openai-responses 反代，建议打补丁${gl_bai}"
+                else
+                    echo -e "${gl_zi}当前配置未使用 openai-responses 反代，补丁可能不需要${gl_bai}"
+                fi
+                echo ""
+                read -e -p "是否执行补丁？(Y/N): " confirm
+                case "$confirm" in
+                    [Yy])
+                        openclaw_patch_sub2api
+                        echo ""
+                        if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                            read -e -p "是否重启服务使补丁生效？(Y/N): " restart_confirm
+                            case "$restart_confirm" in
+                                [Yy])
+                                    systemctl restart "$OPENCLAW_SERVICE_NAME" 2>/dev/null
+                                    sleep 2
+                                    if systemctl is-active "$OPENCLAW_SERVICE_NAME" &>/dev/null; then
+                                        echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+                                    else
+                                        echo -e "${gl_hong}❌ 服务重启失败${gl_bai}"
+                                    fi
+                                    ;;
+                            esac
+                        fi
+                        ;;
+                    *)
+                        echo "已取消"
+                        ;;
+                esac
+                break_end
+                ;;
+            15)
                 openclaw_uninstall
                 ;;
             0)
