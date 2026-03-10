@@ -14,7 +14,7 @@
 # v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
 # v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
 
-SCRIPT_VERSION="4.9.6"
+SCRIPT_VERSION="4.9.7"
 SCRIPT_LAST_UPDATE="OpenClaw新增sub2api兼容补丁：自动打补丁(instructions+max_output_tokens)，部署/更新/切换API均自动适配"
 #=============================================================================
 
@@ -19219,103 +19219,109 @@ openclaw_config_model() {
     local model_max_tokens="16384"
 
     if [ "$preset_mode" = "sub2api-antigravity" ]; then
-        echo "1. claude-sonnet-4-5 (推荐)"
-        echo "2. claude-sonnet-4-5-thinking (扩展思考)"
-        echo "3. claude-opus-4-5-thinking (最强思考)"
-        echo "4. 自定义模型 ID"
-        echo ""
-        read -e -p "请选择 [1-4]: " model_choice
-        case "$model_choice" in
-            1) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-            2) model_id="claude-sonnet-4-5-thinking"; model_name="Claude Sonnet 4.5 Thinking"; model_reasoning="true"; model_input='["text", "image"]' ;;
-            3) model_id="claude-opus-4-5-thinking"; model_name="Claude Opus 4.5 Thinking"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
-            4)
-                read -e -p "输入模型 ID: " model_id
-                read -e -p "输入模型显示名称: " model_name
-                ;;
-            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-        esac
-    elif [ "$api_type" = "anthropic-messages" ]; then
-        echo "1. claude-opus-4-6 (Opus 4.6 最强)"
-        echo "2. claude-sonnet-4-5 (Sonnet 4.5 均衡)"
-        echo "3. claude-haiku-4-5 (Haiku 4.5 快速)"
-        echo "4. 自定义模型 ID"
-        echo ""
-        read -e -p "请选择 [1-4]: " model_choice
-        case "$model_choice" in
-            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
-            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-            3) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5"; model_cost_input="0.8"; model_cost_output="4"; model_cost_cache_read="0.08"; model_cost_cache_write="1" ;;
-            4)
-                read -e -p "输入模型 ID: " model_id
-                read -e -p "输入模型显示名称: " model_name
-                ;;
-            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-        esac
-    elif [ "$api_type" = "google-generative-ai" ]; then
-        echo "1. gemini-3-pro-preview (最新旗舰)"
-        echo "2. gemini-3-flash-preview (最新快速)"
-        echo "3. gemini-2.5-pro (推理增强)"
-        echo "4. gemini-2.5-flash (快速均衡)"
+        echo "1. claude-sonnet-4-6 (推荐)"
+        echo "2. claude-sonnet-4-5"
+        echo "3. claude-sonnet-4-5-thinking (扩展思考)"
+        echo "4. claude-opus-4-5-thinking (最强思考)"
         echo "5. 自定义模型 ID"
         echo ""
         read -e -p "请选择 [1-5]: " model_choice
         case "$model_choice" in
-            1) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="7.5"; model_context="1000000"; model_max_tokens="65536" ;;
-            2) model_id="gemini-3-flash-preview"; model_name="Gemini 3 Flash Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
-            3) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
-            4) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
+            1) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6"; model_reasoning="true"; model_input='["text", "image"]' ;;
+            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            3) model_id="claude-sonnet-4-5-thinking"; model_name="Claude Sonnet 4.5 Thinking"; model_reasoning="true"; model_input='["text", "image"]' ;;
+            4) model_id="claude-opus-4-5-thinking"; model_name="Claude Opus 4.5 Thinking"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
             5)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                ;;
+            *) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6"; model_reasoning="true"; model_input='["text", "image"]' ;;
+        esac
+    elif [ "$api_type" = "anthropic-messages" ]; then
+        echo "1. claude-opus-4-6 (Opus 4.6 最强)"
+        echo "2. claude-sonnet-4-6 (Sonnet 4.6 推荐)"
+        echo "3. claude-sonnet-4-5 (Sonnet 4.5 上一代)"
+        echo "4. claude-haiku-4-5 (Haiku 4.5 快速)"
+        echo "5. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-5]: " model_choice
+        case "$model_choice" in
+            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
+            2) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6"; model_reasoning="true"; model_input='["text", "image"]' ;;
+            3) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            4) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5"; model_cost_input="0.8"; model_cost_output="4"; model_cost_cache_read="0.08"; model_cost_cache_write="1" ;;
+            5)
+                read -e -p "输入模型 ID: " model_id
+                read -e -p "输入模型显示名称: " model_name
+                ;;
+            *) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6"; model_reasoning="true"; model_input='["text", "image"]' ;;
+        esac
+    elif [ "$api_type" = "google-generative-ai" ]; then
+        echo "1. gemini-3.1-pro-preview (最新旗舰)"
+        echo "2. gemini-3.1-flash-lite (最便宜)"
+        echo "3. gemini-3-flash-preview (快速)"
+        echo "4. gemini-2.5-pro (推理增强)"
+        echo "5. gemini-2.5-flash (快速均衡)"
+        echo "6. 自定义模型 ID"
+        echo ""
+        read -e -p "请选择 [1-6]: " model_choice
+        case "$model_choice" in
+            1) model_id="gemini-3.1-pro-preview"; model_name="Gemini 3.1 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="12"; model_cost_cache_read="0.5"; model_cost_cache_write="6"; model_context="1000000"; model_max_tokens="65536" ;;
+            2) model_id="gemini-3.1-flash-lite"; model_name="Gemini 3.1 Flash Lite"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.25"; model_cost_output="1.5"; model_cost_cache_read="0.0625"; model_cost_cache_write="0.375"; model_context="1000000"; model_max_tokens="65536" ;;
+            3) model_id="gemini-3-flash-preview"; model_name="Gemini 3 Flash Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
+            4) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="1.25"; model_cost_output="10"; model_cost_cache_read="0.315"; model_cost_cache_write="4.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            5) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.0375"; model_cost_cache_write="1"; model_context="1000000"; model_max_tokens="65536" ;;
+            6)
                 read -e -p "输入模型 ID: " model_id
                 read -e -p "输入模型显示名称: " model_name
                 model_reasoning="true"; model_input='["text", "image"]'; model_context="1000000"; model_max_tokens="65536"
                 ;;
-            *) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="7.5"; model_context="1000000"; model_max_tokens="65536" ;;
+            *) model_id="gemini-3.1-pro-preview"; model_name="Gemini 3.1 Pro Preview"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="12"; model_cost_cache_read="0.5"; model_cost_cache_write="6"; model_context="1000000"; model_max_tokens="65536" ;;
         esac
     elif [ "$api_type" = "openai-responses" ]; then
-        echo "1. gpt-5.3 (最新旗舰)"
-        echo "2. gpt-5.3-codex (Codex 最强)"
-        echo "3. gpt-5.2"
-        echo "4. gpt-5.2-codex"
-        echo "5. gpt-5.1"
-        echo "6. gpt-5.1-codex"
-        echo "7. gpt-5.1-codex-max"
+        echo "1. gpt-5.4 (最新旗舰)"
+        echo "2. gpt-5.4-pro (Pro 最强)"
+        echo "3. gpt-5.3-instant (快速)"
+        echo "4. gpt-5.3"
+        echo "5. gpt-5.3-codex"
+        echo "6. gpt-5.2"
+        echo "7. gpt-5.2-codex"
         echo "8. 自定义模型 ID"
         echo ""
         read -e -p "请选择 [1-8]: " model_choice
         case "$model_choice" in
-            1) model_id="gpt-5.3"; model_name="GPT 5.3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            2) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            3) model_id="gpt-5.2"; model_name="GPT 5.2"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            4) model_id="gpt-5.2-codex"; model_name="GPT 5.2 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            5) model_id="gpt-5.1"; model_name="GPT 5.1"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            6) model_id="gpt-5.1-codex"; model_name="GPT 5.1 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
-            7) model_id="gpt-5.1-codex-max"; model_name="GPT 5.1 Codex Max"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            1) model_id="gpt-5.4"; model_name="GPT 5.4"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="2.5"; model_context="1050000"; model_max_tokens="128000" ;;
+            2) model_id="gpt-5.4-pro"; model_name="GPT 5.4 Pro"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="3.75"; model_cost_cache_write="15"; model_context="1050000"; model_max_tokens="128000" ;;
+            3) model_id="gpt-5.3-instant"; model_name="GPT 5.3 Instant"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="0.5"; model_cost_output="2"; model_cost_cache_read="0.125"; model_cost_cache_write="0.5"; model_max_tokens="32768" ;;
+            4) model_id="gpt-5.3"; model_name="GPT 5.3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            5) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            6) model_id="gpt-5.2"; model_name="GPT 5.2"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            7) model_id="gpt-5.2-codex"; model_name="GPT 5.2 Codex"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
             8)
                 read -e -p "输入模型 ID: " model_id
                 read -e -p "输入模型显示名称: " model_name
                 model_reasoning="true"; model_input='["text", "image"]'; model_max_tokens="32768"
                 ;;
-            *) model_id="gpt-5.3"; model_name="GPT 5.3"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2"; model_cost_output="8"; model_cost_cache_read="0.5"; model_cost_cache_write="2"; model_max_tokens="32768" ;;
+            *) model_id="gpt-5.4"; model_name="GPT 5.4"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="2.5"; model_context="1050000"; model_max_tokens="128000" ;;
         esac
     elif [ "$api_type" = "openai-completions" ]; then
         echo "1. claude-opus-4-6 (通过中转)"
-        echo "2. claude-sonnet-4-5 (通过中转)"
-        echo "3. gpt-4o"
-        echo "4. gpt-4o-mini"
+        echo "2. claude-sonnet-4-6 (通过中转)"
+        echo "3. gpt-5.4 (通过中转)"
+        echo "4. gpt-4o"
         echo "5. 自定义模型 ID"
         echo ""
         read -e -p "请选择 [1-5]: " model_choice
         case "$model_choice" in
             1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="15"; model_cost_output="75"; model_cost_cache_read="1.5"; model_cost_cache_write="18.75"; model_max_tokens="32768" ;;
-            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-            3) model_id="gpt-4o"; model_name="GPT-4o"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="10"; model_cost_cache_read="1.25"; model_cost_cache_write="2.5"; model_context="128000"; model_max_tokens="16384" ;;
-            4) model_id="gpt-4o-mini"; model_name="GPT-4o Mini"; model_input='["text", "image"]'; model_cost_input="0.15"; model_cost_output="0.6"; model_cost_cache_read="0.075"; model_cost_cache_write="0.15"; model_context="128000"; model_max_tokens="16384" ;;
+            2) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6"; model_reasoning="true"; model_input='["text", "image"]' ;;
+            3) model_id="gpt-5.4"; model_name="GPT 5.4"; model_reasoning="true"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="15"; model_cost_cache_read="0.625"; model_cost_cache_write="2.5"; model_context="1050000"; model_max_tokens="128000" ;;
+            4) model_id="gpt-4o"; model_name="GPT-4o"; model_input='["text", "image"]'; model_cost_input="2.5"; model_cost_output="10"; model_cost_cache_read="1.25"; model_cost_cache_write="2.5"; model_context="128000"; model_max_tokens="16384" ;;
             5)
                 read -e -p "输入模型 ID: " model_id
                 read -e -p "输入模型显示名称: " model_name
                 ;;
-            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            *) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6"; model_reasoning="true"; model_input='["text", "image"]' ;;
         esac
     fi
 
@@ -20517,65 +20523,71 @@ openclaw_quick_api() {
     echo -e "${gl_kjlan}选择模型:${gl_bai}"
     if [ "$preset_mode" = "crs" ]; then
         echo "1. claude-opus-4-6 (推荐)"
-        echo "2. claude-sonnet-4-5"
-        echo "3. claude-haiku-4-5"
-        echo "4. 自定义"
-        read -e -p "请选择 [1-4]: " m_choice
-        case $m_choice in
-            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
-            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-            3) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5" ;;
-            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
-            *) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
-        esac
-    elif [ "$preset_mode" = "sub2api-antigravity" ]; then
-        echo "1. claude-sonnet-4-5 (推荐)"
-        echo "2. claude-sonnet-4-5-thinking (扩展思考)"
-        echo "3. claude-opus-4-5-thinking (最强思考)"
-        echo "4. 自定义"
-        read -e -p "请选择 [1-4]: " m_choice
-        case $m_choice in
-            1) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-            2) model_id="claude-sonnet-4-5-thinking"; model_name="Claude Sonnet 4.5 Thinking" ;;
-            3) model_id="claude-opus-4-5-thinking"; model_name="Claude Opus 4.5 Thinking" ;;
-            4) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
-            *) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
-        esac
-    elif [ "$preset_mode" = "sub2api-gemini" ]; then
-        echo "1. gemini-3-pro-preview (推荐)"
-        echo "2. gemini-3-flash-preview"
-        echo "3. gemini-2.5-pro"
-        echo "4. gemini-2.5-flash"
+        echo "2. claude-sonnet-4-6"
+        echo "3. claude-sonnet-4-5"
+        echo "4. claude-haiku-4-5"
         echo "5. 自定义"
         read -e -p "请选择 [1-5]: " m_choice
         case $m_choice in
-            1) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview" ;;
-            2) model_id="gemini-3-flash-preview"; model_name="Gemini 3 Flash Preview" ;;
-            3) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
-            4) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash" ;;
+            1) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
+            2) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6" ;;
+            3) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            4) model_id="claude-haiku-4-5"; model_name="Claude Haiku 4.5" ;;
             5) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
-            *) model_id="gemini-3-pro-preview"; model_name="Gemini 3 Pro Preview" ;;
+            *) model_id="claude-opus-4-6"; model_name="Claude Opus 4.6" ;;
+        esac
+    elif [ "$preset_mode" = "sub2api-antigravity" ]; then
+        echo "1. claude-sonnet-4-6 (推荐)"
+        echo "2. claude-sonnet-4-5"
+        echo "3. claude-sonnet-4-5-thinking (扩展思考)"
+        echo "4. claude-opus-4-5-thinking (最强思考)"
+        echo "5. 自定义"
+        read -e -p "请选择 [1-5]: " m_choice
+        case $m_choice in
+            1) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6" ;;
+            2) model_id="claude-sonnet-4-5"; model_name="Claude Sonnet 4.5" ;;
+            3) model_id="claude-sonnet-4-5-thinking"; model_name="Claude Sonnet 4.5 Thinking" ;;
+            4) model_id="claude-opus-4-5-thinking"; model_name="Claude Opus 4.5 Thinking" ;;
+            5) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="claude-sonnet-4-6"; model_name="Claude Sonnet 4.6" ;;
+        esac
+    elif [ "$preset_mode" = "sub2api-gemini" ]; then
+        echo "1. gemini-3.1-pro-preview (推荐)"
+        echo "2. gemini-3.1-flash-lite"
+        echo "3. gemini-3-flash-preview"
+        echo "4. gemini-2.5-pro"
+        echo "5. gemini-2.5-flash"
+        echo "6. 自定义"
+        read -e -p "请选择 [1-6]: " m_choice
+        case $m_choice in
+            1) model_id="gemini-3.1-pro-preview"; model_name="Gemini 3.1 Pro Preview" ;;
+            2) model_id="gemini-3.1-flash-lite"; model_name="Gemini 3.1 Flash Lite" ;;
+            3) model_id="gemini-3-flash-preview"; model_name="Gemini 3 Flash Preview" ;;
+            4) model_id="gemini-2.5-pro"; model_name="Gemini 2.5 Pro" ;;
+            5) model_id="gemini-2.5-flash"; model_name="Gemini 2.5 Flash" ;;
+            6) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
+            *) model_id="gemini-3.1-pro-preview"; model_name="Gemini 3.1 Pro Preview" ;;
         esac
     elif [ "$preset_mode" = "sub2api-gpt" ]; then
-        echo "1. gpt-5.3 (推荐)"
-        echo "2. gpt-5.3-codex"
-        echo "3. gpt-5.2"
-        echo "4. gpt-5.2-codex"
-        echo "5. gpt-5.1"
-        echo "6. gpt-5.1-codex"
-        echo "7. gpt-5.1-codex-max"
+        echo "1. gpt-5.4 (推荐)"
+        echo "2. gpt-5.4-pro"
+        echo "3. gpt-5.3-instant"
+        echo "4. gpt-5.3"
+        echo "5. gpt-5.3-codex"
+        echo "6. gpt-5.2"
+        echo "7. gpt-5.2-codex"
         echo "8. 自定义"
         read -e -p "请选择 [1-8]: " m_choice
         case $m_choice in
-            1) model_id="gpt-5.3"; model_name="GPT 5.3" ;;
-            2) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex" ;;
-            3) model_id="gpt-5.2"; model_name="GPT 5.2" ;;
-            4) model_id="gpt-5.2-codex"; model_name="GPT 5.2 Codex" ;;
-            5) model_id="gpt-5.1"; model_name="GPT 5.1" ;;
-            6) model_id="gpt-5.1-codex"; model_name="GPT 5.1 Codex" ;;
-            7) model_id="gpt-5.1-codex-max"; model_name="GPT 5.1 Codex Max" ;;
+            1) model_id="gpt-5.4"; model_name="GPT 5.4" ;;
+            2) model_id="gpt-5.4-pro"; model_name="GPT 5.4 Pro" ;;
+            3) model_id="gpt-5.3-instant"; model_name="GPT 5.3 Instant" ;;
+            4) model_id="gpt-5.3"; model_name="GPT 5.3" ;;
+            5) model_id="gpt-5.3-codex"; model_name="GPT 5.3 Codex" ;;
+            6) model_id="gpt-5.2"; model_name="GPT 5.2" ;;
+            7) model_id="gpt-5.2-codex"; model_name="GPT 5.2 Codex" ;;
             8) read -e -p "模型 ID: " model_id; model_name="$model_id" ;;
-            *) model_id="gpt-5.3"; model_name="GPT 5.3" ;;
+            *) model_id="gpt-5.4"; model_name="GPT 5.4" ;;
         esac
     else
         read -e -p "模型 ID: " model_id

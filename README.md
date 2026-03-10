@@ -1,10 +1,10 @@
-# BBR v3 优化脚本 - Ultimate Edition v4.9.6
+# BBR v3 优化脚本 - Ultimate Edition v4.9.7
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 32 项实用功能，优化你的 VPS 服务器。
 
-> **版本**: v4.9.6
+> **版本**: v4.9.7
 
 ---
 
