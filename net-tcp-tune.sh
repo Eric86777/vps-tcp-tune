@@ -17214,7 +17214,8 @@ sub2api_show_config() {
 # 卸载
 sub2api_uninstall() {
     echo ""
-    echo -e "${gl_hong}⚠️ 此操作将卸载 Sub2API 并删除所有配置数据${gl_bai}"
+    echo -e "${gl_hong}⚠️ 此操作将完全卸载公版 Sub2API 并删除所有配置数据${gl_bai}"
+    echo -e "${gl_huang}注意: 仅卸载公版 (/opt/sub2api)，不影响 Eric-Sub2API 私有版 (/opt/eric-sub2api)${gl_bai}"
     read -e -p "确定要卸载吗？(y/n) [n]: " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         echo "已取消"
@@ -17223,30 +17224,55 @@ sub2api_uninstall() {
     fi
 
     echo ""
-    echo "正在执行官方卸载脚本..."
 
-    # 使用官方卸载命令
-    local tmp_script=$(mktemp)
-    if curl -fsSL "$SUB2API_INSTALL_SCRIPT" -o "$tmp_script" 2>/dev/null; then
-        chmod +x "$tmp_script"
-        bash "$tmp_script" uninstall -y --purge
-        rm -f "$tmp_script"
-    else
-        # 官方脚本下载失败，手动卸载
-        echo "官方脚本下载失败，执行手动卸载..."
-        systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
-        systemctl disable "$SUB2API_SERVICE_NAME" 2>/dev/null
-        rm -f "/etc/systemd/system/sub2api.service"
-        systemctl daemon-reload
-        rm -rf "$SUB2API_INSTALL_DIR"
-        userdel sub2api 2>/dev/null
-    fi
+    # === 1. 停止并移除所有公版 systemd 服务 ===
+    echo "正在停止公版 sub2api 服务..."
+    systemctl stop "$SUB2API_SERVICE_NAME" 2>/dev/null
+    systemctl stop "sub2api-datamanagementd" 2>/dev/null
+    systemctl disable "$SUB2API_SERVICE_NAME" 2>/dev/null
+    systemctl disable "sub2api-datamanagementd" 2>/dev/null
+    # reset-failed 必须在 daemon-reload 之前执行，否则 unit 已卸载无法操作
+    systemctl reset-failed "$SUB2API_SERVICE_NAME" 2>/dev/null
+    systemctl reset-failed "sub2api-datamanagementd" 2>/dev/null
+    rm -f "/etc/systemd/system/sub2api.service"
+    rm -f "/etc/systemd/system/sub2api-datamanagementd.service"
+    systemctl daemon-reload
 
-    # 清理我们自己的配置文件
+    # === 2. 删除公版安装目录 ===
+    echo "正在删除安装目录 $SUB2API_INSTALL_DIR ..."
+    rm -rf "$SUB2API_INSTALL_DIR"
+
+    # === 3. 删除公版配置目录 ===
+    echo "正在删除配置目录 $SUB2API_CONFIG_DIR ..."
     rm -rf "$SUB2API_CONFIG_DIR"
+
+    # === 4. 删除 datamanagementd 数据目录 ===
+    echo "正在删除 datamanagementd 数据..."
+    rm -rf "/var/lib/sub2api"
+
+    # === 5. 清理运行时文件 ===
+    rm -f "/tmp/sub2api-datamanagement.sock"
+
+    # === 6. 删除系统用户和组 ===
+    echo "正在删除系统用户 sub2api ..."
+    userdel "sub2api" 2>/dev/null
+    groupdel "sub2api" 2>/dev/null
+
+    # === 7. 清理我们脚本自己的配置文件 ===
     rm -f "$SUB2API_PORT_FILE"
 
-    echo -e "${gl_lv}✅ 卸载完成${gl_bai}"
+    # === 8. 清理 logrotate 配置（如果存在）===
+    rm -f "/etc/logrotate.d/sub2api"
+
+    # === 9. 清理 journald 日志 ===
+    # 注意: journalctl 不支持按 unit 粒度 vacuum，--vacuum-time -u 的 -u 会被静默忽略
+    # 导致清空全部系统日志。这里仅做 rotate，sub2api 的日志会随正常 journal 轮转自动清除
+    echo "正在轮转 journald 日志..."
+    journalctl --rotate 2>/dev/null
+
+    echo ""
+    echo -e "${gl_lv}✅ 公版 Sub2API 已完全卸载${gl_bai}"
+    echo -e "${gl_huang}提示: 如果不再需要，可手动清理 PostgreSQL 中的 sub2api 数据库和用户${gl_bai}"
     break_end
 }
 
