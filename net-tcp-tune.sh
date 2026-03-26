@@ -6261,11 +6261,12 @@ ai_proxy_menu() {
         echo "6. Caddy 多域名反代"
         echo "7. OpenClaw 部署管理 (AI多渠道消息网关)"
         echo "8. OpenAI Responses API 转换代理"
+        echo "9. Codex Console 部署管理 (OpenAI批量注册)"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-8]: " choice
+        read -e -p "请选择操作 [0-9]: " choice
 
         case $choice in
             1)
@@ -6291,6 +6292,9 @@ ai_proxy_menu() {
                 ;;
             8)
                 manage_resp_proxy
+                ;;
+            9)
+                manage_codex_console
                 ;;
             0)
                 return
@@ -21552,6 +21556,836 @@ RESP_PROXY_SCRIPT="$RESP_PROXY_BASE_DIR/proxy.mjs"
 RESP_PROXY_CONFIG="$RESP_PROXY_BASE_DIR/config.json"
 RESP_PROXY_SERVICE="openai-resp-proxy"
 RESP_PROXY_DEFAULT_PORT="$RESP_PROXY_PORT_START"
+
+#=============================================================================
+# Codex Console (OpenAI 批量注册控制台)
+#=============================================================================
+CODEX_CONSOLE_CONTAINER_NAME="codex-console"
+CODEX_CONSOLE_REPO="https://github.com/dou-jiang/codex-console.git"
+CODEX_CONSOLE_INSTALL_DIR="/opt/codex-console"
+CODEX_CONSOLE_DEFAULT_WEBUI_PORT="1455"
+CODEX_CONSOLE_DEFAULT_NOVNC_PORT="6080"
+CODEX_CONSOLE_PORT_FILE="/etc/codex-console-port"
+CODEX_CONSOLE_NOVNC_PORT_FILE="/etc/codex-console-novnc-port"
+CODEX_CONSOLE_DATA_DIR="/opt/codex-console/data"
+CODEX_CONSOLE_LOGS_DIR="/opt/codex-console/logs"
+
+# 获取当前 WebUI 端口
+codex_console_get_port() {
+    if [ -f "$CODEX_CONSOLE_PORT_FILE" ]; then
+        cat "$CODEX_CONSOLE_PORT_FILE"
+    else
+        echo "$CODEX_CONSOLE_DEFAULT_WEBUI_PORT"
+    fi
+}
+
+# 获取当前 noVNC 端口
+codex_console_get_novnc_port() {
+    if [ -f "$CODEX_CONSOLE_NOVNC_PORT_FILE" ]; then
+        cat "$CODEX_CONSOLE_NOVNC_PORT_FILE"
+    else
+        echo "$CODEX_CONSOLE_DEFAULT_NOVNC_PORT"
+    fi
+}
+
+# 检查状态
+codex_console_check_status() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CODEX_CONSOLE_CONTAINER_NAME}"; then
+        echo "running"
+    elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CODEX_CONSOLE_CONTAINER_NAME}"; then
+        echo "stopped"
+    elif [ -d "$CODEX_CONSOLE_INSTALL_DIR/.git" ]; then
+        echo "installed_no_container"
+    else
+        echo "not_installed"
+    fi
+}
+
+# 检查端口是否可用
+codex_console_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 安装 Docker
+codex_console_install_docker() {
+    if command -v docker &>/dev/null; then
+        echo -e "${gl_lv}✅ Docker 已安装${gl_bai}"
+        return 0
+    fi
+
+    echo "正在安装 Docker..."
+    run_remote_script "https://get.docker.com" sh
+
+    if [ $? -eq 0 ]; then
+        systemctl enable docker
+        systemctl start docker
+        echo -e "${gl_lv}✅ Docker 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ Docker 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 获取 docker compose 命令
+codex_console_compose_cmd() {
+    if docker compose version &>/dev/null 2>&1; then
+        echo "docker compose"
+    elif command -v docker-compose &>/dev/null; then
+        echo "docker-compose"
+    else
+        echo ""
+    fi
+}
+
+# 一键部署
+codex_console_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 Codex Console (OpenAI批量注册控制台)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(codex_console_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ Codex Console 已安装${gl_bai}"
+        read -e -p "是否重新部署？(y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        # 停止并删除现有容器
+        local compose_cmd=$(codex_console_compose_cmd)
+        if [ -n "$compose_cmd" ] && [ -f "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" ]; then
+            cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd down 2>/dev/null
+        fi
+    fi
+
+    # [1/5] 安装 Docker
+    echo ""
+    echo -e "${gl_kjlan}[1/5] 检查 Docker 环境...${gl_bai}"
+    codex_console_install_docker || { break_end; return 1; }
+
+    # 检查 docker compose
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用，请检查 Docker 安装${gl_bai}"
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✅ $compose_cmd 可用${gl_bai}"
+
+    # [2/5] 克隆项目
+    echo ""
+    echo -e "${gl_kjlan}[2/5] 克隆 Codex Console 项目...${gl_bai}"
+    if [ -d "$CODEX_CONSOLE_INSTALL_DIR/.git" ]; then
+        echo "项目目录已存在，拉取最新代码..."
+        cd "$CODEX_CONSOLE_INSTALL_DIR" && git pull
+    else
+        rm -rf "$CODEX_CONSOLE_INSTALL_DIR"
+        git clone "$CODEX_CONSOLE_REPO" "$CODEX_CONSOLE_INSTALL_DIR"
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 项目克隆失败${gl_bai}"
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✅ 项目代码就绪${gl_bai}"
+
+    # [3/5] 配置参数
+    echo ""
+    echo -e "${gl_kjlan}[3/5] 配置服务参数...${gl_bai}"
+    echo ""
+
+    # WebUI 端口
+    local webui_port="$CODEX_CONSOLE_DEFAULT_WEBUI_PORT"
+    read -e -p "请输入 WebUI 端口 [$CODEX_CONSOLE_DEFAULT_WEBUI_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        webui_port="$input_port"
+    fi
+    while ! codex_console_check_port "$webui_port"; do
+        echo -e "${gl_hong}⚠️ 端口 $webui_port 已被占用${gl_bai}"
+        read -e -p "请输入 WebUI 端口: " webui_port
+        [ -z "$webui_port" ] && webui_port="$CODEX_CONSOLE_DEFAULT_WEBUI_PORT"
+    done
+    echo -e "${gl_lv}✅ WebUI 端口 $webui_port 可用${gl_bai}"
+
+    # noVNC 端口
+    echo ""
+    local novnc_port="$CODEX_CONSOLE_DEFAULT_NOVNC_PORT"
+    read -e -p "请输入 noVNC 端口 [$CODEX_CONSOLE_DEFAULT_NOVNC_PORT]: " input_novnc
+    if [ -n "$input_novnc" ]; then
+        novnc_port="$input_novnc"
+    fi
+    while ! codex_console_check_port "$novnc_port"; do
+        echo -e "${gl_hong}⚠️ 端口 $novnc_port 已被占用${gl_bai}"
+        read -e -p "请输入 noVNC 端口: " novnc_port
+        [ -z "$novnc_port" ] && novnc_port="$CODEX_CONSOLE_DEFAULT_NOVNC_PORT"
+    done
+    echo -e "${gl_lv}✅ noVNC 端口 $novnc_port 可用${gl_bai}"
+
+    # 访问密码
+    echo ""
+    local access_password="admin123"
+    read -e -p "设置访问密码 [admin123]: " input_password
+    if [ -n "$input_password" ]; then
+        access_password="$input_password"
+    fi
+
+    # [4/5] 生成 docker-compose 配置
+    echo ""
+    echo -e "${gl_kjlan}[4/5] 生成配置并构建镜像...${gl_bai}"
+
+    # 创建数据目录
+    mkdir -p "$CODEX_CONSOLE_DATA_DIR"
+    mkdir -p "$CODEX_CONSOLE_LOGS_DIR"
+
+    # 覆写 docker-compose.yml 用自定义端口
+    cat > "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
+version: '3.8'
+
+services:
+  webui:
+    build: .
+    container_name: ${CODEX_CONSOLE_CONTAINER_NAME}
+    shm_size: "1gb"
+    ports:
+      - "${webui_port}:1455"
+      - "${novnc_port}:6080"
+    environment:
+      - WEBUI_HOST=0.0.0.0
+      - WEBUI_PORT=1455
+      - DISPLAY=:99
+      - ENABLE_VNC=1
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - DEBUG=0
+      - LOG_LEVEL=info
+      - WEBUI_ACCESS_PASSWORD=${access_password}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+COMPOSEEOF
+
+    # 构建并启动
+    cd "$CODEX_CONSOLE_INSTALL_DIR"
+    $compose_cmd build
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 镜像构建失败${gl_bai}"
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✅ 镜像构建成功${gl_bai}"
+
+    # [5/5] 启动服务
+    echo ""
+    echo -e "${gl_kjlan}[5/5] 启动 Codex Console 服务...${gl_bai}"
+
+    $compose_cmd up -d
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}提示: 可尝试手动执行以下命令后重试:${gl_bai}"
+        echo "  systemctl restart docker"
+        break_end
+        return 1
+    fi
+
+    # 保存端口配置
+    echo "$webui_port" > "$CODEX_CONSOLE_PORT_FILE"
+    echo "$novnc_port" > "$CODEX_CONSOLE_NOVNC_PORT_FILE"
+
+    # 等待启动
+    echo ""
+    echo "等待服务启动..."
+    sleep 5
+
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ Codex Console 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "WebUI 地址:  ${gl_huang}http://${server_ip}:${webui_port}${gl_bai}"
+    echo -e "noVNC 地址:  ${gl_huang}http://${server_ip}:${novnc_port}${gl_bai}"
+    echo -e "访问密码:    ${gl_huang}${access_password}${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【说明】${gl_bai}"
+    echo "  - WebUI 是主控制台界面，用于任务管理和批量操作"
+    echo "  - noVNC 是浏览器远程桌面，用于自动化绑卡可视化"
+    echo "  - 请务必修改默认密码以确保安全"
+    echo ""
+
+    break_end
+}
+
+# 更新项目
+codex_console_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 Codex Console${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(codex_console_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Codex Console 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在拉取最新代码..."
+    cd "$CODEX_CONSOLE_INSTALL_DIR" && git pull
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 代码拉取失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在重新构建镜像..."
+    $compose_cmd build --no-cache
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 镜像构建失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在重启服务..."
+    $compose_cmd down
+    $compose_cmd up -d
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${gl_lv}✅ 更新完成${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+codex_console_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Codex Console 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(codex_console_check_status)
+    local webui_port=$(codex_console_get_port)
+    local novnc_port=$(codex_console_get_novnc_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    case "$status" in
+        "running")
+            echo -e "状态: ${gl_lv}✅ 运行中${gl_bai}"
+            echo -e "WebUI:  ${gl_huang}http://${server_ip}:${webui_port}${gl_bai}"
+            echo -e "noVNC:  ${gl_huang}http://${server_ip}:${novnc_port}${gl_bai}"
+            echo ""
+            echo "容器详情:"
+            docker ps --filter "name=$CODEX_CONSOLE_CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            ;;
+        "stopped")
+            echo -e "状态: ${gl_hong}❌ 已停止${gl_bai}"
+            echo ""
+            echo "请使用「启动服务」选项启动"
+            ;;
+        "installed_no_container")
+            echo -e "状态: ${gl_huang}⚠️ 已安装但容器未创建${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」重新部署"
+            ;;
+        "not_installed")
+            echo -e "状态: ${gl_hui}未安装${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」选项安装"
+            ;;
+    esac
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+codex_console_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Codex Console 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}按 Ctrl+C 退出日志查看${gl_bai}"
+    echo ""
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd logs -f --tail 100
+    else
+        docker logs "$CODEX_CONSOLE_CONTAINER_NAME" -f --tail 100
+    fi
+}
+
+# 启动服务
+codex_console_start() {
+    echo ""
+    echo "正在启动 Codex Console..."
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd up -d
+    else
+        docker start "$CODEX_CONSOLE_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        local webui_port=$(codex_console_get_port)
+        local novnc_port=$(codex_console_get_novnc_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 启动成功${gl_bai}"
+        echo -e "WebUI: ${gl_huang}http://${server_ip}:${webui_port}${gl_bai}"
+        echo -e "noVNC: ${gl_huang}http://${server_ip}:${novnc_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 停止服务
+codex_console_stop() {
+    echo ""
+    echo "正在停止 Codex Console..."
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd stop
+    else
+        docker stop "$CODEX_CONSOLE_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 重启服务
+codex_console_restart() {
+    echo ""
+    echo "正在重启 Codex Console..."
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd restart
+    else
+        docker restart "$CODEX_CONSOLE_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        local webui_port=$(codex_console_get_port)
+        local novnc_port=$(codex_console_get_novnc_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 重启成功${gl_bai}"
+        echo -e "WebUI: ${gl_huang}http://${server_ip}:${webui_port}${gl_bai}"
+        echo -e "noVNC: ${gl_huang}http://${server_ip}:${novnc_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 修改端口
+codex_console_change_port() {
+    echo ""
+    local current_webui=$(codex_console_get_port)
+    local current_novnc=$(codex_console_get_novnc_port)
+    echo -e "当前 WebUI 端口: ${gl_huang}$current_webui${gl_bai}"
+    echo -e "当前 noVNC 端口: ${gl_huang}$current_novnc${gl_bai}"
+    echo ""
+
+    echo "修改哪个端口？"
+    echo "1. WebUI 端口"
+    echo "2. noVNC 端口"
+    echo "3. 同时修改两个"
+    echo "0. 取消"
+    echo ""
+    read -e -p "请选择 [0-3]: " port_choice
+
+    local new_webui="$current_webui"
+    local new_novnc="$current_novnc"
+
+    case $port_choice in
+        1)
+            read -e -p "请输入新的 WebUI 端口: " new_webui
+            [ -z "$new_webui" ] && { echo "取消修改"; break_end; return 0; }
+            ;;
+        2)
+            read -e -p "请输入新的 noVNC 端口: " new_novnc
+            [ -z "$new_novnc" ] && { echo "取消修改"; break_end; return 0; }
+            ;;
+        3)
+            read -e -p "请输入新的 WebUI 端口: " new_webui
+            [ -z "$new_webui" ] && new_webui="$current_webui"
+            read -e -p "请输入新的 noVNC 端口: " new_novnc
+            [ -z "$new_novnc" ] && new_novnc="$current_novnc"
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    # 验证端口
+    for p in "$new_webui" "$new_novnc"; do
+        if ! [[ "$p" =~ ^[0-9]+$ ]] || [ "$p" -lt 1 ] || [ "$p" -gt 65535 ]; then
+            echo -e "${gl_hong}❌ 无效的端口号: $p${gl_bai}"
+            break_end
+            return 1
+        fi
+    done
+
+    if [ "$new_webui" = "$current_webui" ] && [ "$new_novnc" = "$current_novnc" ]; then
+        echo -e "${gl_huang}⚠️ 端口未改变${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 获取当前密码
+    local current_password=$(docker inspect "$CODEX_CONSOLE_CONTAINER_NAME" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep "WEBUI_ACCESS_PASSWORD=" | cut -d= -f2-)
+    [ -z "$current_password" ] && current_password="admin123"
+
+    # 停止服务
+    cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd down
+
+    # 重写 docker-compose.yml
+    cat > "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
+version: '3.8'
+
+services:
+  webui:
+    build: .
+    container_name: ${CODEX_CONSOLE_CONTAINER_NAME}
+    shm_size: "1gb"
+    ports:
+      - "${new_webui}:1455"
+      - "${new_novnc}:6080"
+    environment:
+      - WEBUI_HOST=0.0.0.0
+      - WEBUI_PORT=1455
+      - DISPLAY=:99
+      - ENABLE_VNC=1
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - DEBUG=0
+      - LOG_LEVEL=info
+      - WEBUI_ACCESS_PASSWORD=${current_password}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+COMPOSEEOF
+
+    $compose_cmd up -d
+
+    if [ $? -eq 0 ]; then
+        echo "$new_webui" > "$CODEX_CONSOLE_PORT_FILE"
+        echo "$new_novnc" > "$CODEX_CONSOLE_NOVNC_PORT_FILE"
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 端口修改成功${gl_bai}"
+        echo -e "WebUI: ${gl_huang}http://${server_ip}:${new_webui}${gl_bai}"
+        echo -e "noVNC: ${gl_huang}http://${server_ip}:${new_novnc}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 端口修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 修改访问密码
+codex_console_change_password() {
+    echo ""
+    read -e -p "请输入新的访问密码: " new_password
+
+    if [ -z "$new_password" ]; then
+        echo "未输入密码，取消修改"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在修改密码..."
+
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local webui_port=$(codex_console_get_port)
+    local novnc_port=$(codex_console_get_novnc_port)
+
+    # 停止服务
+    cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd down
+
+    # 重写 docker-compose.yml
+    cat > "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
+version: '3.8'
+
+services:
+  webui:
+    build: .
+    container_name: ${CODEX_CONSOLE_CONTAINER_NAME}
+    shm_size: "1gb"
+    ports:
+      - "${webui_port}:1455"
+      - "${novnc_port}:6080"
+    environment:
+      - WEBUI_HOST=0.0.0.0
+      - WEBUI_PORT=1455
+      - DISPLAY=:99
+      - ENABLE_VNC=1
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - DEBUG=0
+      - LOG_LEVEL=info
+      - WEBUI_ACCESS_PASSWORD=${new_password}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+COMPOSEEOF
+
+    $compose_cmd up -d
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${gl_lv}✅ 密码修改成功${gl_bai}"
+        echo -e "新密码: ${gl_huang}$new_password${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 密码修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看配置信息
+codex_console_show_config() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Codex Console 配置信息${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local webui_port=$(codex_console_get_port)
+    local novnc_port=$(codex_console_get_novnc_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo -e "安装目录:    ${gl_huang}$CODEX_CONSOLE_INSTALL_DIR${gl_bai}"
+    echo -e "数据目录:    ${gl_huang}$CODEX_CONSOLE_DATA_DIR${gl_bai}"
+    echo -e "日志目录:    ${gl_huang}$CODEX_CONSOLE_LOGS_DIR${gl_bai}"
+    echo -e "WebUI 端口:  ${gl_huang}$webui_port${gl_bai}"
+    echo -e "noVNC 端口:  ${gl_huang}$novnc_port${gl_bai}"
+    echo -e "WebUI 地址:  ${gl_huang}http://${server_ip}:${webui_port}${gl_bai}"
+    echo -e "noVNC 地址:  ${gl_huang}http://${server_ip}:${novnc_port}${gl_bai}"
+
+    echo ""
+    echo "容器环境变量:"
+    docker inspect "$CODEX_CONSOLE_CONTAINER_NAME" --format '{{range .Config.Env}}  {{println .}}{{end}}' 2>/dev/null | grep -E "WEBUI_|VNC|DISPLAY|DEBUG|LOG_LEVEL"
+
+    echo ""
+    break_end
+}
+
+# 卸载
+codex_console_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 Codex Console${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(codex_console_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Codex Console 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_hong}⚠️ 此操作将删除 Codex Console 容器和镜像${gl_bai}"
+    echo ""
+    read -e -p "是否同时删除项目目录和数据？(y/n) [n]: " delete_data
+    echo ""
+    read -e -p "确认卸载？(y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消卸载"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 停止并删除容器
+    local compose_cmd=$(codex_console_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CODEX_CONSOLE_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CODEX_CONSOLE_INSTALL_DIR" && $compose_cmd down --rmi local 2>/dev/null
+    else
+        docker stop "$CODEX_CONSOLE_CONTAINER_NAME" 2>/dev/null
+        docker rm "$CODEX_CONSOLE_CONTAINER_NAME" 2>/dev/null
+    fi
+
+    # 删除项目目录和数据
+    if [ "$delete_data" = "y" ] || [ "$delete_data" = "Y" ]; then
+        rm -rf "$CODEX_CONSOLE_INSTALL_DIR"
+        echo -e "${gl_lv}✅ 容器、镜像和项目数据已全部删除${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ 容器已删除，项目目录保留在 $CODEX_CONSOLE_INSTALL_DIR${gl_bai}"
+    fi
+
+    # 删除端口配置文件
+    rm -f "$CODEX_CONSOLE_PORT_FILE"
+    rm -f "$CODEX_CONSOLE_NOVNC_PORT_FILE"
+
+    break_end
+}
+
+# Codex Console 管理主菜单
+manage_codex_console() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Codex Console 部署管理 (OpenAI批量注册)${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(codex_console_check_status)
+        local webui_port=$(codex_console_get_port)
+        local novnc_port=$(codex_console_get_novnc_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (WebUI: ${webui_port} | noVNC: ${novnc_port})"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "installed_no_container")
+                echo -e "当前状态: ${gl_huang}⚠️ 已安装但容器未创建${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新项目"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置与信息]${gl_bai}"
+        echo "8. 查看配置信息"
+        echo "9. 修改端口"
+        echo "10. 修改访问密码"
+        echo ""
+        echo -e "${gl_kjlan}[卸载]${gl_bai}"
+        echo -e "${gl_hong}99. 卸载（删除容器+镜像）${gl_bai}"
+        echo ""
+        echo "0. 返回上级菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-10, 99]: " choice
+
+        case $choice in
+            1)
+                codex_console_deploy
+                ;;
+            2)
+                codex_console_update
+                ;;
+            3)
+                codex_console_status
+                ;;
+            4)
+                codex_console_logs
+                ;;
+            5)
+                codex_console_start
+                ;;
+            6)
+                codex_console_stop
+                ;;
+            7)
+                codex_console_restart
+                ;;
+            8)
+                codex_console_show_config
+                ;;
+            9)
+                codex_console_change_port
+                ;;
+            10)
+                codex_console_change_password
+                ;;
+            99)
+                codex_console_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
 
 # 显示帮助信息
 show_help() {
