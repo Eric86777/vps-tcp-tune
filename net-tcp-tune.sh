@@ -6262,11 +6262,12 @@ ai_proxy_menu() {
         echo "7. OpenClaw 部署管理 (AI多渠道消息网关)"
         echo "8. OpenAI Responses API 转换代理"
         echo "9. Codex Console 部署管理 (OpenAI批量注册)"
+        echo "10. CLIProxyAPI 部署管理 (CLI转API代理)"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-9]: " choice
+        read -e -p "请选择操作 [0-10]: " choice
 
         case $choice in
             1)
@@ -6295,6 +6296,9 @@ ai_proxy_menu() {
                 ;;
             9)
                 manage_codex_console
+                ;;
+            10)
+                manage_cliproxyapi
                 ;;
             0)
                 return
@@ -21556,6 +21560,746 @@ RESP_PROXY_SCRIPT="$RESP_PROXY_BASE_DIR/proxy.mjs"
 RESP_PROXY_CONFIG="$RESP_PROXY_BASE_DIR/config.json"
 RESP_PROXY_SERVICE="openai-resp-proxy"
 RESP_PROXY_DEFAULT_PORT="$RESP_PROXY_PORT_START"
+
+#=============================================================================
+# CLIProxyAPI (CLI转API代理)
+#=============================================================================
+CPA_CONTAINER_NAME="cli-proxy-api"
+CPA_IMAGE="eceasy/cli-proxy-api:latest"
+CPA_INSTALL_DIR="/opt/cli-proxy-api"
+CPA_DEFAULT_PORT="8317"
+CPA_PORT_FILE="/etc/cli-proxy-api-port"
+CPA_SECRET_FILE="/etc/cli-proxy-api-secret"
+
+# 获取当前端口
+cpa_get_port() {
+    if [ -f "$CPA_PORT_FILE" ]; then
+        cat "$CPA_PORT_FILE"
+    else
+        echo "$CPA_DEFAULT_PORT"
+    fi
+}
+
+# 获取管理密钥
+cpa_get_secret() {
+    if [ -f "$CPA_SECRET_FILE" ]; then
+        cat "$CPA_SECRET_FILE"
+    else
+        echo ""
+    fi
+}
+
+# 检查端口是否可用
+cpa_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 检查状态
+cpa_check_status() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CPA_CONTAINER_NAME}"; then
+        echo "running"
+    elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CPA_CONTAINER_NAME}"; then
+        echo "stopped"
+    elif [ -d "$CPA_INSTALL_DIR" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        echo "installed_no_container"
+    else
+        echo "not_installed"
+    fi
+}
+
+# 安装 Docker
+cpa_install_docker() {
+    if command -v docker &>/dev/null; then
+        echo -e "${gl_lv}✅ Docker 已安装${gl_bai}"
+        return 0
+    fi
+
+    echo "正在安装 Docker..."
+    run_remote_script "https://get.docker.com" sh
+
+    if [ $? -eq 0 ]; then
+        systemctl enable docker
+        systemctl start docker
+        echo -e "${gl_lv}✅ Docker 安装成功${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ Docker 安装失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 获取 docker compose 命令
+cpa_compose_cmd() {
+    if docker compose version &>/dev/null 2>&1; then
+        echo "docker compose"
+    elif command -v docker-compose &>/dev/null; then
+        echo "docker-compose"
+    else
+        echo ""
+    fi
+}
+
+# 一键部署
+cpa_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 CLIProxyAPI (CLI转API代理)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(cpa_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ CLIProxyAPI 已安装${gl_bai}"
+        read -e -p "是否重新部署？(y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        local compose_cmd=$(cpa_compose_cmd)
+        if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+            cd "$CPA_INSTALL_DIR" && $compose_cmd down 2>/dev/null
+        fi
+    fi
+
+    # [1/5] 安装 Docker
+    echo ""
+    echo -e "${gl_kjlan}[1/5] 检查 Docker 环境...${gl_bai}"
+    cpa_install_docker || { break_end; return 1; }
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用，请检查 Docker 安装${gl_bai}"
+        break_end
+        return 1
+    fi
+    echo -e "${gl_lv}✅ $compose_cmd 可用${gl_bai}"
+
+    # [2/5] 创建目录
+    echo ""
+    echo -e "${gl_kjlan}[2/5] 创建目录结构...${gl_bai}"
+    mkdir -p "$CPA_INSTALL_DIR/auths"
+    mkdir -p "$CPA_INSTALL_DIR/logs"
+    echo -e "${gl_lv}✅ 目录创建完成${gl_bai}"
+
+    # [3/5] 配置参数
+    echo ""
+    echo -e "${gl_kjlan}[3/5] 配置服务参数...${gl_bai}"
+    echo ""
+
+    # API 端口
+    local api_port="$CPA_DEFAULT_PORT"
+    read -e -p "请输入 API 端口 [$CPA_DEFAULT_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        api_port="$input_port"
+    fi
+    while ! cpa_check_port "$api_port"; do
+        echo -e "${gl_hong}⚠️ 端口 $api_port 已被占用${gl_bai}"
+        read -e -p "请输入 API 端口: " api_port
+        [ -z "$api_port" ] && api_port="$CPA_DEFAULT_PORT"
+    done
+    echo -e "${gl_lv}✅ API 端口 $api_port 可用${gl_bai}"
+
+    # 检查 OAuth 回调端口是否冲突
+    local oauth_ports="8085 1455 54545 51121 11451"
+    local port_conflict=0
+    for p in $oauth_ports; do
+        if ! cpa_check_port "$p"; then
+            echo -e "${gl_huang}⚠️ OAuth 回调端口 $p 已被占用（可能与其他服务如 Codex Console 冲突）${gl_bai}"
+            port_conflict=1
+        fi
+    done
+    if [ $port_conflict -eq 1 ]; then
+        echo ""
+        echo -e "${gl_huang}以上端口为 CLIProxyAPI OAuth 登录回调所需，如冲突可能导致 OAuth 功能异常${gl_bai}"
+        read -e -p "是否继续部署？(y/n) [y]: " continue_deploy
+        if [ "$continue_deploy" = "n" ] || [ "$continue_deploy" = "N" ]; then
+            break_end
+            return 0
+        fi
+    fi
+
+    # 管理密钥
+    echo ""
+    local secret_key=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
+    read -e -p "设置管理密钥 [随机生成: $secret_key]: " input_secret
+    if [ -n "$input_secret" ]; then
+        secret_key="$input_secret"
+    fi
+
+    # [4/5] 生成配置文件
+    echo ""
+    echo -e "${gl_kjlan}[4/5] 生成配置文件...${gl_bai}"
+
+    # 生成 config.yaml
+    cat > "$CPA_INSTALL_DIR/config.yaml" << CONFIGEOF
+# CLIProxyAPI 配置文件
+# port 为容器内部端口，外部端口在 docker-compose.yml 中映射
+host: ""
+port: 8317
+remote-management:
+  allow-remote: true
+  secret-key: "$secret_key"
+  disable-control-panel: false
+auth-dir: /root/.cli-proxy-api
+debug: false
+logging-to-file: true
+request-retry: 3
+CONFIGEOF
+
+    # 生成 docker-compose.yml
+    cat > "$CPA_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
+services:
+  cli-proxy-api:
+    image: ${CPA_IMAGE}
+    container_name: ${CPA_CONTAINER_NAME}
+    ports:
+      - "${api_port}:8317"
+      - "8085:8085"
+      - "1455:1455"
+      - "54545:54545"
+      - "51121:51121"
+      - "11451:11451"
+    volumes:
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - ./auths:/root/.cli-proxy-api
+      - ./logs:/CLIProxyAPI/logs
+    restart: unless-stopped
+COMPOSEEOF
+
+    echo -e "${gl_lv}✅ 配置文件生成完成${gl_bai}"
+
+    # [5/5] 启动服务
+    echo ""
+    echo -e "${gl_kjlan}[5/5] 启动 CLIProxyAPI 服务...${gl_bai}"
+
+    cd "$CPA_INSTALL_DIR"
+    $compose_cmd up -d
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}提示: 可尝试手动执行以下命令后重试:${gl_bai}"
+        echo "  systemctl restart docker"
+        break_end
+        return 1
+    fi
+
+    # 保存配置
+    echo "$api_port" > "$CPA_PORT_FILE"
+    echo "$secret_key" > "$CPA_SECRET_FILE"
+
+    # 等待启动
+    echo ""
+    echo "等待服务启动..."
+    sleep 5
+
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ CLIProxyAPI 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "API 地址:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    echo -e "管理面板:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    echo -e "管理密钥:    ${gl_huang}${secret_key}${gl_bai}"
+    echo ""
+    echo -e "${gl_kjlan}【说明】${gl_bai}"
+    echo "  - 管理面板首次访问会自动下载前端资源"
+    echo "  - 请在管理面板中配置 OAuth 登录或 API Key"
+    echo "  - 建议配置 TLS 以确保传输安全"
+    echo ""
+
+    break_end
+}
+
+# 更新服务
+cpa_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 CLIProxyAPI${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(cpa_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CLIProxyAPI 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在拉取最新镜像..."
+    docker pull "$CPA_IMAGE"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 镜像拉取失败${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在重启服务..."
+    cd "$CPA_INSTALL_DIR"
+    $compose_cmd down
+    $compose_cmd up -d
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${gl_lv}✅ 更新完成${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 查看状态
+cpa_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  CLIProxyAPI 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(cpa_check_status)
+    local api_port=$(cpa_get_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    case "$status" in
+        "running")
+            echo -e "状态: ${gl_lv}✅ 运行中${gl_bai}"
+            echo -e "API 地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+            echo ""
+            echo "容器详情:"
+            docker ps --filter "name=$CPA_CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            ;;
+        "stopped")
+            echo -e "状态: ${gl_hong}❌ 已停止${gl_bai}"
+            echo ""
+            echo "请使用「启动服务」选项启动"
+            ;;
+        "installed_no_container")
+            echo -e "状态: ${gl_huang}⚠️ 已安装但容器未创建${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」重新部署"
+            ;;
+        "not_installed")
+            echo -e "状态: ${gl_hui}未安装${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」选项安装"
+            ;;
+    esac
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+cpa_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  CLIProxyAPI 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}按 Ctrl+C 退出日志查看${gl_bai}"
+    echo ""
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CPA_INSTALL_DIR" && $compose_cmd logs -f --tail 100
+    else
+        docker logs "$CPA_CONTAINER_NAME" -f --tail 100
+    fi
+}
+
+# 启动服务
+cpa_start() {
+    echo ""
+    echo "正在启动 CLIProxyAPI..."
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CPA_INSTALL_DIR" && $compose_cmd up -d
+    else
+        docker start "$CPA_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        local api_port=$(cpa_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 启动成功${gl_bai}"
+        echo -e "API 地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 停止服务
+cpa_stop() {
+    echo ""
+    echo "正在停止 CLIProxyAPI..."
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CPA_INSTALL_DIR" && $compose_cmd stop
+    else
+        docker stop "$CPA_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 重启服务
+cpa_restart() {
+    echo ""
+    echo "正在重启 CLIProxyAPI..."
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CPA_INSTALL_DIR" && $compose_cmd restart
+    else
+        docker restart "$CPA_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        local api_port=$(cpa_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 重启成功${gl_bai}"
+        echo -e "API 地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 查看配置信息
+cpa_show_config() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  CLIProxyAPI 配置信息${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local api_port=$(cpa_get_port)
+    local secret_key=$(cpa_get_secret)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo -e "安装目录:    ${gl_huang}$CPA_INSTALL_DIR${gl_bai}"
+    echo -e "配置文件:    ${gl_huang}$CPA_INSTALL_DIR/config.yaml${gl_bai}"
+    echo -e "令牌目录:    ${gl_huang}$CPA_INSTALL_DIR/auths${gl_bai}"
+    echo -e "日志目录:    ${gl_huang}$CPA_INSTALL_DIR/logs${gl_bai}"
+    echo -e "API 端口:    ${gl_huang}$api_port${gl_bai}"
+    echo -e "管理密钥:    ${gl_huang}${secret_key:-未设置}${gl_bai}"
+    echo -e "API 地址:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    echo -e "管理面板:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+
+    echo ""
+    break_end
+}
+
+# 修改端口
+cpa_change_port() {
+    echo ""
+    local current_port=$(cpa_get_port)
+    echo -e "当前 API 端口: ${gl_huang}$current_port${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新的 API 端口: " new_port
+
+    if [ -z "$new_port" ]; then
+        echo "取消修改"
+        break_end
+        return 0
+    fi
+
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${gl_hong}❌ 无效的端口号: $new_port${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if [ "$new_port" = "$current_port" ]; then
+        echo -e "${gl_huang}⚠️ 端口未改变${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    # 先检查新端口是否可用（在停止服务之前）
+    if ! cpa_check_port "$new_port"; then
+        echo -e "${gl_hong}❌ 端口 $new_port 已被占用，请选择其他端口${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo "正在修改端口..."
+
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        echo -e "${gl_hong}❌ docker compose 不可用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 停止服务
+    cd "$CPA_INSTALL_DIR" && $compose_cmd down
+
+    # 重写 docker-compose.yml
+    cat > "$CPA_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
+services:
+  cli-proxy-api:
+    image: ${CPA_IMAGE}
+    container_name: ${CPA_CONTAINER_NAME}
+    ports:
+      - "${new_port}:8317"
+      - "8085:8085"
+      - "1455:1455"
+      - "54545:54545"
+      - "51121:51121"
+      - "11451:11451"
+    volumes:
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - ./auths:/root/.cli-proxy-api
+      - ./logs:/CLIProxyAPI/logs
+    restart: unless-stopped
+COMPOSEEOF
+
+    $compose_cmd up -d
+
+    if [ $? -eq 0 ]; then
+        echo "$new_port" > "$CPA_PORT_FILE"
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 端口修改成功${gl_bai}"
+        echo -e "API 地址: ${gl_huang}http://${server_ip}:${new_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 端口修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 修改管理密钥
+cpa_change_secret() {
+    echo ""
+    local current_secret=$(cpa_get_secret)
+    echo -e "当前管理密钥: ${gl_huang}${current_secret:-未设置}${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新的管理密钥: " new_secret
+
+    if [ -z "$new_secret" ]; then
+        echo "未输入密钥，取消修改"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在修改管理密钥..."
+
+    # 更新 config.yaml 中的 secret-key（用 | 作分隔符避免特殊字符冲突）
+    if [ -f "$CPA_INSTALL_DIR/config.yaml" ]; then
+        sed -i "s|secret-key: .*|secret-key: \"$new_secret\"|" "$CPA_INSTALL_DIR/config.yaml"
+    fi
+
+    # 重启服务使配置生效
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CPA_INSTALL_DIR" && $compose_cmd restart
+    else
+        docker restart "$CPA_CONTAINER_NAME"
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo "$new_secret" > "$CPA_SECRET_FILE"
+        local api_port=$(cpa_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 管理密钥修改成功${gl_bai}"
+        echo -e "新密钥: ${gl_huang}$new_secret${gl_bai}"
+        echo -e "API 地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 卸载
+cpa_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 CLIProxyAPI${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(cpa_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ CLIProxyAPI 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_hong}⚠️ 此操作将删除 CLIProxyAPI 容器和镜像${gl_bai}"
+    echo ""
+    read -e -p "是否同时删除配置和数据？(y/n) [n]: " delete_data
+    echo ""
+    read -e -p "确认卸载？(y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消卸载"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 停止并删除容器
+    local compose_cmd=$(cpa_compose_cmd)
+    if [ -n "$compose_cmd" ] && [ -f "$CPA_INSTALL_DIR/docker-compose.yml" ]; then
+        cd "$CPA_INSTALL_DIR" && $compose_cmd down --rmi all 2>/dev/null
+    else
+        docker stop "$CPA_CONTAINER_NAME" 2>/dev/null
+        docker rm "$CPA_CONTAINER_NAME" 2>/dev/null
+        docker rmi "$CPA_IMAGE" 2>/dev/null
+    fi
+
+    # 删除数据
+    if [ "$delete_data" = "y" ] || [ "$delete_data" = "Y" ]; then
+        rm -rf "$CPA_INSTALL_DIR"
+        echo -e "${gl_lv}✅ 容器、镜像和数据已全部删除${gl_bai}"
+    else
+        echo -e "${gl_lv}✅ 容器已删除，配置保留在 $CPA_INSTALL_DIR${gl_bai}"
+    fi
+
+    # 删除端口和密钥文件
+    rm -f "$CPA_PORT_FILE"
+    rm -f "$CPA_SECRET_FILE"
+
+    break_end
+}
+
+# CLIProxyAPI 管理主菜单
+manage_cliproxyapi() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  CLIProxyAPI 部署管理 (CLI转API代理)${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(cpa_check_status)
+        local api_port=$(cpa_get_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: ${api_port})"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "installed_no_container")
+                echo -e "当前状态: ${gl_huang}⚠️ 已安装但容器未创建${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo "2. 更新服务"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置与信息]${gl_bai}"
+        echo "8. 查看配置信息"
+        echo "9. 修改端口"
+        echo "10. 修改管理密钥"
+        echo ""
+        echo -e "${gl_kjlan}[卸载]${gl_bai}"
+        echo -e "${gl_hong}99. 卸载（删除容器+镜像）${gl_bai}"
+        echo ""
+        echo "0. 返回上级菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-10, 99]: " choice
+
+        case $choice in
+            1)
+                cpa_deploy
+                ;;
+            2)
+                cpa_update
+                ;;
+            3)
+                cpa_status
+                ;;
+            4)
+                cpa_logs
+                ;;
+            5)
+                cpa_start
+                ;;
+            6)
+                cpa_stop
+                ;;
+            7)
+                cpa_restart
+                ;;
+            8)
+                cpa_show_config
+                ;;
+            9)
+                cpa_change_port
+                ;;
+            10)
+                cpa_change_secret
+                ;;
+            99)
+                cpa_uninstall
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "无效的选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
 
 #=============================================================================
 # Codex Console (OpenAI 批量注册控制台)
