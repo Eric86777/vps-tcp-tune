@@ -21703,24 +21703,18 @@ cpa_deploy() {
     done
     echo -e "${gl_lv}✅ API 端口 $api_port 可用${gl_bai}"
 
-    # 检查 OAuth 回调端口是否冲突
+    # 检查 OAuth 回调端口是否冲突，冲突的自动跳过映射
     local oauth_ports="8085 1455 54545 51121 11451"
-    local port_conflict=0
+    local available_oauth_ports=""
+    local skipped_ports=""
     for p in $oauth_ports; do
-        if ! cpa_check_port "$p"; then
-            echo -e "${gl_huang}⚠️ OAuth 回调端口 $p 已被占用（可能与其他服务如 Codex Console 冲突）${gl_bai}"
-            port_conflict=1
+        if cpa_check_port "$p"; then
+            available_oauth_ports="${available_oauth_ports}      - \"${p}:${p}\"\n"
+        else
+            echo -e "${gl_huang}⚠️ OAuth 回调端口 $p 已被占用，跳过映射（OAuth 登录该通道可能不可用）${gl_bai}"
+            skipped_ports="${skipped_ports} ${p}"
         fi
     done
-    if [ $port_conflict -eq 1 ]; then
-        echo ""
-        echo -e "${gl_huang}以上端口为 CLIProxyAPI OAuth 登录回调所需，如冲突可能导致 OAuth 功能异常${gl_bai}"
-        read -e -p "是否继续部署？(y/n) [y]: " continue_deploy
-        if [ "$continue_deploy" = "n" ] || [ "$continue_deploy" = "N" ]; then
-            break_end
-            return 0
-        fi
-    fi
 
     # 管理密钥
     echo ""
@@ -21750,7 +21744,7 @@ logging-to-file: true
 request-retry: 3
 CONFIGEOF
 
-    # 生成 docker-compose.yml
+    # 生成 docker-compose.yml（只映射可用的 OAuth 端口）
     cat > "$CPA_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
 services:
   cli-proxy-api:
@@ -21758,12 +21752,7 @@ services:
     container_name: ${CPA_CONTAINER_NAME}
     ports:
       - "${api_port}:8317"
-      - "8085:8085"
-      - "1455:1455"
-      - "54545:54545"
-      - "51121:51121"
-      - "11451:11451"
-    volumes:
+$(echo -e "$available_oauth_ports")    volumes:
       - ./config.yaml:/CLIProxyAPI/config.yaml
       - ./auths:/root/.cli-proxy-api
       - ./logs:/CLIProxyAPI/logs
@@ -21812,6 +21801,11 @@ COMPOSEEOF
     echo "  - 管理面板首次访问会自动下载前端资源"
     echo "  - 请在管理面板中配置 OAuth 登录或 API Key"
     echo "  - 建议配置 TLS 以确保传输安全"
+    if [ -n "$skipped_ports" ]; then
+        echo ""
+        echo -e "${gl_huang}  ⚠️ 跳过的端口:${skipped_ports}（被其他服务占用）${gl_bai}"
+        echo -e "${gl_huang}  如需 OAuth 登录，请先停止占用端口的服务后重新部署${gl_bai}"
+    fi
     echo ""
 
     break_end
@@ -22067,6 +22061,15 @@ cpa_change_port() {
     # 停止服务
     cd "$CPA_INSTALL_DIR" && $compose_cmd down
 
+    # 检测可用的 OAuth 端口
+    local oauth_ports="8085 1455 54545 51121 11451"
+    local available_oauth_ports=""
+    for p in $oauth_ports; do
+        if cpa_check_port "$p"; then
+            available_oauth_ports="${available_oauth_ports}      - \"${p}:${p}\"\n"
+        fi
+    done
+
     # 重写 docker-compose.yml
     cat > "$CPA_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
 services:
@@ -22075,12 +22078,7 @@ services:
     container_name: ${CPA_CONTAINER_NAME}
     ports:
       - "${new_port}:8317"
-      - "8085:8085"
-      - "1455:1455"
-      - "54545:54545"
-      - "51121:51121"
-      - "11451:11451"
-    volumes:
+$(echo -e "$available_oauth_ports")    volumes:
       - ./config.yaml:/CLIProxyAPI/config.yaml
       - ./auths:/root/.cli-proxy-api
       - ./logs:/CLIProxyAPI/logs
