@@ -21745,19 +21745,24 @@ request-retry: 3
 CONFIGEOF
 
     # 生成 docker-compose.yml（只映射可用的 OAuth 端口）
-    cat > "$CPA_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
-services:
-  cli-proxy-api:
-    image: ${CPA_IMAGE}
-    container_name: ${CPA_CONTAINER_NAME}
-    ports:
-      - "${api_port}:8317"
-$(echo -e "$available_oauth_ports")    volumes:
-      - ./config.yaml:/CLIProxyAPI/config.yaml
-      - ./auths:/root/.cli-proxy-api
-      - ./logs:/CLIProxyAPI/logs
-    restart: unless-stopped
-COMPOSEEOF
+    {
+        echo "services:"
+        echo "  cli-proxy-api:"
+        echo "    image: ${CPA_IMAGE}"
+        echo "    container_name: ${CPA_CONTAINER_NAME}"
+        echo "    ports:"
+        echo "      - \"${api_port}:8317\""
+        for p in $oauth_ports; do
+            if cpa_check_port "$p"; then
+                echo "      - \"${p}:${p}\""
+            fi
+        done
+        echo "    volumes:"
+        echo "      - ./config.yaml:/CLIProxyAPI/config.yaml"
+        echo "      - ./auths:/root/.cli-proxy-api"
+        echo "      - ./logs:/CLIProxyAPI/logs"
+        echo "    restart: unless-stopped"
+    } > "$CPA_INSTALL_DIR/docker-compose.yml"
 
     echo -e "${gl_lv}✅ 配置文件生成完成${gl_bai}"
 
@@ -22061,29 +22066,26 @@ cpa_change_port() {
     # 停止服务
     cd "$CPA_INSTALL_DIR" && $compose_cmd down
 
-    # 检测可用的 OAuth 端口
+    # 重写 docker-compose.yml（只映射可用的 OAuth 端口）
     local oauth_ports="8085 1455 54545 51121 11451"
-    local available_oauth_ports=""
-    for p in $oauth_ports; do
-        if cpa_check_port "$p"; then
-            available_oauth_ports="${available_oauth_ports}      - \"${p}:${p}\"\n"
-        fi
-    done
-
-    # 重写 docker-compose.yml
-    cat > "$CPA_INSTALL_DIR/docker-compose.yml" << COMPOSEEOF
-services:
-  cli-proxy-api:
-    image: ${CPA_IMAGE}
-    container_name: ${CPA_CONTAINER_NAME}
-    ports:
-      - "${new_port}:8317"
-$(echo -e "$available_oauth_ports")    volumes:
-      - ./config.yaml:/CLIProxyAPI/config.yaml
-      - ./auths:/root/.cli-proxy-api
-      - ./logs:/CLIProxyAPI/logs
-    restart: unless-stopped
-COMPOSEEOF
+    {
+        echo "services:"
+        echo "  cli-proxy-api:"
+        echo "    image: ${CPA_IMAGE}"
+        echo "    container_name: ${CPA_CONTAINER_NAME}"
+        echo "    ports:"
+        echo "      - \"${new_port}:8317\""
+        for p in $oauth_ports; do
+            if cpa_check_port "$p"; then
+                echo "      - \"${p}:${p}\""
+            fi
+        done
+        echo "    volumes:"
+        echo "      - ./config.yaml:/CLIProxyAPI/config.yaml"
+        echo "      - ./auths:/root/.cli-proxy-api"
+        echo "      - ./logs:/CLIProxyAPI/logs"
+        echo "    restart: unless-stopped"
+    } > "$CPA_INSTALL_DIR/docker-compose.yml"
 
     $compose_cmd up -d
 
