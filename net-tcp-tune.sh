@@ -6263,11 +6263,12 @@ ai_proxy_menu() {
         echo "8. OpenAI Responses API 转换代理"
         echo "9. Codex Console 部署管理 (OpenAI批量注册)"
         echo "10. CLIProxyAPI 部署管理 (CLI转API代理)"
+        echo "11. OAI2 部署管理 (令牌注册面板)"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-10]: " choice
+        read -e -p "请选择操作 [0-11]: " choice
 
         case $choice in
             1)
@@ -6299,6 +6300,9 @@ ai_proxy_menu() {
                 ;;
             10)
                 manage_cliproxyapi
+                ;;
+            11)
+                manage_oai2
                 ;;
             0)
                 return
@@ -21798,8 +21802,8 @@ CONFIGEOF
     echo -e "${gl_lv}  ✅ CLIProxyAPI 部署完成！${gl_bai}"
     echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
-    echo -e "API 地址:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
-    echo -e "管理面板:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    echo -e "API 地址:    ${gl_huang}http://${server_ip}:${api_port}/v1${gl_bai}"
+    echo -e "管理面板:    ${gl_huang}http://${server_ip}:${api_port}/management.html${gl_bai}"
     echo -e "管理密钥:    ${gl_huang}${secret_key}${gl_bai}"
     echo ""
     echo -e "${gl_kjlan}【说明】${gl_bai}"
@@ -21878,7 +21882,8 @@ cpa_status() {
     case "$status" in
         "running")
             echo -e "状态: ${gl_lv}✅ 运行中${gl_bai}"
-            echo -e "API 地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+            echo -e "API 地址:  ${gl_huang}http://${server_ip}:${api_port}/v1${gl_bai}"
+            echo -e "管理面板:  ${gl_huang}http://${server_ip}:${api_port}/management.html${gl_bai}"
             echo ""
             echo "容器详情:"
             docker ps --filter "name=$CPA_CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
@@ -22012,8 +22017,8 @@ cpa_show_config() {
     echo -e "日志目录:    ${gl_huang}$CPA_INSTALL_DIR/logs${gl_bai}"
     echo -e "API 端口:    ${gl_huang}$api_port${gl_bai}"
     echo -e "管理密钥:    ${gl_huang}${secret_key:-未设置}${gl_bai}"
-    echo -e "API 地址:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
-    echo -e "管理面板:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    echo -e "API 地址:    ${gl_huang}http://${server_ip}:${api_port}/v1${gl_bai}"
+    echo -e "管理面板:    ${gl_huang}http://${server_ip}:${api_port}/management.html${gl_bai}"
 
     echo ""
     break_end
@@ -23127,6 +23132,694 @@ manage_codex_console() {
                 echo "无效的选择"
                 sleep 1
                 ;;
+        esac
+    done
+}
+
+#=============================================================================
+# OAI2 令牌注册面板 (dan-web)
+#=============================================================================
+OAI2_INSTALL_DIR="/opt/oai2"
+OAI2_DEFAULT_PORT="25666"
+OAI2_PORT_FILE="/etc/oai2-port"
+OAI2_TOKEN_FILE="/etc/oai2-token"
+OAI2_BINARY_NAME="dan-web-linux-amd64"
+OAI2_SERVICE_NAME="oai2"
+
+# 获取当前端口
+oai2_get_port() {
+    if [ -f "$OAI2_PORT_FILE" ]; then
+        cat "$OAI2_PORT_FILE"
+    else
+        echo "$OAI2_DEFAULT_PORT"
+    fi
+}
+
+# 获取登录 Token
+oai2_get_token() {
+    if [ -f "$OAI2_TOKEN_FILE" ]; then
+        cat "$OAI2_TOKEN_FILE"
+    else
+        echo ""
+    fi
+}
+
+# 检查端口是否可用
+oai2_check_port() {
+    local port=$1
+    if ss -lntp 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+# 检查状态
+oai2_check_status() {
+    if systemctl is-active --quiet "$OAI2_SERVICE_NAME" 2>/dev/null; then
+        echo "running"
+    elif [ -f "/etc/systemd/system/${OAI2_SERVICE_NAME}.service" ]; then
+        echo "stopped"
+    elif [ -d "$OAI2_INSTALL_DIR" ] && [ -f "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME" ]; then
+        echo "installed_no_service"
+    else
+        echo "not_installed"
+    fi
+}
+
+# 生成默认配置文件
+oai2_generate_config() {
+    local port="$1"
+    local web_token="$2"
+    local cpa_url="$3"
+    local cpa_token="$4"
+
+    mkdir -p "$OAI2_INSTALL_DIR/config"
+    cat > "$OAI2_INSTALL_DIR/config/web_config.json" << 'CONFIGEOF'
+{
+  "target_min_tokens": 15000,
+  "auto_fill_start_gap": 1,
+  "check_interval_minutes": 1,
+  "manual_default_threads": 68,
+  "manual_register_retries": 3,
+  "web_token": "WEB_TOKEN_PLACEHOLDER",
+  "enabled_email_domains": [
+    "*.icoa.qzz.io",
+    "*.icoe.pp.ua",
+    "*.icoa.pp.ua",
+    "*.uoou.cc.cd",
+    "*.icoa.us.ci",
+    "icoa.vex.mom",
+    "icoa.zle.ee",
+    "icoamail.sylu.net",
+    "chat-ui.webn.cc",
+    "codex.vision.moe",
+    "*.ice.qq11.top",
+    "*.myanglealtman.tech",
+    "*.ice.lyzswx.eu.org",
+    "a.i00.de5.net",
+    "*.ice.aoko.cc.cd",
+    "*.ice.aoko.eu.cc",
+    "*.ice.chaldea.eu.cc",
+    "*.ice.mssk.eu.cc",
+    "*.ice.mssk.qzz.io",
+    "*.linux.archerguo.de5.net",
+    "*.linux.airforceone.online",
+    "*.ice.kitakamis.online",
+    "*.ice.0987134.xyz",
+    "*.ice.icecodex.us.ci",
+    "*.ice.oo.oogoo.top",
+    "*.ice.jiayou0328.us.ci",
+    "icoa.raw.mom",
+    "icoa.raw.best",
+    "*.icecream.707979.xyz",
+    "*.ice.help.itbasee.top",
+    "*.ice.863973.dpdns.org",
+    "*.ice.tinytiger.top",
+    "*.ice.yucici.qzz.io",
+    "*.love.biaozi.de5.net",
+    "*.love.dogge.de5.net",
+    "*.love.mobil.dpdns.org",
+    "*.love.vercel.dpdns.org",
+    "*.love.google.nyc.mn"
+  ],
+  "mail_domain_options": [
+    "*.icoa.qzz.io",
+    "*.icoe.pp.ua",
+    "*.icoa.pp.ua",
+    "*.uoou.cc.cd",
+    "*.icoa.ccwu.cc",
+    "*.icoa.us.ci",
+    "icoa.vex.mom",
+    "icoa.zle.ee",
+    "icoamail.sylu.net",
+    "chat-ui.webn.cc",
+    "codex.vision.moe",
+    "*.ice.qq11.top",
+    "*.myanglealtman.tech",
+    "*.ice.lyzswx.eu.org",
+    "a.i00.de5.net",
+    "*.ice.aoko.cc.cd",
+    "*.ice.aoko.eu.cc",
+    "*.ice.chaldea.eu.cc",
+    "*.ice.mssk.eu.cc",
+    "*.ice.mssk.qzz.io",
+    "*.linux.archerguo.de5.net",
+    "*.linux.airforceone.online",
+    "*.ice.kitakamis.online",
+    "*.ice.0987134.xyz",
+    "*.ice.icecodex.us.ci",
+    "*.ice.icecodex.ccwu.cc",
+    "*.ice.oo.oogoo.top",
+    "*.ice.jiayou0328.ccwu.cc",
+    "*.ice.jiayou0328.us.ci",
+    "icoa.raw.mom",
+    "icoa.raw.best",
+    "*.icecream.707979.xyz",
+    "*.ice.help.itbasee.top",
+    "*.ice.863973.dpdns.org",
+    "*.ice.tinytiger.top",
+    "*.ice.yucici.qzz.io",
+    "*.love.biaozi.de5.net",
+    "*.love.dogge.de5.net",
+    "*.love.mobil.dpdns.org",
+    "*.love.vercel.dpdns.org",
+    "*.love.google.nyc.mn"
+  ],
+  "default_proxy": "http://127.0.0.1:7897",
+  "use_registration_proxy": false,
+  "cpa_base_url": "CPA_URL_PLACEHOLDER",
+  "cpa_token": "CPA_TOKEN_PLACEHOLDER",
+  "mail_api_url": "https://mailapizv.uton.me",
+  "mail_api_key": "linuxdo",
+  "port": PORT_PLACEHOLDER
+}
+CONFIGEOF
+
+    # 替换占位符
+    sed -i "s|WEB_TOKEN_PLACEHOLDER|${web_token}|g" "$OAI2_INSTALL_DIR/config/web_config.json"
+    sed -i "s|CPA_URL_PLACEHOLDER|${cpa_url}|g" "$OAI2_INSTALL_DIR/config/web_config.json"
+    sed -i "s|CPA_TOKEN_PLACEHOLDER|${cpa_token}|g" "$OAI2_INSTALL_DIR/config/web_config.json"
+    sed -i "s|PORT_PLACEHOLDER|${port}|g" "$OAI2_INSTALL_DIR/config/web_config.json"
+}
+
+# 创建 systemd 服务
+oai2_create_service() {
+    cat > "/etc/systemd/system/${OAI2_SERVICE_NAME}.service" << EOF
+[Unit]
+Description=OAI2 Token Registration Panel (dan-web)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${OAI2_INSTALL_DIR}
+ExecStart=${OAI2_INSTALL_DIR}/${OAI2_BINARY_NAME}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+}
+
+# 一键部署
+oai2_deploy() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  一键部署 OAI2 令牌注册面板 (dan-web)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(oai2_check_status)
+    if [ "$status" != "not_installed" ]; then
+        echo -e "${gl_huang}⚠️ OAI2 已安装${gl_bai}"
+        read -e -p "是否重新部署？(y/n) [n]: " reinstall
+        if [ "$reinstall" != "y" ] && [ "$reinstall" != "Y" ]; then
+            break_end
+            return 0
+        fi
+        # 停止现有服务
+        systemctl stop "$OAI2_SERVICE_NAME" 2>/dev/null
+        systemctl disable "$OAI2_SERVICE_NAME" 2>/dev/null
+    fi
+
+    # [1/5] 获取二进制文件
+    echo ""
+    echo -e "${gl_kjlan}[1/5] 获取 OAI2 程序...${gl_bai}"
+
+    local OAI2_RAR_NAME="OAI2_Codex_zhuceji.rar"
+    local OAI2_RAR_PATH="/root/${OAI2_RAR_NAME}"
+
+    if [ -f "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME" ]; then
+        echo -e "${gl_lv}✅ 二进制文件已存在，跳过解压${gl_bai}"
+    else
+        mkdir -p "$OAI2_INSTALL_DIR"
+
+        # 检查安装包是否存在
+        if [ ! -f "$OAI2_RAR_PATH" ]; then
+            echo -e "${gl_hong}❌ 未找到安装包: ${OAI2_RAR_PATH}${gl_bai}"
+            echo ""
+            echo -e "${gl_huang}请先将 ${OAI2_RAR_NAME} 上传到 /root/ 目录下，再重新运行${gl_bai}"
+            echo -e "${gl_huang}例如: scp ${OAI2_RAR_NAME} root@服务器IP:/root/${gl_bai}"
+            break_end
+            return 1
+        fi
+
+        # 安装 unrar
+        if ! command -v unrar &>/dev/null; then
+            echo "正在安装解压工具..."
+            apt install -y unrar-free 2>/dev/null || apt install -y unrar 2>/dev/null
+        fi
+
+        echo "正在解压安装包..."
+        cd "$OAI2_INSTALL_DIR" && unrar x -o+ "$OAI2_RAR_PATH"
+
+        if [ ! -f "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME" ]; then
+            echo -e "${gl_hong}❌ 解压后未找到 ${OAI2_BINARY_NAME}，请检查安装包内容${gl_bai}"
+            break_end
+            return 1
+        fi
+
+        # 删除 Windows 版本，节省空间
+        rm -f "$OAI2_INSTALL_DIR/dan-web-windows-amd64.exe" 2>/dev/null
+    fi
+
+    chmod +x "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME"
+    echo -e "${gl_lv}✅ 程序准备就绪${gl_bai}"
+
+    # [2/5] 配置端口
+    echo ""
+    echo -e "${gl_kjlan}[2/5] 配置服务参数...${gl_bai}"
+    echo ""
+
+    local api_port="$OAI2_DEFAULT_PORT"
+    read -e -p "请输入面板端口 [$OAI2_DEFAULT_PORT]: " input_port
+    if [ -n "$input_port" ]; then
+        api_port="$input_port"
+    fi
+    while ! oai2_check_port "$api_port"; do
+        echo -e "${gl_hong}⚠️ 端口 $api_port 已被占用${gl_bai}"
+        read -e -p "请输入面板端口: " api_port
+        [ -z "$api_port" ] && api_port="$OAI2_DEFAULT_PORT"
+    done
+    echo -e "${gl_lv}✅ 面板端口 $api_port 可用${gl_bai}"
+
+    # [3/5] 配置登录 Token
+    echo ""
+    echo -e "${gl_kjlan}[3/5] 配置登录凭证...${gl_bai}"
+    echo ""
+
+    local web_token=$(openssl rand -hex 8 2>/dev/null || head -c 16 /dev/urandom | xxd -p | head -c 16)
+    read -e -p "设置面板登录 Token [随机生成: $web_token]: " input_token
+    if [ -n "$input_token" ]; then
+        web_token="$input_token"
+    fi
+    echo -e "${gl_lv}✅ 登录 Token 已设置${gl_bai}"
+
+    # CPA 连接配置
+    echo ""
+    local cpa_url="https://json.icoa.pp.ua/"
+    local cpa_token_val="linuxdo"
+    read -e -p "CPA 基本 URL [${cpa_url}]: " input_cpa_url
+    if [ -n "$input_cpa_url" ]; then
+        cpa_url="$input_cpa_url"
+    fi
+    read -e -p "CPA Token [${cpa_token_val}]: " input_cpa_token
+    if [ -n "$input_cpa_token" ]; then
+        cpa_token_val="$input_cpa_token"
+    fi
+
+    # [4/5] 生成配置文件
+    echo ""
+    echo -e "${gl_kjlan}[4/5] 生成配置文件...${gl_bai}"
+
+    oai2_generate_config "$api_port" "$web_token" "$cpa_url" "$cpa_token_val"
+    echo -e "${gl_lv}✅ 配置文件生成完成${gl_bai}"
+
+    # [5/5] 创建并启动服务
+    echo ""
+    echo -e "${gl_kjlan}[5/5] 启动 OAI2 服务...${gl_bai}"
+
+    oai2_create_service
+    systemctl enable "$OAI2_SERVICE_NAME" 2>/dev/null
+    systemctl start "$OAI2_SERVICE_NAME"
+
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 服务启动失败${gl_bai}"
+        echo ""
+        echo "尝试查看日志: journalctl -u $OAI2_SERVICE_NAME -n 20"
+        break_end
+        return 1
+    fi
+
+    # 保存配置
+    echo "$api_port" > "$OAI2_PORT_FILE"
+    echo "$web_token" > "$OAI2_TOKEN_FILE"
+
+    # 等待启动
+    sleep 3
+
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ OAI2 部署完成！${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "面板地址:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    echo -e "登录 Token:  ${gl_huang}${web_token}${gl_bai}"
+    echo -e "CPA 地址:    ${gl_huang}${cpa_url}${gl_bai}"
+    echo -e "安装目录:    ${gl_huang}${OAI2_INSTALL_DIR}${gl_bai}"
+    echo -e "配置文件:    ${gl_huang}${OAI2_INSTALL_DIR}/config/web_config.json${gl_bai}"
+    echo ""
+
+    break_end
+}
+
+# 查看状态
+oai2_status() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OAI2 状态${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(oai2_check_status)
+    local api_port=$(oai2_get_port)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    case "$status" in
+        "running")
+            echo -e "状态: ${gl_lv}✅ 运行中${gl_bai}"
+            echo -e "面板地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+            echo ""
+            echo "服务详情:"
+            systemctl status "$OAI2_SERVICE_NAME" --no-pager -l 2>/dev/null | head -15
+            ;;
+        "stopped")
+            echo -e "状态: ${gl_hong}❌ 已停止${gl_bai}"
+            echo ""
+            echo "请使用「启动服务」选项启动"
+            ;;
+        "installed_no_service")
+            echo -e "状态: ${gl_huang}⚠️ 已安装但服务未创建${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」重新部署"
+            ;;
+        "not_installed")
+            echo -e "状态: ${gl_hui}未安装${gl_bai}"
+            echo ""
+            echo "请使用「一键部署」选项安装"
+            ;;
+    esac
+
+    echo ""
+    break_end
+}
+
+# 查看日志
+oai2_logs() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OAI2 日志${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_zi}按 Ctrl+C 退出日志查看${gl_bai}"
+    echo ""
+
+    journalctl -u "$OAI2_SERVICE_NAME" -f --no-pager -n 100
+}
+
+# 启动服务
+oai2_start() {
+    echo ""
+    echo "正在启动 OAI2..."
+    systemctl start "$OAI2_SERVICE_NAME"
+
+    if [ $? -eq 0 ]; then
+        local api_port=$(oai2_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 启动成功${gl_bai}"
+        echo -e "面板地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 停止服务
+oai2_stop() {
+    echo ""
+    echo "正在停止 OAI2..."
+    systemctl stop "$OAI2_SERVICE_NAME"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 已停止${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 停止失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 重启服务
+oai2_restart() {
+    echo ""
+    echo "正在重启 OAI2..."
+    systemctl restart "$OAI2_SERVICE_NAME"
+
+    if [ $? -eq 0 ]; then
+        local api_port=$(oai2_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo -e "${gl_lv}✅ 重启成功${gl_bai}"
+        echo -e "面板地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+    fi
+
+    sleep 2
+    break_end
+}
+
+# 查看配置信息
+oai2_show_config() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  OAI2 配置信息${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local api_port=$(oai2_get_port)
+    local web_token=$(oai2_get_token)
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+
+    echo -e "安装目录:    ${gl_huang}$OAI2_INSTALL_DIR${gl_bai}"
+    echo -e "配置文件:    ${gl_huang}$OAI2_INSTALL_DIR/config/web_config.json${gl_bai}"
+    echo -e "面板端口:    ${gl_huang}$api_port${gl_bai}"
+    echo -e "登录 Token:  ${gl_huang}${web_token:-未设置}${gl_bai}"
+    echo -e "面板地址:    ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+
+    # 显示 CPA 连接信息
+    if [ -f "$OAI2_INSTALL_DIR/config/web_config.json" ]; then
+        local cpa_url=$(grep -o '"cpa_base_url": *"[^"]*"' "$OAI2_INSTALL_DIR/config/web_config.json" | sed 's/"cpa_base_url": *"//;s/"$//')
+        echo -e "CPA 地址:    ${gl_huang}${cpa_url:-未配置}${gl_bai}"
+    fi
+
+    echo ""
+    break_end
+}
+
+# 修改端口
+oai2_change_port() {
+    echo ""
+    local current_port=$(oai2_get_port)
+    echo -e "当前面板端口: ${gl_huang}$current_port${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新的面板端口: " new_port
+
+    if [ -z "$new_port" ]; then
+        echo "取消修改"
+        break_end
+        return 0
+    fi
+
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${gl_hong}❌ 无效的端口号: $new_port${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    if [ "$new_port" = "$current_port" ]; then
+        echo -e "${gl_huang}⚠️ 端口未改变${gl_bai}"
+        break_end
+        return 0
+    fi
+
+    if ! oai2_check_port "$new_port"; then
+        echo -e "${gl_hong}❌ 端口 $new_port 已被占用${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo "正在修改端口..."
+
+    # 更新配置文件中的端口
+    if [ -f "$OAI2_INSTALL_DIR/config/web_config.json" ]; then
+        sed -i "s|\"port\": *[0-9]*|\"port\": ${new_port}|" "$OAI2_INSTALL_DIR/config/web_config.json"
+    fi
+
+    echo "$new_port" > "$OAI2_PORT_FILE"
+
+    # 重启服务
+    systemctl restart "$OAI2_SERVICE_NAME"
+
+    if [ $? -eq 0 ]; then
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 端口修改成功${gl_bai}"
+        echo -e "面板地址: ${gl_huang}http://${server_ip}:${new_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 端口修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 修改登录 Token
+oai2_change_token() {
+    echo ""
+    local current_token=$(oai2_get_token)
+    echo -e "当前登录 Token: ${gl_huang}${current_token:-未设置}${gl_bai}"
+    echo ""
+
+    read -e -p "请输入新的登录 Token: " new_token
+
+    if [ -z "$new_token" ]; then
+        echo "取消修改"
+        break_end
+        return 0
+    fi
+
+    echo "正在修改登录 Token..."
+
+    if [ -f "$OAI2_INSTALL_DIR/config/web_config.json" ]; then
+        sed -i "s|\"web_token\": *\"[^\"]*\"|\"web_token\": \"${new_token}\"|" "$OAI2_INSTALL_DIR/config/web_config.json"
+    fi
+
+    echo "$new_token" > "$OAI2_TOKEN_FILE"
+
+    systemctl restart "$OAI2_SERVICE_NAME"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${gl_lv}✅ 登录 Token 修改成功${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 修改失败${gl_bai}"
+    fi
+
+    break_end
+}
+
+# 卸载
+oai2_uninstall() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_hong}  卸载 OAI2${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(oai2_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ OAI2 未安装${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "${gl_hong}⚠️ 此操作将停止服务并删除程序文件${gl_bai}"
+    echo ""
+    read -e -p "是否同时删除配置和数据？(y/n) [n]: " delete_data
+    echo ""
+    read -e -p "确认卸载？(y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消卸载"
+        break_end
+        return 0
+    fi
+
+    echo ""
+    echo "正在卸载..."
+
+    # 停止并删除服务
+    systemctl stop "$OAI2_SERVICE_NAME" 2>/dev/null
+    systemctl disable "$OAI2_SERVICE_NAME" 2>/dev/null
+    rm -f "/etc/systemd/system/${OAI2_SERVICE_NAME}.service"
+    systemctl daemon-reload
+
+    if [ "$delete_data" = "y" ] || [ "$delete_data" = "Y" ]; then
+        rm -rf "$OAI2_INSTALL_DIR"
+        echo -e "${gl_lv}✅ 服务、程序和数据已全部删除${gl_bai}"
+    else
+        # 只删除二进制文件，保留配置
+        rm -f "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME"
+        rm -f "$OAI2_INSTALL_DIR/dan-web-windows-amd64.exe" 2>/dev/null
+        echo -e "${gl_lv}✅ 服务已删除，配置保留在 $OAI2_INSTALL_DIR/config/${gl_bai}"
+    fi
+
+    rm -f "$OAI2_PORT_FILE"
+    rm -f "$OAI2_TOKEN_FILE"
+
+    break_end
+}
+
+# OAI2 管理主菜单
+manage_oai2() {
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  OAI2 部署管理 (令牌注册面板)${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 显示当前状态
+        local status=$(oai2_check_status)
+        local api_port=$(oai2_get_port)
+
+        case "$status" in
+            "running")
+                echo -e "当前状态: ${gl_lv}✅ 运行中${gl_bai} (端口: ${api_port})"
+                ;;
+            "stopped")
+                echo -e "当前状态: ${gl_hong}❌ 已停止${gl_bai}"
+                ;;
+            "installed_no_service")
+                echo -e "当前状态: ${gl_huang}⚠️ 已安装但服务未创建${gl_bai}"
+                ;;
+            "not_installed")
+                echo -e "当前状态: ${gl_hui}未安装${gl_bai}"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
+        echo "1. 一键部署（首次安装）"
+        echo ""
+        echo -e "${gl_kjlan}[服务管理]${gl_bai}"
+        echo "2. 查看状态"
+        echo "3. 查看日志"
+        echo "4. 启动服务"
+        echo "5. 停止服务"
+        echo "6. 重启服务"
+        echo ""
+        echo -e "${gl_kjlan}[配置与信息]${gl_bai}"
+        echo "7. 查看配置信息"
+        echo "8. 修改端口"
+        echo "9. 修改登录 Token"
+        echo ""
+        echo -e "${gl_kjlan}[卸载]${gl_bai}"
+        echo -e "${gl_hong}99. 卸载${gl_bai}"
+        echo ""
+        echo "0. 返回上级菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        read -e -p "请选择操作 [0-9, 99]: " choice
+
+        case $choice in
+            1) oai2_deploy ;;
+            2) oai2_status ;;
+            3) oai2_logs ;;
+            4) oai2_start ;;
+            5) oai2_stop ;;
+            6) oai2_restart ;;
+            7) oai2_show_config ;;
+            8) oai2_change_port ;;
+            9) oai2_change_token ;;
+            99) oai2_uninstall ;;
+            0) return ;;
+            *) echo "无效的选择"; sleep 1 ;;
         esac
     done
 }
