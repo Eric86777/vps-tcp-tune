@@ -23703,6 +23703,126 @@ oai2_change_token() {
     break_end
 }
 
+# 更新二进制
+oai2_update() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  更新 OAI2 (替换二进制文件)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local status=$(oai2_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ OAI2 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    local OAI2_RAR_NAME="OAI2_Codex_zhuceji.rar"
+    local OAI2_RAR_PATH="/root/${OAI2_RAR_NAME}"
+
+    if [ ! -f "$OAI2_RAR_PATH" ]; then
+        echo -e "${gl_hong}❌ 未找到更新包: ${OAI2_RAR_PATH}${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}请先将新版 ${OAI2_RAR_NAME} 上传到 /root/ 目录下${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo -e "找到更新包: ${gl_huang}${OAI2_RAR_PATH}${gl_bai}"
+    echo -e "文件大小:   ${gl_huang}$(du -h "$OAI2_RAR_PATH" | awk '{print $1}')${gl_bai}"
+    echo ""
+    read -e -p "确认更新？配置文件不会被覆盖 (y/n) [n]: " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "取消更新"
+        break_end
+        return 0
+    fi
+
+    # 安装 unrar
+    if ! command -v unrar &>/dev/null; then
+        echo "正在安装解压工具..."
+        apt install -y unrar-free 2>/dev/null || apt install -y unrar 2>/dev/null
+        if ! command -v unrar &>/dev/null; then
+            echo -e "${gl_hong}❌ 解压工具安装失败${gl_bai}"
+            break_end
+            return 1
+        fi
+    fi
+
+    # 解压到临时目录（mktemp 保证唯一性）
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/oai2_update_XXXXXX) || {
+        echo -e "${gl_hong}❌ 无法创建临时目录${gl_bai}"
+        break_end
+        return 1
+    }
+    echo "正在解压..."
+    (cd "$tmp_dir" && unrar x -o+ "$OAI2_RAR_PATH" >/dev/null 2>&1)
+
+    if [ ! -f "$tmp_dir/$OAI2_BINARY_NAME" ]; then
+        echo -e "${gl_hong}❌ 解压后未找到 ${OAI2_BINARY_NAME}${gl_bai}"
+        rm -rf "$tmp_dir"
+        break_end
+        return 1
+    fi
+
+    # 停止服务
+    echo "正在停止服务..."
+    systemctl stop "$OAI2_SERVICE_NAME" 2>/dev/null
+
+    # 备份旧二进制
+    if [ -f "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME" ]; then
+        mv "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME" "$OAI2_INSTALL_DIR/${OAI2_BINARY_NAME}.bak"
+    fi
+
+    # 替换二进制（检查返回值）
+    if ! mv "$tmp_dir/$OAI2_BINARY_NAME" "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME"; then
+        echo -e "${gl_hong}❌ 替换二进制失败，正在回滚...${gl_bai}"
+        if [ -f "$OAI2_INSTALL_DIR/${OAI2_BINARY_NAME}.bak" ]; then
+            mv "$OAI2_INSTALL_DIR/${OAI2_BINARY_NAME}.bak" "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME"
+        fi
+        rm -rf "$tmp_dir"
+        systemctl start "$OAI2_SERVICE_NAME" 2>/dev/null
+        break_end
+        return 1
+    fi
+    chmod +x "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME"
+
+    # 清理临时目录
+    rm -rf "$tmp_dir"
+
+    # 启动服务
+    echo "正在启动服务..."
+    systemctl start "$OAI2_SERVICE_NAME"
+
+    if [ $? -eq 0 ]; then
+        # 更新成功，清理备份
+        rm -f "$OAI2_INSTALL_DIR/${OAI2_BINARY_NAME}.bak"
+        local api_port=$(oai2_get_port)
+        local server_ip=$(curl -s4 ip.sb 2>/dev/null || curl -s6 ip.sb 2>/dev/null || echo "服务器IP")
+        echo ""
+        echo -e "${gl_lv}✅ 更新完成${gl_bai}"
+        echo -e "面板地址: ${gl_huang}http://${server_ip}:${api_port}${gl_bai}"
+    else
+        echo -e "${gl_hong}❌ 启动失败，正在回滚...${gl_bai}"
+        if [ -f "$OAI2_INSTALL_DIR/${OAI2_BINARY_NAME}.bak" ]; then
+            mv "$OAI2_INSTALL_DIR/${OAI2_BINARY_NAME}.bak" "$OAI2_INSTALL_DIR/$OAI2_BINARY_NAME"
+            systemctl start "$OAI2_SERVICE_NAME"
+            if [ $? -eq 0 ]; then
+                echo -e "${gl_lv}✅ 已回滚到旧版本${gl_bai}"
+            else
+                echo -e "${gl_hong}❌ 回滚后仍无法启动，请手动排查: journalctl -u $OAI2_SERVICE_NAME -n 20${gl_bai}"
+            fi
+        else
+            echo -e "${gl_hong}❌ 无备份可回滚，请重新部署: 选择菜单 1${gl_bai}"
+        fi
+    fi
+
+    break_end
+}
+
 # 卸载
 oai2_uninstall() {
     clear
@@ -23786,18 +23906,19 @@ manage_oai2() {
         echo ""
         echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
         echo "1. 一键部署（首次安装）"
+        echo "2. 更新版本（替换二进制）"
         echo ""
         echo -e "${gl_kjlan}[服务管理]${gl_bai}"
-        echo "2. 查看状态"
-        echo "3. 查看日志"
-        echo "4. 启动服务"
-        echo "5. 停止服务"
-        echo "6. 重启服务"
+        echo "3. 查看状态"
+        echo "4. 查看日志"
+        echo "5. 启动服务"
+        echo "6. 停止服务"
+        echo "7. 重启服务"
         echo ""
         echo -e "${gl_kjlan}[配置与信息]${gl_bai}"
-        echo "7. 查看配置信息"
-        echo "8. 修改端口"
-        echo "9. 修改登录 Token"
+        echo "8. 查看配置信息"
+        echo "9. 修改端口"
+        echo "10. 修改登录 Token"
         echo ""
         echo -e "${gl_kjlan}[卸载]${gl_bai}"
         echo -e "${gl_hong}99. 卸载${gl_bai}"
@@ -23805,18 +23926,19 @@ manage_oai2() {
         echo "0. 返回上级菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-9, 99]: " choice
+        read -e -p "请选择操作 [0-10, 99]: " choice
 
         case $choice in
             1) oai2_deploy ;;
-            2) oai2_status ;;
-            3) oai2_logs ;;
-            4) oai2_start ;;
-            5) oai2_stop ;;
-            6) oai2_restart ;;
-            7) oai2_show_config ;;
-            8) oai2_change_port ;;
-            9) oai2_change_token ;;
+            2) oai2_update ;;
+            3) oai2_status ;;
+            4) oai2_logs ;;
+            5) oai2_start ;;
+            6) oai2_stop ;;
+            7) oai2_restart ;;
+            8) oai2_show_config ;;
+            9) oai2_change_port ;;
+            10) oai2_change_token ;;
             99) oai2_uninstall ;;
             0) return ;;
             *) echo "无效的选择"; sleep 1 ;;
