@@ -2108,7 +2108,7 @@ check_and_clean_conflicts() {
     echo -e "${gl_kjlan}=== 检查 sysctl 配置冲突 ===${gl_bai}"
     local conflicts=()
     # 搜索 /etc/sysctl.d/ 下可能覆盖 tcp_rmem/tcp_wmem 的高序号文件
-    for conf in /etc/sysctl.d/[0-9]*-*.conf /etc/sysctl.d/[0-9][0-9][0-9]-*.conf; do
+    for conf in /etc/sysctl.d/[0-9]*-*.conf; do
         [ -f "$conf" ] || continue
         [ "$conf" = "$SYSCTL_CONF" ] && continue
         if grep -qE "(^|\s)net\.ipv4\.tcp_(rmem|wmem)" "$conf" 2>/dev/null; then
@@ -2157,6 +2157,10 @@ check_and_clean_conflicts() {
             fi
             # 将高优先级冲突文件重命名禁用
             for f in "${conflicts[@]}"; do
+                if [ ! -f "$f" ]; then
+                    echo -e "${gl_lv}✓ 已跳过: $(basename "$f")（已处理）${gl_bai}"
+                    continue
+                fi
                 if mv "$f" "${f}.disabled.$(date +%Y%m%d_%H%M%S)" 2>/dev/null; then
                     echo -e "${gl_lv}✓ 已禁用: $(basename "$f")${gl_bai}"
                 else
