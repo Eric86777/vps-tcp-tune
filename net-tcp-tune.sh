@@ -15298,6 +15298,19 @@ crs_deploy() {
     export CRS_REDIS_PORT="$redis_port"
     export CRS_REDIS_PASSWORD="$redis_password"
 
+    # 确保 sudo 可用（root 用户可能未安装 sudo，外部 manage.sh 依赖它）
+    if ! command -v sudo &>/dev/null; then
+        echo -e "${gl_huang}检测到未安装 sudo，正在安装...${gl_bai}"
+        apt-get update -qq && apt-get install -y -qq sudo >/dev/null 2>&1
+        if ! command -v sudo &>/dev/null; then
+            echo -e "${gl_hong}❌ sudo 安装失败，请手动执行: apt-get install -y sudo${gl_bai}"
+            rm -rf "$temp_dir"
+            break_end
+            return 1
+        fi
+        echo -e "${gl_lv}✅ sudo 安装完成${gl_bai}"
+    fi
+
     # 执行安装脚本
     echo ""
     echo -e "${gl_huang}正在安装，请按提示操作...${gl_bai}"
