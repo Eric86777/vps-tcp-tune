@@ -17176,6 +17176,116 @@ sub2api_update() {
     break_end
 }
 
+# 版本回退（降级）
+sub2api_downgrade() {
+    local status=$(sub2api_check_status)
+    if [ "$status" = "not_installed" ]; then
+        echo -e "${gl_hong}❌ Sub2API 未安装，请先执行一键部署${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    # 获取当前版本
+    local current_version="未知"
+    if [ -f "$SUB2API_INSTALL_DIR/sub2api" ]; then
+        current_version=$("$SUB2API_INSTALL_DIR/sub2api" version 2>/dev/null || echo "未知")
+    fi
+    echo -e "当前版本: ${gl_huang}${current_version}${gl_bai}"
+    echo ""
+
+    # 获取可用版本列表
+    echo -e "${gl_kjlan}正在获取可用版本列表...${gl_bai}"
+    local versions
+    versions=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/Wei-Shaw/sub2api/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
+
+    if [ -z "$versions" ]; then
+        echo -e "${gl_hong}❌ 获取版本列表失败，请检查网络连接${gl_bai}"
+        break_end
+        return 1
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}可用版本列表（最近20个）：${gl_bai}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local i=1
+    local version_array=()
+    while IFS= read -r ver; do
+        version_array+=("$ver")
+        if [ "$ver" = "v${current_version}" ] || [ "$ver" = "${current_version}" ]; then
+            echo -e "  ${i}. ${gl_lv}${ver} ← 当前版本${gl_bai}"
+        else
+            echo "  ${i}. ${ver}"
+        fi
+        ((i++))
+    done <<< "$versions"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    echo -e "请输入要回退到的版本号（如 ${gl_huang}v0.1.100${gl_bai}）或序号（如 ${gl_huang}5${gl_bai}）"
+    echo -e "输入 ${gl_huang}0${gl_bai} 返回"
+    read -e -p "请输入: " version_input
+
+    if [ -z "$version_input" ] || [ "$version_input" = "0" ]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    # 判断输入的是序号还是版本号
+    local target_version
+    if [[ "$version_input" =~ ^[0-9]+$ ]]; then
+        # 纯数字：当作序号处理
+        if [ "$version_input" -ge 1 ] && [ "$version_input" -le "${#version_array[@]}" ]; then
+            target_version="${version_array[$((version_input - 1))]}"
+        else
+            echo -e "${gl_hong}❌ 序号超出范围（1-${#version_array[@]}），请重新选择${gl_bai}"
+            break_end
+            return
+        fi
+    else
+        target_version="$version_input"
+        # 自动补 v 前缀
+        if [[ ! "$target_version" =~ ^v ]]; then
+            target_version="v$target_version"
+        fi
+    fi
+
+    echo ""
+    echo -e "即将回退到版本: ${gl_huang}${target_version}${gl_bai}"
+    read -e -p "确认执行？(y/n) [n]: " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}正在执行版本回退...${gl_bai}"
+
+    local tmp_script=$(mktemp)
+    if ! curl -fsSL "$SUB2API_INSTALL_SCRIPT" -o "$tmp_script"; then
+        echo -e "${gl_hong}❌ 下载安装脚本失败${gl_bai}"
+        rm -f "$tmp_script"
+        break_end
+        return 1
+    fi
+
+    chmod +x "$tmp_script"
+    bash "$tmp_script" rollback "$target_version"
+    local result=$?
+    rm -f "$tmp_script"
+
+    if [ $result -eq 0 ]; then
+        echo ""
+        echo -e "${gl_lv}✅ 已成功回退到 ${target_version}${gl_bai}"
+    else
+        echo ""
+        echo -e "${gl_hong}❌ 版本回退失败${gl_bai}"
+    fi
+
+    break_end
+}
+
 # 查看配置信息
 sub2api_show_config() {
     clear
@@ -17334,6 +17444,7 @@ manage_sub2api() {
         echo -e "${gl_kjlan}[部署与更新]${gl_bai}"
         echo "1. 一键部署（首次安装）"
         echo "2. 更新服务"
+        echo "10. 版本回退（降级到指定版本）"
         echo ""
         echo -e "${gl_kjlan}[服务管理]${gl_bai}"
         echo "3. 查看状态"
@@ -17352,7 +17463,7 @@ manage_sub2api() {
         echo "0. 返回上级菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-9, 99]: " choice
+        read -e -p "请选择操作 [0-10, 99]: " choice
 
         case $choice in
             1)
@@ -17381,6 +17492,9 @@ manage_sub2api() {
                 ;;
             9)
                 sub2api_change_port
+                ;;
+            10)
+                sub2api_downgrade
                 ;;
             99)
                 sub2api_uninstall
