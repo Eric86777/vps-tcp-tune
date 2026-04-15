@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "agent",
+            "if": "Bash(git push*)",
+            "prompt": "A git push just completed. Perform a comprehensive code review of ALL recent changes on this branch compared to the main branch. Use `git diff main...HEAD` (or the appropriate base branch) to identify every changed file. For EACH changed file, review thoroughly for: 1) Bugs and logic errors 2) Security vulnerabilities (injection, XSS, command injection, hardcoded secrets, etc.) 3) Edge cases and error handling gaps 4) Race conditions or concurrency issues 5) Resource leaks 6) Type mismatches or incorrect assumptions 7) Off-by-one errors 8) Null/undefined handling 9) Performance issues 10) Compatibility problems. Report ALL findings clearly with file paths and line numbers. If everything looks clean, confirm that explicitly. Be extremely thorough - check every single function, every branch, every boundary condition. Miss nothing.",
+            "model": "claude-sonnet-4-6",
+            "timeout": 300,
+            "statusMessage": "Performing comprehensive code review after push..."
+          }
+        ]
+      }
+    ]
+  }
+}
