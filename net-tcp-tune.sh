@@ -7477,10 +7477,13 @@ install_snell() {
     SNELL_PORT=$(shuf -i 30000-65000 -n 1)
     RANDOM_PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
 
-    # 检查 snell 用户是否已存在
+    # 检查 snell 用户组和用户是否已存在
+    if ! getent group "snell" &>/dev/null; then
+        groupadd -r snell
+    fi
     if ! id "snell" &>/dev/null; then
-        # 创建 Snell 用户
-        useradd -r -s /usr/sbin/nologin snell
+        useradd -r -g snell -s /usr/sbin/nologin -d /nonexistent snell 2>/dev/null || \
+        useradd -r -g snell -s /sbin/nologin -d /nonexistent snell
     fi
 
     # 创建配置文件目录
@@ -7571,11 +7574,18 @@ psk = ${RANDOM_PSK}
 ipv6 = ${IPV6_ENABLED}
 EOF
 
+    # 设置配置文件权限（PSK 含敏感信息，仅 snell 用户可读）
+    chown snell:snell ${CONF_DIR}
+    chmod 750 ${CONF_DIR}
+    chown snell:snell ${CONF_FILE}
+    chmod 640 ${CONF_FILE}
+
     # 创建 Systemd 服务文件
     cat > ${SYSTEMD_SERVICE_FILE} << EOF
 [Unit]
 Description=Snell Proxy Service (Port ${SNELL_PORT})
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -7585,7 +7595,12 @@ ExecStart=${INSTALL_DIR}/snell-server -c ${CONF_FILE}
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 LimitNOFILE=32768
-Restart=on-failure
+Restart=always
+RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
+OOMScoreAdjust=-500
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=snell-${SNELL_PORT}
@@ -8375,13 +8390,31 @@ run_core_install() {
         error "Xray 核心安装失败！"
         return 1
     fi
-    
+
     info "正在更新 GeoIP 和 GeoSite 数据文件..."
     if ! execute_official_script "install-geodata"; then
         error "Geo-data 更新失败！"
         info "这通常不影响核心功能，您可以稍后手动更新。"
     fi
-    
+
+    # 补丁 Xray 官方 service：官方默认 Restart=on-failure，进程正常退出不会重启
+    # 通过 systemd override 确保服务始终自动重启
+    mkdir -p /etc/systemd/system/xray.service.d
+    cat > /etc/systemd/system/xray.service.d/override.conf << 'XRAY_OVR'
+[Service]
+Restart=always
+RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
+OOMScoreAdjust=-500
+
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=10
+XRAY_OVR
+    systemctl daemon-reload
+
     success "Xray 核心及数据文件已准备就绪。"
 }
 
@@ -21438,12 +21471,13 @@ CONFIGEOF
     cat > "/etc/systemd/system/${svc}.service" << SVCEOF
 [Unit]
 Description=OpenAI Responses to Chat Completions Proxy (${name})
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=$(which node) ${script}
-Restart=on-failure
+Restart=always
 RestartSec=5
 WorkingDirectory=${idir}
 
