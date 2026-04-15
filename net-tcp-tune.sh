@@ -8,13 +8,13 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v4.9.8 更新: 修复Snell/VLESS/OAI2节点随机掉线：Restart=always+systemd健壮性加固；XanMod内核安装增加本地CPU检测兜底 (by Eric86777)
 # v4.9.5 更新: 修复Responses API代理SSE解析，解决502报错，重新部署生效 (by Eric86777)
 # v4.9.4 更新: 修复Responses API转换代理：兼容SSE流式响应格式，解决502 JSON解析失败 (by Eric86777)
 # v4.9.3 更新: 修复Responses API转换代理：system消息正确提取为instructions字段，修复无system消息时报错 (by Eric86777)
 # v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
-# v4.9.1 更新: BBR优化新增地区选择功能（亚太/美欧），根据RTT延迟差异自动计算最优TCP缓冲区大小 (by Eric86777)
 
-SCRIPT_VERSION="4.9.7"
+SCRIPT_VERSION="4.9.8"
 SCRIPT_LAST_UPDATE="OpenClaw新增sub2api兼容补丁：自动打补丁(instructions+max_output_tokens)，部署/更新/切换API均自动适配"
 #=============================================================================
 
