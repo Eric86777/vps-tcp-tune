@@ -2927,10 +2927,20 @@ install_xanmod_kernel() {
     fi
     rm -rf "$detect_dir"
 
-    # 验证版本号合法性（只允许 1-4）
+    # 在线检测失败时，使用本地 /proc/cpuinfo 检测 CPU 支持的最高等级
     if ! [[ "$version" =~ ^[1-4]$ ]]; then
-        echo -e "${gl_huang}自动检测失败或版本不合法，使用默认版本 v3${gl_bai}"
-        version="3"
+        echo -e "${gl_huang}在线检测脚本不可用，使用本地 CPU 特征检测...${gl_bai}"
+        local cpu_flags=$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null)
+        if echo "$cpu_flags" | grep -qw 'avx512f'; then
+            version="4"
+        elif echo "$cpu_flags" | grep -qw 'avx2'; then
+            version="3"
+        elif echo "$cpu_flags" | grep -qw 'sse4_2'; then
+            version="2"
+        else
+            version="1"
+        fi
+        echo -e "${gl_lv}本地检测结果: CPU 支持 x86-64-v${version}${gl_bai}"
     fi
 
     echo -e "${gl_lv}将安装: linux-xanmod-x64v${version}${gl_bai}"
