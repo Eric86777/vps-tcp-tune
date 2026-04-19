@@ -19022,10 +19022,17 @@ manage_caddy() {
         echo "8. 查看 Caddy 状态"
         echo "9. 查看 Caddy 日志"
         echo "10. 卸载 Caddy"
+        # CF 防火墙状态显示
+        local fw_status=$(caddy_cf_firewall_status)
+        if [ "$fw_status" = "enabled" ]; then
+            echo -e "11. CF 防火墙 🛡️  ${gl_lv}[已启用]${gl_bai} — 点击关闭"
+        else
+            echo -e "11. CF 防火墙 🛡️  ${gl_hong}[未启用]${gl_bai} — 点击启用（防 DDoS）"
+        fi
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-10]: " choice
+        read -e -p "请选择操作 [0-11]: " choice
 
         case $choice in
             1)
@@ -19058,6 +19065,9 @@ manage_caddy() {
             10)
                 caddy_uninstall
                 ;;
+            11)
+                caddy_cf_firewall_toggle
+                ;;
             0)
                 return
                 ;;
@@ -19067,6 +19077,133 @@ manage_caddy() {
                 ;;
         esac
     done
+}
+
+# =====================================================
+# Caddy CF 防火墙（80/443 只允许 Cloudflare IP）
+# =====================================================
+
+# Cloudflare 官方 IPv4 段（https://www.cloudflare.com/ips-v4/）
+readonly CF_IPV4_RANGES="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
+
+# 检测 CF 防火墙状态
+caddy_cf_firewall_status() {
+    if iptables -L CF-ONLY -n &>/dev/null 2>&1; then
+        # 链存在，检查 INPUT 是否引用了它
+        if iptables -L INPUT -n 2>/dev/null | grep -q "CF-ONLY"; then
+            echo "enabled"
+        else
+            echo "disabled"
+        fi
+    else
+        echo "disabled"
+    fi
+}
+
+# 启用 CF 防火墙
+caddy_cf_firewall_enable() {
+    echo -e "${gl_kjlan}正在配置 Cloudflare 防火墙...${gl_bai}"
+    echo ""
+    echo "此操作将："
+    echo "  • 锁定 80/443 端口，只允许 Cloudflare IP 访问"
+    echo "  • 攻击者直连你的 IP 将被 DROP（无响应）"
+    echo "  • 其他端口（SSH/Snell/VLESS/Realm）完全不受影响"
+    echo ""
+
+    read -e -p "$(echo -e "${gl_huang}确认启用? (y/n) [y]: ${gl_bai}")" confirm
+    confirm=${confirm:-y}
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    # 清理旧规则（如果有）
+    iptables -D INPUT -p tcp --dport 80 -j CF-ONLY 2>/dev/null
+    iptables -D INPUT -p tcp --dport 443 -j CF-ONLY 2>/dev/null
+    iptables -F CF-ONLY 2>/dev/null
+    iptables -X CF-ONLY 2>/dev/null
+
+    # 创建 CF-ONLY 链
+    iptables -N CF-ONLY
+
+    # 添加 Cloudflare IP 段
+    local count=0
+    for cidr in $CF_IPV4_RANGES; do
+        iptables -A CF-ONLY -s "$cidr" -j ACCEPT
+        ((count++))
+    done
+
+    # 非 CF IP 直接丢弃
+    iptables -A CF-ONLY -j DROP
+
+    # 把 80/443 入站导入 CF-ONLY 链
+    iptables -I INPUT -p tcp --dport 80 -j CF-ONLY
+    iptables -I INPUT -p tcp --dport 443 -j CF-ONLY
+
+    echo -e "${gl_lv}✅ 已添加 ${count} 个 Cloudflare IP 段${gl_bai}"
+
+    # 持久化
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save &>/dev/null
+        echo -e "${gl_lv}✅ 规则已持久化（重启不丢失）${gl_bai}"
+    else
+        echo -e "${gl_huang}正在安装 iptables-persistent...${gl_bai}"
+        DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent &>/dev/null
+        if command -v netfilter-persistent &>/dev/null; then
+            netfilter-persistent save &>/dev/null
+            echo -e "${gl_lv}✅ 规则已持久化（重启不丢失）${gl_bai}"
+        else
+            echo -e "${gl_hong}⚠️ 持久化工具安装失败，重启后需重新启用${gl_bai}"
+        fi
+    fi
+
+    echo ""
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}  ✅ CF 防火墙已启用${gl_bai}"
+    echo -e "${gl_lv}  80/443 现在只接受 Cloudflare 流量${gl_bai}"
+    echo -e "${gl_lv}  其他端口不受影响${gl_bai}"
+    echo -e "${gl_lv}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    break_end
+}
+
+# 关闭 CF 防火墙
+caddy_cf_firewall_disable() {
+    echo -e "${gl_huang}正在关闭 Cloudflare 防火墙...${gl_bai}"
+
+    read -e -p "$(echo -e "${gl_hong}关闭后 80/443 将对所有 IP 开放，确认? (y/n) [n]: ${gl_bai}")" confirm
+    confirm=${confirm:-n}
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        break_end
+        return
+    fi
+
+    # 移除 INPUT 链中的引用
+    iptables -D INPUT -p tcp --dport 80 -j CF-ONLY 2>/dev/null
+    iptables -D INPUT -p tcp --dport 443 -j CF-ONLY 2>/dev/null
+
+    # 清空并删除 CF-ONLY 链
+    iptables -F CF-ONLY 2>/dev/null
+    iptables -X CF-ONLY 2>/dev/null
+
+    # 持久化
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save &>/dev/null
+    fi
+
+    echo -e "${gl_lv}✅ CF 防火墙已关闭，80/443 对所有 IP 开放${gl_bai}"
+    break_end
+}
+
+# CF 防火墙菜单入口
+caddy_cf_firewall_toggle() {
+    local fw_status=$(caddy_cf_firewall_status)
+    if [ "$fw_status" = "enabled" ]; then
+        caddy_cf_firewall_disable
+    else
+        caddy_cf_firewall_enable
+    fi
 }
 
 # =====================================================
