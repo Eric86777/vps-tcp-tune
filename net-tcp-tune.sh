@@ -6273,16 +6273,17 @@ ai_proxy_menu() {
         echo "4. Fuclaude 部署管理 (Claude网页版共享)"
         echo "5. Sub2API 部署管理"
         echo "6. Caddy 多域名反代"
-        echo "7. OpenClaw 部署管理 (AI多渠道消息网关)"
-        echo "8. OpenAI Responses API 转换代理"
-        echo "9. Codex Console 部署管理 (OpenAI批量注册)"
-        echo "10. CLIProxyAPI 部署管理 (CLI转API代理)"
-        echo "11. OAI2 部署管理 (令牌注册面板)"
+        echo "7. Cloudflare Tunnel 管理 🆕"
+        echo "8. OpenClaw 部署管理 (AI多渠道消息网关)"
+        echo "9. OpenAI Responses API 转换代理"
+        echo "10. Codex Console 部署管理 (OpenAI批量注册)"
+        echo "11. CLIProxyAPI 部署管理 (CLI转API代理)"
+        echo "12. OAI2 部署管理 (令牌注册面板)"
         echo ""
         echo "0. 返回主菜单"
         echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
 
-        read -e -p "请选择操作 [0-11]: " choice
+        read -e -p "请选择操作 [0-12]: " choice
 
         case $choice in
             1)
@@ -6304,18 +6305,21 @@ ai_proxy_menu() {
                 manage_caddy
                 ;;
             7)
-                manage_openclaw
+                manage_cf_tunnel
                 ;;
             8)
-                manage_resp_proxy
+                manage_openclaw
                 ;;
             9)
-                manage_codex_console
+                manage_resp_proxy
                 ;;
             10)
-                manage_cliproxyapi
+                manage_codex_console
                 ;;
             11)
+                manage_cliproxyapi
+                ;;
+            12)
                 manage_oai2
                 ;;
             0)
@@ -6483,7 +6487,7 @@ show_main_menu() {
     echo "31. 科技lion高性能模式"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━ AI 代理服务 ━━━━━━━━━${gl_bai}"
-    echo "32. AI代理工具箱 ▶ (Claude/WebUI/CRS/Fuclaude/Caddy) ⭐ 推荐"
+    echo "32. AI代理工具箱 ▶ (Claude/WebUI/CRS/Fuclaude/Caddy/CF-Tunnel) ⭐ 推荐"
     echo ""
     echo -e "${gl_kjlan}━━━━━━━━━ 一键优化 ━━━━━━━━━${gl_bai}"
     echo "66. ⭐ 一键全自动优化 (BBR v3 + 网络调优)"
@@ -12291,17 +12295,17 @@ check_substore_docker() {
         esac
     fi
     
-    if ! command -v docker compose &> /dev/null && ! command -v docker-compose &> /dev/null; then
-        echo -e "${gl_huang}Docker Compose 未安装，尝试安装...${gl_bai}"
-        # Docker Compose v2 通常随 Docker 一起安装
-        if docker compose version &>/dev/null; then
-            echo -e "${gl_lv}✅ Docker Compose 已可用${gl_bai}"
-        else
-            echo -e "${gl_hong}❌ Docker Compose 不可用，请手动安装${gl_bai}"
-            return 1
-        fi
+    # Bug 修复:command -v 对子命令无效,直接调 compose version 检测
+    if docker compose version &>/dev/null; then
+        : # v2 可用
+    elif command -v docker-compose &>/dev/null && docker-compose version &>/dev/null; then
+        : # v1 兼容
+    else
+        echo -e "${gl_hong}❌ Docker Compose 不可用(v2 子命令和 v1 二进制都未检测到)${gl_bai}"
+        echo -e "${gl_huang}提示:Docker Compose v2 通常随 Docker CE 一起安装,如缺失请重装 Docker${gl_bai}"
+        return 1
     fi
-    
+
     return 0
 }
 
@@ -12403,41 +12407,12 @@ install_substore_instance() {
         break
     done
     
-    echo -e "${gl_lv}✅ 后端 API 端口: $api_port${gl_bai}"
+    echo -e "${gl_lv}✅ 服务端口: $api_port (前后端共用,BACKEND_MERGE 模式)${gl_bai}"
     echo ""
-    
-    # 输入 HTTP-META 端口
-    local http_port
-    local default_http_port=9876
-    while true; do
-        read -e -p "请输入 HTTP-META 端口（回车使用默认 $default_http_port）: " http_port
-        
-        if [ -z "$http_port" ]; then
-            http_port=$default_http_port
-            echo -e "${gl_huang}使用默认端口: $http_port${gl_bai}"
-        fi
-        
-        if ! validate_substore_port "$http_port"; then
-            echo -e "${gl_hong}端口号无效${gl_bai}"
-            continue
-        fi
-        
-        if ! check_substore_port "$http_port"; then
-            echo -e "${gl_hong}端口 $http_port 已被占用${gl_bai}"
-            continue
-        fi
-        
-        if [ "$http_port" == "$api_port" ]; then
-            echo -e "${gl_hong}HTTP-META 端口不能与后端 API 端口相同${gl_bai}"
-            continue
-        fi
-        
-        break
-    done
-    
-    echo -e "${gl_lv}✅ HTTP-META 端口: $http_port${gl_bai}"
-    echo ""
-    
+
+    # Bug 修复:原来多收集一个 HTTP-META 端口但从未写入 compose(xream/sub-store:http-meta
+    # 镜像开启 BACKEND_MERGE 后前后端共用 API 端口),直接去掉该交互避免误导
+
     # 输入访问路径
     local access_path
     while true; do
@@ -12502,8 +12477,7 @@ install_substore_instance() {
     echo "=================================="
     echo "实例编号: $instance_num"
     echo "容器名称: sub-store-$instance_num"
-    echo "后端 API 端口: $api_port"
-    echo "HTTP-META 端口: $http_port"
+    echo "服务端口:  $api_port (前后端共用)"
     echo "访问路径: /$access_path"
     echo "数据目录: $data_dir"
     echo "=================================="
@@ -12626,19 +12600,19 @@ CFEOF
         
         case "$proxy_choice" in
             1)
-                # Cloudflare Tunnel 配置向导
-                configure_cf_tunnel "$instance_num" "$http_port" "$api_port" "$access_path" "$cf_tunnel_conf"
+                # Phase D:改用新模块的 Sub-Store 专用部署函数(基于 cf_helper_* 族)
+                # 原 configure_cf_tunnel 保留但不再被 Sub-Store 调用,作为历史兼容
+                cf_tunnel_deploy_for_substore "$instance_num" "$api_port" "$access_path"
                 ;;
             2)
                 echo ""
                 echo -e "${gl_huang}已跳过配置${gl_bai}"
-                echo "稍后可手动配置，配置文件位于："
-                echo "  - CF Tunnel: $cf_tunnel_conf"
+                echo "稍后可手动配置,推荐走菜单 32 → 7 → 2 添加隧道"
                 echo ""
                 ;;
             *)
                 echo ""
-                echo -e "${gl_huang}无效选择，已跳过配置${gl_bai}"
+                echo -e "${gl_huang}无效选择,已跳过配置${gl_bai}"
                 ;;
         esac
     else
@@ -13172,25 +13146,38 @@ uninstall_substore_instance() {
         return 1
     fi
     
+    # 先停止并清理关联的 Cloudflare Tunnel systemd 服务(Bug 修复:之前遗漏)
+    local cf_service="cloudflared-sub-store-$instance_num"
+    if systemctl list-unit-files 2>/dev/null | grep -q "^${cf_service}\.service"; then
+        echo "正在停止关联的 Cloudflare Tunnel 服务..."
+        systemctl stop "$cf_service" 2>/dev/null
+        systemctl disable "$cf_service" 2>/dev/null
+        rm -f "/etc/systemd/system/${cf_service}.service"
+        systemctl daemon-reload 2>/dev/null
+    fi
+
     echo "正在停止并删除容器..."
     docker compose -f "$config_file" down
-    
+
     if [[ "$delete_data" =~ ^[Yy]$ ]]; then
-        # 从配置文件中提取数据目录
-        local data_dir=$(grep -A 1 "volumes:" "$config_file" | tail -n 1 | awk -F':' '{print $1}' | xargs)
+        # 从配置文件中提取数据目录(Bug 修复:先去掉 "- " 前缀,避免 rm 失败)
+        local data_dir=$(grep -A 1 "volumes:" "$config_file" | tail -n 1 \
+            | sed 's/^[[:space:]]*-[[:space:]]*//' \
+            | awk -F':' '{print $1}' \
+            | xargs)
         if [ -n "$data_dir" ] && [ -d "$data_dir" ]; then
             echo "正在删除数据目录: $data_dir"
             rm -rf "$data_dir"
         fi
     fi
-    
+
     echo "正在删除配置文件..."
     rm -f "$config_file"
-    
+
     # 删除相关配置模板
     rm -f "/root/sub-store-nginx-$instance_num.conf"
     rm -f "/root/sub-store-cf-tunnel-$instance_num.yaml"
-    
+
     echo -e "${gl_lv}✅ 实例 $instance_name 已成功卸载${gl_bai}"
     
     break_end
@@ -13229,14 +13216,16 @@ list_substore_instances() {
         
         # 提取配置信息
         if [ -f "$config_file" ]; then
-            local http_port=$(grep "PORT:" "$config_file" | awk '{print $2}')
             local api_port=$(grep "SUB_STORE_BACKEND_API_PORT:" "$config_file" | awk '{print $2}')
             local access_path=$(grep "SUB_STORE_FRONTEND_BACKEND_PATH:" "$config_file" | awk '{print $2}')
-            local data_dir=$(grep -A 1 "volumes:" "$config_file" | tail -n 1 | awk -F':' '{print $1}' | xargs)
-            
+            # Bug 修复:volumes 解析去掉 "- " 前缀
+            local data_dir=$(grep -A 1 "volumes:" "$config_file" | tail -n 1 \
+                | sed 's/^[[:space:]]*-[[:space:]]*//' \
+                | awk -F':' '{print $1}' \
+                | xargs)
+
             echo "  容器名称: $container_name"
-            echo "  前端端口: $http_port (127.0.0.1)"
-            echo "  后端端口: $api_port (127.0.0.1)"
+            echo "  服务端口: $api_port (127.0.0.1,前后端共用)"
             echo "  访问路径: $access_path"
             echo "  数据目录: $data_dir"
             echo "  配置文件: $config_file"
@@ -13285,6 +13274,1406 @@ manage_substore() {
                 echo "无效的选择"
                 sleep 2
                 ;;
+        esac
+    done
+}
+
+#=============================================================================
+# Cloudflare Tunnel 通用 Helper 函数族
+# 供 Sub-Store / 一键反代 / manage_cf_tunnel 三处复用
+# 统一目录规范:/etc/cloudflared/{cert.pem,credentials/,configs/}
+#=============================================================================
+
+# ---- 统一路径常量 ----
+CF_HOME="/etc/cloudflared"
+CF_CREDENTIALS_DIR="$CF_HOME/credentials"
+CF_CONFIGS_DIR="$CF_HOME/configs"
+CF_CERT_FILE="$CF_HOME/cert.pem"
+CF_MANIFEST_FILE="$CF_HOME/manifest.json"
+CF_MIGRATE_MARKER="$CF_HOME/.migrated"
+CF_LEGACY_HOME="/root/.cloudflared"
+CF_LEGACY_CERT="$CF_LEGACY_HOME/cert.pem"
+CF_BINARY_PATH="/usr/local/bin/cloudflared"
+
+# 初始化目录骨架
+cf_helper_init_dirs() {
+    mkdir -p "$CF_CREDENTIALS_DIR" "$CF_CONFIGS_DIR"
+    chmod 700 "$CF_CREDENTIALS_DIR" 2>/dev/null
+    chmod 755 "$CF_HOME" "$CF_CONFIGS_DIR" 2>/dev/null
+    return 0
+}
+
+# 安装 cloudflared 二进制(支持 amd64/arm64/arm/386)
+# 用法:cf_helper_install_binary [--force]
+cf_helper_install_binary() {
+    local force=false
+    [ "$1" = "--force" ] && force=true
+
+    if [ "$force" = false ] && command -v cloudflared &>/dev/null; then
+        local current_ver
+        current_ver=$(cloudflared --version 2>/dev/null | head -1)
+        echo -e "${gl_lv}✅ cloudflared 已安装:${current_ver}${gl_bai}"
+        return 0
+    fi
+
+    local arch
+    arch=$(uname -m)
+    local asset
+    case "$arch" in
+        x86_64|amd64)           asset="cloudflared-linux-amd64" ;;
+        aarch64|arm64)          asset="cloudflared-linux-arm64" ;;
+        armv7l|armv6l|armhf|arm) asset="cloudflared-linux-arm" ;;
+        i386|i686)              asset="cloudflared-linux-386" ;;
+        *)
+            echo -e "${gl_hong}❌ 不支持的 CPU 架构:$arch${gl_bai}"
+            return 1
+            ;;
+    esac
+
+    local url="https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}"
+    echo "正在下载 cloudflared (${asset})..."
+
+    local tmp="${CF_BINARY_PATH}.tmp.$$"
+    if wget -q --show-progress -O "$tmp" "$url" && [ -s "$tmp" ]; then
+        chmod +x "$tmp"
+        mv "$tmp" "$CF_BINARY_PATH"
+        local ver
+        ver=$("$CF_BINARY_PATH" --version 2>/dev/null | head -1)
+        echo -e "${gl_lv}✅ 安装成功:${ver}${gl_bai}"
+        return 0
+    else
+        rm -f "$tmp"
+        echo -e "${gl_hong}❌ 下载 cloudflared 失败${gl_bai}"
+        return 1
+    fi
+}
+
+# 确保 CF 账户已授权(cert.pem 存在)
+# 不存在则引导用户走 cloudflared tunnel login
+cf_helper_ensure_auth() {
+    cf_helper_init_dirs
+
+    # 优先看新路径,再看老路径
+    if [ -f "$CF_CERT_FILE" ] || [ -f "$CF_LEGACY_CERT" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_huang}  需要授权 Cloudflare 账户${gl_bai}"
+    echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "使用前提:"
+    echo "  1. 已拥有一个域名(任何注册商购买均可)"
+    echo "  2. 该域名的 NS 已托管到 Cloudflare"
+    echo "     (cloudflare.com → Add a site → 按指引改 NS → 状态 Active)"
+    echo ""
+    echo "按回车将输出一个授权 URL,用浏览器打开登录并选择 zone。"
+    echo "若条件不满足,按 Ctrl+C 退出。"
+    echo ""
+    read -e -p "继续: "
+
+    cloudflared tunnel login
+    if [ $? -ne 0 ]; then
+        echo -e "${gl_hong}❌ 授权失败${gl_bai}"
+        return 1
+    fi
+
+    # cloudflared 登录默认把 cert.pem 写到 /root/.cloudflared,同步到新路径
+    if [ -f "$CF_LEGACY_CERT" ] && [ ! -f "$CF_CERT_FILE" ]; then
+        cp "$CF_LEGACY_CERT" "$CF_CERT_FILE"
+        chmod 600 "$CF_CERT_FILE"
+    fi
+
+    echo -e "${gl_lv}✅ Cloudflare 账户授权成功${gl_bai}"
+    return 0
+}
+
+# 查询隧道 UUID(按名字)
+# stdout: tunnel_id 或空
+cf_helper_get_tunnel_id() {
+    local tunnel_name=$1
+    [ -z "$tunnel_name" ] && return 1
+    cloudflared tunnel list 2>/dev/null | awk -v name="$tunnel_name" '
+        NR > 1 && $2 == name { print $1; exit }
+    '
+}
+
+# 创建隧道,同名冲突按 mode 处理
+# 用法:cf_helper_create_tunnel <tunnel_name> [interactive|reuse|recreate]
+# stdout: tunnel_id,返回 0 成功
+cf_helper_create_tunnel() {
+    local tunnel_name=$1
+    local mode=${2:-interactive}
+
+    # 名字格式校验
+    if ! [[ "$tunnel_name" =~ ^[_a-zA-Z0-9][-_.a-zA-Z0-9]{0,63}$ ]]; then
+        echo -e "${gl_hong}❌ 隧道名不合法(只允许 a-z A-Z 0-9 _ - . 开头非 -/.)${gl_bai}" >&2
+        return 1
+    fi
+
+    local existing_id
+    existing_id=$(cf_helper_get_tunnel_id "$tunnel_name")
+
+    if [ -n "$existing_id" ]; then
+        case "$mode" in
+            reuse)
+                echo "$existing_id"
+                return 0
+                ;;
+            recreate)
+                local svc="cloudflared-$tunnel_name"
+                systemctl stop "$svc" 2>/dev/null
+                systemctl disable "$svc" 2>/dev/null
+                rm -f "/etc/systemd/system/${svc}.service"
+                systemctl daemon-reload 2>/dev/null
+                rm -f "$CF_CREDENTIALS_DIR/$existing_id.json" \
+                      "$CF_LEGACY_HOME/$existing_id.json"
+                cloudflared tunnel cleanup "$tunnel_name" 2>/dev/null
+                sleep 1
+                cloudflared tunnel delete -f "$tunnel_name" 2>/dev/null
+                sleep 1
+                ;;
+            *)
+                echo -e "${gl_huang}同名隧道已存在(ID: $existing_id)${gl_bai}" >&2
+                echo "" >&2
+                echo -e "${gl_huang}⚠️  注意:选 1 复用会让新配置覆盖老 ingress(调用方会写新 yaml)${gl_bai}" >&2
+                echo -e "${gl_huang}    如果你想往老隧道加新域名/规则,应选 0 取消后用菜单 4「修改 ingress」${gl_bai}" >&2
+                echo "" >&2
+                echo "1. 复用现有隧道(新配置覆盖老配置)" >&2
+                echo "2. 删除后重建" >&2
+                echo "3. 取消" >&2
+                local choice
+                read -e -p "请选择 [1-3]: " choice
+                case "$choice" in
+                    1) echo "$existing_id"; return 0 ;;
+                    2) cf_helper_create_tunnel "$tunnel_name" recreate; return $? ;;
+                    *) return 1 ;;
+                esac
+                ;;
+        esac
+    fi
+
+    local output
+    output=$(cloudflared tunnel create "$tunnel_name" 2>&1)
+    local rc=$?
+
+    if [ $rc -ne 0 ]; then
+        echo -e "${gl_hong}❌ 创建隧道失败:${gl_bai}" >&2
+        echo "$output" >&2
+        if echo "$output" | grep -qi "already exists"; then
+            echo -e "${gl_huang}提示:CF 控制面或本地凭证残留,请到 Dashboard 手动清理或换名${gl_bai}" >&2
+        fi
+        return 1
+    fi
+
+    # 解析 UUID
+    local new_id
+    new_id=$(echo "$output" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+    [ -z "$new_id" ] && new_id=$(cf_helper_get_tunnel_id "$tunnel_name")
+
+    if [ -z "$new_id" ]; then
+        echo -e "${gl_hong}❌ 创建成功但无法解析 tunnel_id${gl_bai}" >&2
+        return 1
+    fi
+
+    # 凭证 JSON 从默认位置同步到 /etc/cloudflared/credentials/
+    cf_helper_init_dirs
+    local default_cred="$CF_LEGACY_HOME/$new_id.json"
+    local target_cred="$CF_CREDENTIALS_DIR/$new_id.json"
+    if [ -f "$default_cred" ] && [ ! -f "$target_cred" ]; then
+        cp "$default_cred" "$target_cred"
+        chmod 600 "$target_cred"
+    fi
+
+    echo "$new_id"
+    return 0
+}
+
+# 路由 DNS(支持预检提示)
+# 用法:cf_helper_route_dns <tunnel_id> <hostname>
+cf_helper_route_dns() {
+    local tunnel_id=$1
+    local hostname=$2
+
+    local output
+    output=$(cloudflared tunnel route dns "$tunnel_id" "$hostname" 2>&1)
+    local rc=$?
+
+    if [ $rc -ne 0 ]; then
+        if echo "$output" | grep -qi "already exists"; then
+            echo -e "${gl_huang}⚠️  域名 $hostname 已有冲突 DNS 记录${gl_bai}" >&2
+            echo -e "${gl_huang}   请到 CF Dashboard 手动删除旧记录,或改用其他子域名${gl_bai}" >&2
+        else
+            echo -e "${gl_hong}❌ DNS 路由失败:${gl_bai}" >&2
+            echo "$output" >&2
+        fi
+        return 1
+    fi
+    return 0
+}
+
+# 撤销 DNS(cloudflared 不原生支持,只做提示+尝试 API)
+cf_helper_delete_dns() {
+    local hostname=$1
+    echo -e "${gl_huang}⚠️  cloudflared 不自动删 DNS,请手动到 CF Dashboard 删除 $hostname 的 CNAME${gl_bai}"
+    return 0
+}
+
+# 生成 config.yml(接受 ingress 规则数组,每项格式 hostname|path|service)
+# 用法:
+#   rules=("sub.example.com||http://127.0.0.1:3001")
+#   cf_helper_write_config <config_file> <tunnel_id> <cred_file> "${rules[@]}"
+cf_helper_write_config() {
+    local config_file=$1
+    local tunnel_id=$2
+    local cred_file=$3
+    shift 3
+    local rules=("$@")
+
+    local tmp
+    tmp=$(mktemp)
+    {
+        echo "tunnel: $tunnel_id"
+        echo "credentials-file: $cred_file"
+        echo ""
+        echo "ingress:"
+        local rule host path svc
+        for rule in "${rules[@]}"; do
+            IFS='|' read -r host path svc <<< "$rule"
+            echo "  - hostname: $host"
+            if [ -n "$path" ]; then
+                # path 前缀自动加 ^(Go 正则前缀匹配)
+                [[ "$path" != ^* ]] && path="^${path}"
+                echo "    path: $path"
+            fi
+            echo "    service: $svc"
+        done
+        echo "  - service: http_status:404"
+    } > "$tmp"
+
+    # ingress validate(预飞检查)
+    if cloudflared tunnel --config "$tmp" ingress validate &>/dev/null; then
+        mv "$tmp" "$config_file"
+        chmod 644 "$config_file"
+        return 0
+    else
+        echo -e "${gl_hong}❌ ingress 配置校验失败:${gl_bai}" >&2
+        cloudflared tunnel --config "$tmp" ingress validate 2>&1 >&2
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# 写 systemd unit + enable + start + 活性校验
+# 用法:cf_helper_write_systemd <tunnel_name> <config_file> [description]
+cf_helper_write_systemd() {
+    local tunnel_name=$1
+    local config_file=$2
+    local description=${3:-"Cloudflare Tunnel: $tunnel_name"}
+    local service_name="cloudflared-$tunnel_name"
+    local service_file="/etc/systemd/system/${service_name}.service"
+
+    # 对 Description 做防御性转义:剥离可能被 systemd 解析的 $ ` " 等
+    local safe_desc="${description//\$/}"
+    safe_desc="${safe_desc//\`/}"
+    safe_desc="${safe_desc//\"/}"
+
+    cat > "$service_file" << SVCEOF
+[Unit]
+Description=$safe_desc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=$CF_BINARY_PATH --config "$config_file" --no-autoupdate tunnel run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+    systemctl daemon-reload
+    systemctl enable "$service_name" 2>/dev/null
+    systemctl start "$service_name"
+
+    # 轮询最多 10 秒,慢 VPS 友好(原 sleep 3 对慢 VPS 不够)
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        systemctl is-active --quiet "$service_name" && break
+    done
+
+    if systemctl is-active --quiet "$service_name"; then
+        echo -e "${gl_lv}✅ 服务启动成功:$service_name${gl_bai}"
+        return 0
+    else
+        echo -e "${gl_hong}❌ 服务启动失败,最近 20 行日志:${gl_bai}" >&2
+        journalctl -u "$service_name" -n 20 --no-pager 2>/dev/null >&2
+        return 1
+    fi
+}
+
+# 统一服务控制(start/stop/restart/status/logs)
+# 用法:cf_helper_service_ctl <tunnel_name> <action>
+cf_helper_service_ctl() {
+    local tunnel_name=$1
+    local action=$2
+    local svc="cloudflared-$tunnel_name"
+
+    case "$action" in
+        start|stop|restart|enable|disable)
+            systemctl "$action" "$svc"
+            ;;
+        status)
+            systemctl status "$svc" --no-pager
+            ;;
+        is-active)
+            systemctl is-active --quiet "$svc"
+            ;;
+        logs)
+            journalctl -u "$svc" -f --no-pager
+            ;;
+        *)
+            echo "未知 action: $action" >&2
+            return 1
+            ;;
+    esac
+}
+
+# 老配置迁移:从 /root/.cloudflared 及散落的 yaml 搬到 /etc/cloudflared
+# 幂等,已迁移过则直接返回。成功后写入 .migrated 标志文件。
+cf_helper_migrate_legacy() {
+    [ -f "$CF_MIGRATE_MARKER" ] && return 0
+
+    # Fast-path:如果老路径都没东西,不创建 /etc/cloudflared(避免全新 VPS 污染)
+    # 下次启动脚本会再跑一遍,但只是几个 test/ls 命令,成本可忽略
+    local has_legacy=false
+    [ -d "$CF_LEGACY_HOME" ] && has_legacy=true
+    ls /root/sub-store-cf-tunnel-*.yaml 2>/dev/null | grep -q . && has_legacy=true
+    [ -d /root/reverse-proxy-configs/cf-tunnel ] && has_legacy=true
+
+    if [ "$has_legacy" = false ]; then
+        return 0
+    fi
+
+    cf_helper_init_dirs
+
+    local backup_dir="$CF_HOME/.backup-$(date +%Y%m%d-%H%M%S)"
+    local migrated=0
+    # 懒建备份目录:只在实际有东西搬时才 mkdir,避免空备份目录
+    mkdir -p "$backup_dir"
+
+    # 1. cert.pem
+    if [ -f "$CF_LEGACY_CERT" ] && [ ! -f "$CF_CERT_FILE" ]; then
+        cp "$CF_LEGACY_CERT" "$backup_dir/cert.pem"
+        cp "$CF_LEGACY_CERT" "$CF_CERT_FILE"
+        chmod 600 "$CF_CERT_FILE"
+        migrated=$((migrated + 1))
+    fi
+
+    # 2. 凭证 JSON
+    if [ -d "$CF_LEGACY_HOME" ]; then
+        local cred
+        for cred in "$CF_LEGACY_HOME"/*.json; do
+            [ -f "$cred" ] || continue
+            local fname
+            fname=$(basename "$cred")
+            if [ ! -f "$CF_CREDENTIALS_DIR/$fname" ]; then
+                cp "$cred" "$backup_dir/$fname"
+                cp "$cred" "$CF_CREDENTIALS_DIR/$fname"
+                chmod 600 "$CF_CREDENTIALS_DIR/$fname"
+                migrated=$((migrated + 1))
+            fi
+        done
+    fi
+
+    # 3. Sub-Store CF tunnel yaml
+    local yaml fname target
+    for yaml in /root/sub-store-cf-tunnel-*.yaml; do
+        [ -f "$yaml" ] || continue
+        fname=$(basename "$yaml")
+        target="$CF_CONFIGS_DIR/$fname"
+        if [ ! -f "$target" ]; then
+            cp "$yaml" "$backup_dir/$fname"
+            # 替换 credentials-file 路径指向新目录
+            sed "s|$CF_LEGACY_HOME|$CF_CREDENTIALS_DIR|g" "$yaml" > "$target"
+            chmod 644 "$target"
+            migrated=$((migrated + 1))
+        fi
+    done
+
+    # 4. 通用反代 yaml
+    if [ -d /root/reverse-proxy-configs/cf-tunnel ]; then
+        for yaml in /root/reverse-proxy-configs/cf-tunnel/*.yaml; do
+            [ -f "$yaml" ] || continue
+            fname=$(basename "$yaml")
+            target="$CF_CONFIGS_DIR/$fname"
+            if [ ! -f "$target" ]; then
+                cp "$yaml" "$backup_dir/$fname"
+                sed "s|$CF_LEGACY_HOME|$CF_CREDENTIALS_DIR|g" "$yaml" > "$target"
+                chmod 644 "$target"
+                migrated=$((migrated + 1))
+            fi
+        done
+    fi
+
+    # 5. 更新 systemd unit 的 --config 路径
+    local svc
+    for svc in /etc/systemd/system/cloudflared-*.service; do
+        [ -f "$svc" ] || continue
+        if grep -q 'ExecStart=.*--config /root/' "$svc" 2>/dev/null; then
+            cp "$svc" "$backup_dir/$(basename "$svc")"
+            sed -i -E \
+                -e "s|--config /root/sub-store-cf-tunnel-([0-9]+)\.yaml|--config $CF_CONFIGS_DIR/sub-store-cf-tunnel-\1.yaml|g" \
+                -e "s|--config /root/reverse-proxy-configs/cf-tunnel/|--config $CF_CONFIGS_DIR/|g" \
+                "$svc"
+            migrated=$((migrated + 1))
+        fi
+    done
+
+    # 如果没搬任何东西,删掉空备份目录
+    [ $migrated -eq 0 ] && rmdir "$backup_dir" 2>/dev/null
+
+    if [ $migrated -gt 0 ]; then
+        systemctl daemon-reload 2>/dev/null
+        echo -e "${gl_lv}✅ CF Tunnel 配置迁移完成:共 $migrated 项${gl_bai}"
+        echo -e "${gl_huang}   备份目录:$backup_dir${gl_bai}"
+    fi
+
+    touch "$CF_MIGRATE_MARKER"
+    return 0
+}
+
+#=============================================================================
+# manage_cf_tunnel — Cloudflare Tunnel 管理菜单(AI 代理工具箱第 7 项)
+#=============================================================================
+
+# ---- 内部工具函数 ----
+
+# 扫描所有 cloudflared-* systemd 服务,输出 tunnel name 每行一个
+_cf_list_tunnel_names() {
+    systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+        | awk '{print $1}' \
+        | grep -E '^cloudflared-.+\.service$' \
+        | sed -E 's|^cloudflared-(.+)\.service$|\1|' \
+        | sort -u
+}
+
+# 从 systemd unit 解析 --config 路径
+_cf_get_config_from_service() {
+    local service=$1
+    local unit="/etc/systemd/system/${service}.service"
+    [ -f "$unit" ] || return 1
+    grep -oE -- '--config [^ ]+\.(yaml|yml)' "$unit" | awk '{print $2}' | head -1
+}
+
+# 从 config yaml 读单个字段(tunnel / credentials-file 等)
+_cf_get_yaml_field() {
+    local yaml=$1 field=$2
+    [ -f "$yaml" ] || return 1
+    grep -E "^${field}:" "$yaml" | head -1 | awk '{print $2}'
+}
+
+# 从 config yaml 提取所有 hostname
+_cf_get_yaml_hostnames() {
+    local yaml=$1
+    [ -f "$yaml" ] || return 1
+    grep -E '^[[:space:]]*-[[:space:]]*hostname:' "$yaml" | awk '{print $3}' | sort -u
+}
+
+# 让用户从列表选一个隧道
+# stdout: tunnel_name;非零退出表示取消
+_cf_pick_tunnel() {
+    local names
+    names=$(_cf_list_tunnel_names)
+    if [ -z "$names" ]; then
+        echo -e "${gl_huang}暂无已部署的隧道${gl_bai}" >&2
+        return 1
+    fi
+
+    local -a arr=()
+    local i=0 n svc
+    while IFS= read -r n; do
+        [ -z "$n" ] && continue
+        arr+=("$n")
+        i=$((i + 1))
+        svc="cloudflared-$n"
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            echo -e "  $i. $n ${gl_lv}[运行中]${gl_bai}" >&2
+        else
+            echo -e "  $i. $n ${gl_hong}[已停止]${gl_bai}" >&2
+        fi
+    done <<< "$names"
+
+    echo "" >&2
+    local choice
+    read -e -p "请选择编号(0 取消): " choice
+    if [ -z "$choice" ] || [ "$choice" = "0" ]; then
+        return 1
+    fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#arr[@]} ]; then
+        echo -e "${gl_hong}无效的选择${gl_bai}" >&2
+        return 1
+    fi
+    echo "${arr[$((choice - 1))]}"
+    return 0
+}
+
+# 部署失败回滚:按已创建的资源逆序清理(解决 P0-3)
+# 用法:_cf_rollback_partial_deploy <tunnel_name> <tunnel_id> [dns_domain] [config_file]
+# 空字符串表示该步没完成,跳过对应清理
+_cf_rollback_partial_deploy() {
+    local tunnel_name=$1
+    local tunnel_id=$2
+    local dns_domain=$3
+    local config_file=$4
+    local service_name="cloudflared-$tunnel_name"
+
+    echo ""
+    echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_huang}  检测到部署失败,正在回滚...${gl_bai}"
+    echo -e "${gl_huang}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+    # 1. 停并删 systemd
+    if [ -f "/etc/systemd/system/${service_name}.service" ]; then
+        systemctl stop "$service_name" 2>/dev/null
+        systemctl disable "$service_name" 2>/dev/null
+        rm -f "/etc/systemd/system/${service_name}.service"
+        systemctl daemon-reload 2>/dev/null
+    fi
+
+    # 2. 删 config yaml
+    [ -n "$config_file" ] && [ -f "$config_file" ] && rm -f "$config_file"
+
+    # 3. 删 CF 云端隧道 + 本地凭证
+    if [ -n "$tunnel_id" ]; then
+        # 先 soft delete,若有活跃连接 fallback force
+        cloudflared tunnel delete "$tunnel_name" 2>/dev/null \
+            || cloudflared tunnel delete -f "$tunnel_name" 2>/dev/null
+        rm -f "$CF_CREDENTIALS_DIR/$tunnel_id.json" "$CF_LEGACY_HOME/$tunnel_id.json"
+    fi
+
+    # 4. DNS 记录需手动清(cloudflared 不支持自动删)
+    if [ -n "$dns_domain" ]; then
+        echo -e "${gl_huang}⚠️  DNS CNAME 需手动到 CF Dashboard 删除: $dns_domain${gl_bai}"
+    fi
+
+    echo -e "${gl_lv}✅ 已回滚,可重新尝试${gl_bai}"
+}
+
+# ---- [1] 安装 + 登录 ----
+cf_tunnel_install_and_auth() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  安装 cloudflared + 登录 CF 账户${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    cf_helper_install_binary || { break_end; return 1; }
+    echo ""
+    cf_helper_ensure_auth || { break_end; return 1; }
+    echo ""
+    echo -e "${gl_lv}✅ 准备就绪,现在可以添加隧道了${gl_bai}"
+    break_end
+}
+
+# ---- [2] 添加新隧道(6 步向导) ----
+cf_tunnel_add() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  添加新隧道反代${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # --- 前置检查 ---
+    echo -e "${gl_zi}[前置检查]${gl_bai}"
+    if ! command -v cloudflared &>/dev/null; then
+        echo -e "  cloudflared: ${gl_huang}未安装${gl_bai}"
+        local install_now
+        read -e -p "  是否现在自动安装?(Y/n): " install_now
+        if [[ ! "$install_now" =~ ^[Nn]$ ]]; then
+            cf_helper_install_binary || { break_end; return 1; }
+        else
+            echo "已取消"; break_end; return 1
+        fi
+    else
+        echo -e "  cloudflared: ${gl_lv}✅ 已安装${gl_bai}"
+    fi
+
+    if [ ! -f "$CF_CERT_FILE" ] && [ ! -f "$CF_LEGACY_CERT" ]; then
+        echo -e "  CF 授权: ${gl_huang}未登录${gl_bai}"
+        echo ""
+        cf_helper_ensure_auth || { break_end; return 1; }
+    else
+        echo -e "  CF 授权: ${gl_lv}✅ 已登录${gl_bai}"
+    fi
+    echo ""
+
+    # --- 步骤 1/6 ---
+    echo -e "${gl_zi}[步骤 1/6] 隧道名称${gl_bai}"
+    echo "  只允许 a-z A-Z 0-9 _ - .,开头非 -/.,长度 1-64"
+    local default_name="tunnel-$(openssl rand -hex 4 2>/dev/null || echo $RANDOM)"
+    echo "  留空使用随机: $default_name"
+    echo ""
+    local tunnel_name
+    while true; do
+        read -e -p "请输入: " tunnel_name
+        [ -z "$tunnel_name" ] && tunnel_name="$default_name"
+        if [[ ! "$tunnel_name" =~ ^[_a-zA-Z0-9][-_.a-zA-Z0-9]{0,63}$ ]]; then
+            echo -e "${gl_hong}❌ 名字不合法${gl_bai}"
+            continue
+        fi
+        # 防止和已存在服务重名
+        if systemctl list-unit-files "cloudflared-${tunnel_name}.service" 2>/dev/null | grep -q "cloudflared-${tunnel_name}"; then
+            echo -e "${gl_hong}❌ 已有同名隧道服务,换一个名字${gl_bai}"
+            continue
+        fi
+        break
+    done
+    echo -e "${gl_lv}✅ $tunnel_name${gl_bai}"
+    echo ""
+
+    # --- 步骤 2/6 ---
+    echo -e "${gl_zi}[步骤 2/6] 反代目标${gl_bai}"
+    echo "  支持:端口号(如 3001,自动补 http://127.0.0.1:)或完整 URL(http(s)://host:port)"
+    echo ""
+    local backend
+    while true; do
+        read -e -p "请输入: " backend
+        if [ -z "$backend" ]; then
+            echo -e "${gl_hong}❌ 不能为空${gl_bai}"; continue
+        fi
+        if [[ "$backend" =~ ^[0-9]+$ ]]; then
+            if [ "$backend" -lt 1 ] || [ "$backend" -gt 65535 ]; then
+                echo -e "${gl_hong}❌ 端口超范围${gl_bai}"; continue
+            fi
+            local port=$backend
+            backend="http://127.0.0.1:$backend"
+            if ss -tuln 2>/dev/null | grep -q ":$port " || netstat -tuln 2>/dev/null | grep -q ":$port "; then
+                echo -e "${gl_lv}  ✅ 端口 $port 监听中${gl_bai}"
+            else
+                echo -e "${gl_huang}  ⚠️  端口 $port 当前没有服务监听${gl_bai}"
+                local cont
+                read -e -p "  是否继续?(y/N): " cont
+                [[ ! "$cont" =~ ^[Yy]$ ]] && continue
+            fi
+        elif [[ "$backend" =~ ^https?://.+ ]]; then
+            :
+        else
+            echo -e "${gl_hong}❌ 格式不对,请输入端口号或 http(s):// URL${gl_bai}"; continue
+        fi
+        break
+    done
+    echo -e "${gl_lv}✅ $backend${gl_bai}"
+    echo ""
+
+    # --- 步骤 3/6 ---
+    echo -e "${gl_zi}[步骤 3/6] 路由模式${gl_bai}"
+    echo ""
+    echo "  1. 整站反代(推荐) ← 域名所有请求转发到上面的地址"
+    echo "  2. 按路径分流(高级) ← 不同 URL 路径分给不同后端"
+    echo ""
+    local route_mode
+    read -e -p "请选择 [1/2](默认 1): " route_mode
+    route_mode=${route_mode:-1}
+
+    local -a extra_rules=()
+    if [ "$route_mode" = "2" ]; then
+        echo ""
+        echo "开始添加路由规则(每条 = 一个「路径前缀 → 后端」)"
+        local rule_num=1 rule_path rule_backend
+        while true; do
+            echo ""
+            echo "第 $rule_num 条规则:"
+            read -e -p "  路径前缀(如 /api): " rule_path
+            if [ -z "$rule_path" ]; then
+                echo -e "${gl_hong}  ❌ 路径不能为空${gl_bai}"; continue
+            fi
+            [[ "$rule_path" != /* ]] && rule_path="/$rule_path"
+            read -e -p "  这些请求转给哪(端口号或完整地址): " rule_backend
+            if [[ "$rule_backend" =~ ^[0-9]+$ ]]; then
+                # P1-6 修复:端口号需在 1-65535 范围
+                if [ "$rule_backend" -lt 1 ] || [ "$rule_backend" -gt 65535 ]; then
+                    echo -e "${gl_hong}  ❌ 端口超范围(1-65535)${gl_bai}"; continue
+                fi
+                rule_backend="http://127.0.0.1:$rule_backend"
+            elif [[ ! "$rule_backend" =~ ^https?:// ]]; then
+                echo -e "${gl_hong}  ❌ 后端格式错${gl_bai}"; continue
+            fi
+            # 路径长度防御:超长路径(>256)拒绝
+            if [ ${#rule_path} -gt 256 ]; then
+                echo -e "${gl_hong}  ❌ 路径过长${gl_bai}"; continue
+            fi
+            extra_rules+=("$rule_path|$rule_backend")
+            echo -e "${gl_lv}  ✅ $rule_path → $rule_backend${gl_bai}"
+            rule_num=$((rule_num + 1))
+            local more
+            read -e -p "继续加一条?(y/N): " more
+            [[ ! "$more" =~ ^[Yy]$ ]] && break
+        done
+        echo ""
+        echo -e "${gl_huang}兜底规则将自动加:其他所有路径 → $backend${gl_bai}"
+    fi
+    echo ""
+
+    # --- 步骤 4/6 ---
+    echo -e "${gl_zi}[步骤 4/6] 域名${gl_bai}"
+    echo "  必须已托管到 Cloudflare(否则 DNS 路由会失败)"
+    echo ""
+    local domain
+    while true; do
+        read -e -p "请输入 FQDN (如 sub.example.com): " domain
+        if [ -z "$domain" ]; then
+            echo -e "${gl_hong}❌ 域名不能为空${gl_bai}"; continue
+        fi
+        if ! [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]]; then
+            echo -e "${gl_hong}❌ 域名格式不对${gl_bai}"; continue
+        fi
+        break
+    done
+    echo -e "${gl_lv}✅ $domain${gl_bai}"
+    echo ""
+
+    # 生成 ingress 规则
+    local -a rules=()
+    if [ "$route_mode" = "2" ]; then
+        local ex
+        for ex in "${extra_rules[@]}"; do
+            rules+=("$domain|${ex%%|*}|${ex#*|}")
+        done
+        rules+=("$domain||$backend")
+    else
+        rules+=("$domain||$backend")
+    fi
+
+    # --- 步骤 5/6 ---
+    echo -e "${gl_zi}[步骤 5/6] 确认${gl_bai}"
+    echo ""
+    echo "  隧道名称: $tunnel_name"
+    echo "  域名:     https://$domain"
+    echo "  ingress 规则:"
+    local r host path svc
+    for r in "${rules[@]}"; do
+        IFS='|' read -r host path svc <<< "$r"
+        if [ -n "$path" ]; then
+            echo "    $path → $svc"
+        else
+            echo "    * (兜底) → $svc"
+        fi
+    done
+    echo ""
+    local confirm
+    read -e -p "确认开始部署?(Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo "已取消"; break_end; return 1
+    fi
+    echo ""
+
+    # --- 步骤 6/6:执行 ---
+    echo -e "${gl_zi}[步骤 6/6] 部署中${gl_bai}"
+    echo ""
+
+    echo "  [1/5] 创建隧道..."
+    local tunnel_id
+    tunnel_id=$(cf_helper_create_tunnel "$tunnel_name")
+    if [ -z "$tunnel_id" ]; then
+        echo -e "${gl_hong}    ❌ 失败${gl_bai}"; break_end; return 1
+    fi
+    echo -e "${gl_lv}    ✅ Tunnel ID: $tunnel_id${gl_bai}"
+
+    echo "  [2/5] 路由 DNS..."
+    if ! cf_helper_route_dns "$tunnel_id" "$domain"; then
+        # P0-3 修复:回滚已创建的隧道
+        _cf_rollback_partial_deploy "$tunnel_name" "$tunnel_id" "" ""
+        break_end; return 1
+    fi
+    echo -e "${gl_lv}    ✅ CNAME: $domain → ${tunnel_id}.cfargotunnel.com${gl_bai}"
+
+    echo "  [3/5] 写 config yaml..."
+    local config_file="$CF_CONFIGS_DIR/$tunnel_name.yml"
+    # P1-8 修复:严格校验 cred_file 必须存在,否则 systemd 启动必然失败
+    local cred_file="$CF_CREDENTIALS_DIR/$tunnel_id.json"
+    [ ! -f "$cred_file" ] && cred_file="$CF_LEGACY_HOME/$tunnel_id.json"
+    if [ ! -f "$cred_file" ]; then
+        echo -e "${gl_hong}    ❌ 凭证文件丢失:$CF_CREDENTIALS_DIR/$tunnel_id.json${gl_bai}"
+        _cf_rollback_partial_deploy "$tunnel_name" "$tunnel_id" "$domain" ""
+        break_end; return 1
+    fi
+    if ! cf_helper_write_config "$config_file" "$tunnel_id" "$cred_file" "${rules[@]}"; then
+        _cf_rollback_partial_deploy "$tunnel_name" "$tunnel_id" "$domain" ""
+        break_end; return 1
+    fi
+    echo -e "${gl_lv}    ✅ $config_file${gl_bai}"
+
+    echo "  [4/5] 写 systemd + 启动..."
+    if ! cf_helper_write_systemd "$tunnel_name" "$config_file" "Cloudflare Tunnel: $tunnel_name → $domain"; then
+        _cf_rollback_partial_deploy "$tunnel_name" "$tunnel_id" "$domain" "$config_file"
+        break_end; return 1
+    fi
+
+    echo "  [5/5] 探测访问..."
+    sleep 2
+    local http_code
+    http_code=$(curl -sSk --max-time 10 -o /dev/null -w "%{http_code}" "https://$domain/" 2>/dev/null)
+    if [[ "$http_code" =~ ^[234] ]]; then
+        echo -e "${gl_lv}    ✅ https://$domain 响应 HTTP $http_code${gl_bai}"
+    else
+        # P1-9:探测失败不阻塞部署完成,但提示更明确
+        echo -e "${gl_huang}    ⚠️  探测返回 HTTP '$http_code'${gl_bai}"
+        echo -e "${gl_huang}        DNS 记录可能刚加还没生效(一般 1-2 分钟),也可能后端 $backend 此刻没响应${gl_bai}"
+        echo -e "${gl_huang}        服务已启动,自行验证:curl -v https://$domain${gl_bai}"
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}🎉 部署完成${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "访问地址: https://$domain"
+    echo ""
+    echo "管理命令:"
+    echo "  systemctl status/restart/stop cloudflared-$tunnel_name"
+    echo "  journalctl -u cloudflared-$tunnel_name -f"
+    break_end
+}
+
+# ---- [3] 查看隧道列表 ----
+cf_tunnel_list() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  已部署的 Cloudflare Tunnel${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local names
+    names=$(_cf_list_tunnel_names)
+    if [ -z "$names" ]; then
+        echo -e "${gl_huang}暂无已部署的隧道${gl_bai}"
+        break_end; return 0
+    fi
+
+    local count=0 name svc cfg tid hosts
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        count=$((count + 1))
+        svc="cloudflared-$name"
+        cfg=$(_cf_get_config_from_service "$svc")
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo -e "[$count] ${gl_huang}$name${gl_bai}"
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            echo -e "  状态: ${gl_lv}运行中${gl_bai}"
+        else
+            echo -e "  状态: ${gl_hong}已停止${gl_bai}"
+        fi
+        if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+            tid=$(_cf_get_yaml_field "$cfg" "tunnel")
+            echo "  Tunnel ID: $tid"
+            echo "  配置文件: $cfg"
+            hosts=$(_cf_get_yaml_hostnames "$cfg")
+            if [ -n "$hosts" ]; then
+                echo "  域名:"
+                while IFS= read -r h; do
+                    [ -n "$h" ] && echo "    https://$h"
+                done <<< "$hosts"
+            fi
+        else
+            echo -e "  ${gl_huang}⚠️  未找到配置文件${gl_bai}"
+        fi
+        echo ""
+    done <<< "$names"
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "总计: $count 个隧道"
+    break_end
+}
+
+# ---- [4] 修改 ingress ----
+cf_tunnel_edit_ingress() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  修改隧道 ingress 规则${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local name
+    name=$(_cf_pick_tunnel) || { break_end; return 1; }
+
+    local cfg
+    cfg=$(_cf_get_config_from_service "cloudflared-$name")
+    if [ -z "$cfg" ] || [ ! -f "$cfg" ]; then
+        echo -e "${gl_hong}❌ 找不到配置文件${gl_bai}"; break_end; return 1
+    fi
+
+    local editor="${EDITOR:-nano}"
+    command -v "$editor" &>/dev/null || editor="vi"
+
+    echo ""
+    echo "配置文件: $cfg"
+    echo "编辑器: $editor"
+    echo ""
+    echo "说明:"
+    echo "  • 保存退出后自动 ingress validate 校验"
+    echo "  • 校验通过自动重启服务;失败自动回滚"
+    echo ""
+    read -e -p "按回车打开编辑器..."
+
+    local backup="${cfg}.bak.$(date +%s)"
+    cp "$cfg" "$backup"
+
+    "$editor" "$cfg"
+
+    if cloudflared tunnel --config "$cfg" ingress validate &>/dev/null; then
+        echo -e "${gl_lv}✅ 校验通过,重启服务...${gl_bai}"
+        systemctl restart "cloudflared-$name"
+        sleep 2
+        if systemctl is-active --quiet "cloudflared-$name"; then
+            echo -e "${gl_lv}✅ 服务已重启${gl_bai}"
+            rm -f "$backup"
+        else
+            # P1-5 修复:回滚后要校验是否恢复成功,backup 保留防再次失败
+            echo -e "${gl_hong}❌ 新配置启动失败,正在回滚...${gl_bai}"
+            cp "$backup" "$cfg"
+            systemctl restart "cloudflared-$name"
+            sleep 2
+            if systemctl is-active --quiet "cloudflared-$name"; then
+                echo -e "${gl_lv}✅ 已回滚到原配置${gl_bai}"
+                rm -f "$backup"
+            else
+                echo -e "${gl_hong}❌ 回滚后服务仍启动失败!保留备份以便手动恢复:${gl_bai}"
+                echo "   备份文件: $backup"
+                echo "   journalctl -u cloudflared-$name -n 30"
+            fi
+        fi
+    else
+        echo -e "${gl_hong}❌ ingress 校验失败,回滚${gl_bai}"
+        cloudflared tunnel --config "$cfg" ingress validate 2>&1
+        cp "$backup" "$cfg"
+        rm -f "$backup"
+    fi
+    break_end
+}
+
+# ---- [5] 删除隧道(完整清理) ----
+cf_tunnel_delete() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  删除隧道${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local name
+    name=$(_cf_pick_tunnel) || { break_end; return 1; }
+
+    echo ""
+    echo -e "${gl_huang}将执行以下清理:${gl_bai}"
+    echo "  1. 停止并禁用 systemd cloudflared-$name"
+    echo "  2. 删除 systemd unit"
+    echo "  3. 从 CF 云端删除隧道"
+    echo "  4. 删除本地凭证 JSON 和 config yaml"
+    echo -e "${gl_huang}  ⚠️  CF 控制面上的 DNS CNAME 需手动清理${gl_bai}"
+    echo ""
+    local confirm
+    read -e -p "确认删除?(输入 yes 继续): " confirm
+    if [ "$confirm" != "yes" ]; then
+        echo "已取消"; break_end; return 1
+    fi
+
+    local svc="cloudflared-$name"
+    local cfg tid hosts
+    cfg=$(_cf_get_config_from_service "$svc")
+    [ -n "$cfg" ] && [ -f "$cfg" ] && tid=$(_cf_get_yaml_field "$cfg" "tunnel")
+    [ -n "$cfg" ] && [ -f "$cfg" ] && hosts=$(_cf_get_yaml_hostnames "$cfg")
+
+    echo ""
+    echo "[1/4] 停止 systemd..."
+    systemctl stop "$svc" 2>/dev/null
+    systemctl disable "$svc" 2>/dev/null
+    sleep 2
+    rm -f "/etc/systemd/system/${svc}.service"
+    systemctl daemon-reload 2>/dev/null
+    echo -e "${gl_lv}  ✅${gl_bai}"
+
+    echo "[2/4] 删除 CF 云端隧道..."
+    local del_out
+    del_out=$(cloudflared tunnel delete "$name" 2>&1)
+    if echo "$del_out" | grep -qi "active connections"; then
+        echo "  有活跃连接,强制删除..."
+        cloudflared tunnel delete -f "$name" 2>&1
+    fi
+    echo -e "${gl_lv}  ✅${gl_bai}"
+
+    echo "[3/4] 删除凭证 + 配置..."
+    if [ -n "$tid" ]; then
+        rm -f "$CF_CREDENTIALS_DIR/$tid.json" "$CF_LEGACY_HOME/$tid.json"
+    fi
+    [ -n "$cfg" ] && rm -f "$cfg"
+    echo -e "${gl_lv}  ✅${gl_bai}"
+
+    echo "[4/4] 完成"
+    echo ""
+    echo -e "${gl_lv}✅ 隧道 $name 已清理${gl_bai}"
+    if [ -n "$hosts" ]; then
+        echo ""
+        echo -e "${gl_huang}⚠️  请手动到 CF Dashboard 删除以下 DNS CNAME:${gl_bai}"
+        while IFS= read -r h; do
+            [ -n "$h" ] && echo "   • $h"
+        done <<< "$hosts"
+    fi
+    break_end
+}
+
+# ---- [6/7/8/9] 服务操作 ----
+cf_tunnel_service_action() {
+    local action=$1
+    clear
+    local title
+    case "$action" in
+        toggle)  title="启动/停止隧道" ;;
+        restart) title="重启隧道" ;;
+        status)  title="查看隧道状态" ;;
+        logs)    title="查看隧道日志" ;;
+    esac
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  $title${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    local name
+    name=$(_cf_pick_tunnel) || { break_end; return 1; }
+
+    local svc="cloudflared-$name"
+    echo ""
+    case "$action" in
+        toggle)
+            if systemctl is-active --quiet "$svc"; then
+                echo "正在停止..."
+                systemctl stop "$svc"; sleep 1
+                systemctl is-active --quiet "$svc" \
+                    && echo -e "${gl_hong}❌ 停止失败${gl_bai}" \
+                    || echo -e "${gl_lv}✅ 已停止${gl_bai}"
+            else
+                echo "正在启动..."
+                systemctl start "$svc"; sleep 2
+                systemctl is-active --quiet "$svc" \
+                    && echo -e "${gl_lv}✅ 已启动${gl_bai}" \
+                    || echo -e "${gl_hong}❌ 启动失败${gl_bai}"
+            fi
+            ;;
+        restart)
+            echo "正在重启..."
+            systemctl restart "$svc"; sleep 2
+            systemctl is-active --quiet "$svc" \
+                && echo -e "${gl_lv}✅ 已重启${gl_bai}" \
+                || echo -e "${gl_hong}❌ 重启失败${gl_bai}"
+            ;;
+        status)
+            systemctl status "$svc" --no-pager
+            ;;
+        logs)
+            echo "按 Ctrl+C 退出日志查看"
+            echo ""
+            journalctl -u "$svc" -n 100 -f --no-pager
+            ;;
+    esac
+    break_end
+}
+
+# ---- [10] 切换/登出 CF 账户 ----
+cf_tunnel_switch_account() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  切换/登出 CF 账户${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    if [ ! -f "$CF_CERT_FILE" ] && [ ! -f "$CF_LEGACY_CERT" ]; then
+        echo -e "${gl_huang}当前未登录${gl_bai}"
+        echo ""
+        local yn
+        read -e -p "是否现在登录?(Y/n): " yn
+        [[ ! "$yn" =~ ^[Nn]$ ]] && cf_helper_ensure_auth
+        break_end; return 0
+    fi
+
+    echo "1. 登出(删除 cert.pem,保留已有隧道)"
+    echo "2. 切换到其他账户(登出后重新 login)"
+    echo "0. 取消"
+    echo ""
+    local choice
+    read -e -p "请选择: " choice
+    case "$choice" in
+        1)
+            rm -f "$CF_CERT_FILE" "$CF_LEGACY_CERT"
+            echo -e "${gl_lv}✅ 已登出${gl_bai}"
+            echo -e "${gl_huang}⚠️  已有隧道的 systemd 服务仍会运行(凭证 JSON 独立于 cert.pem)${gl_bai}"
+            ;;
+        2)
+            rm -f "$CF_CERT_FILE" "$CF_LEGACY_CERT"
+            cf_helper_ensure_auth
+            ;;
+        *)
+            echo "已取消"
+            ;;
+    esac
+    break_end
+}
+
+# ---- [11] 卸载 cloudflared ----
+cf_tunnel_uninstall_all() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  卸载 cloudflared${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo -e "${gl_huang}警告:将清理${gl_bai}"
+    echo "  • 所有 cloudflared-* systemd 服务"
+    echo "  • /usr/local/bin/cloudflared 二进制"
+    echo ""
+    local del_cfg confirm
+    read -e -p "同时删除配置目录 /etc/cloudflared 和 /root/.cloudflared?(y/N): " del_cfg
+    echo ""
+    read -e -p "确认卸载?(输入 yes 继续): " confirm
+    if [ "$confirm" != "yes" ]; then
+        echo "已取消"; break_end; return 1
+    fi
+
+    local names n
+    names=$(_cf_list_tunnel_names)
+    while IFS= read -r n; do
+        [ -z "$n" ] && continue
+        local svc="cloudflared-$n"
+        systemctl stop "$svc" 2>/dev/null
+        systemctl disable "$svc" 2>/dev/null
+        rm -f "/etc/systemd/system/${svc}.service"
+    done <<< "$names"
+    systemctl daemon-reload 2>/dev/null
+
+    rm -f "$CF_BINARY_PATH"
+
+    if [[ "$del_cfg" =~ ^[Yy]$ ]]; then
+        rm -rf "$CF_HOME" "$CF_LEGACY_HOME"
+    fi
+
+    echo -e "${gl_lv}✅ cloudflared 已卸载${gl_bai}"
+    break_end
+}
+
+# ---- [12] 配置迁移与备份 ----
+cf_tunnel_migrate_advanced() {
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  配置迁移与备份(高级)${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "1. 重新扫描并迁移老路径配置到 /etc/cloudflared"
+    echo "2. 备份 /etc/cloudflared 到 .backup-manual-YYYYMMDD"
+    echo "0. 返回"
+    echo ""
+    local choice
+    read -e -p "请选择: " choice
+    case "$choice" in
+        1)
+            rm -f "$CF_MIGRATE_MARKER"
+            cf_helper_migrate_legacy
+            ;;
+        2)
+            local bak="$CF_HOME/.backup-manual-$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$bak"
+            cp -r "$CF_HOME"/{cert.pem,credentials,configs} "$bak/" 2>/dev/null
+            echo -e "${gl_lv}✅ 备份到 $bak${gl_bai}"
+            ;;
+    esac
+    break_end
+}
+
+# ---- Sub-Store 专用部署(被 install_substore_instance 调用) ----
+# 参数:instance_num / api_port / access_path
+# 内部构造 Sub-Store 特有 ingress(path 路由 + 兜底),域名交互输入
+cf_tunnel_deploy_for_substore() {
+    local instance_num=$1
+    local api_port=$2
+    local access_path=$3
+    local tunnel_name="sub-store-$instance_num"
+
+    clear
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_kjlan}  Sub-Store 实例 $instance_num:Cloudflare Tunnel 部署${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+
+    # 前置检查
+    echo -e "${gl_zi}[前置检查]${gl_bai}"
+    cf_helper_install_binary || return 1
+    cf_helper_ensure_auth || return 1
+    echo ""
+
+    # 域名
+    echo -e "${gl_zi}[输入域名]${gl_bai}"
+    echo "  必须已托管到 Cloudflare"
+    local domain
+    while true; do
+        read -e -p "请输入 FQDN(如 sub.example.com): " domain
+        if [ -z "$domain" ]; then
+            echo -e "${gl_hong}❌ 不能为空${gl_bai}"; continue
+        fi
+        if ! [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]]; then
+            echo -e "${gl_hong}❌ 域名格式不对${gl_bai}"; continue
+        fi
+        break
+    done
+    echo -e "${gl_lv}✅ $domain${gl_bai}"
+    echo ""
+
+    # Sub-Store 特有 ingress:path 路由 + 兜底(两条同 backend,BACKEND_MERGE 模式)
+    local backend="http://127.0.0.1:$api_port"
+    local -a rules=(
+        "$domain|/$access_path|$backend"
+        "$domain||$backend"
+    )
+
+    echo "配置确认:"
+    echo "  隧道名称: $tunnel_name"
+    echo "  域名:     https://$domain"
+    echo "  后端 API: $backend (路径 /$access_path)"
+    echo "  前端页面: $backend (兜底)"
+    echo ""
+    local confirm
+    read -e -p "确认开始部署?(Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo "已取消"; return 1
+    fi
+    echo ""
+
+    # 执行(含 P0-3 回滚 + P1-8 凭证严格校验)
+    echo "  [1/4] 创建隧道..."
+    local tid
+    tid=$(cf_helper_create_tunnel "$tunnel_name")
+    [ -z "$tid" ] && return 1
+    echo -e "${gl_lv}    ✅ Tunnel ID: $tid${gl_bai}"
+
+    echo "  [2/4] 路由 DNS..."
+    if ! cf_helper_route_dns "$tid" "$domain"; then
+        _cf_rollback_partial_deploy "$tunnel_name" "$tid" "" ""
+        return 1
+    fi
+    echo -e "${gl_lv}    ✅ CNAME: $domain → ${tid}.cfargotunnel.com${gl_bai}"
+
+    echo "  [3/4] 写配置..."
+    local cfg="$CF_CONFIGS_DIR/$tunnel_name.yml"
+    local cred="$CF_CREDENTIALS_DIR/$tid.json"
+    [ ! -f "$cred" ] && cred="$CF_LEGACY_HOME/$tid.json"
+    if [ ! -f "$cred" ]; then
+        echo -e "${gl_hong}    ❌ 凭证文件丢失:$CF_CREDENTIALS_DIR/$tid.json${gl_bai}"
+        _cf_rollback_partial_deploy "$tunnel_name" "$tid" "$domain" ""
+        return 1
+    fi
+    if ! cf_helper_write_config "$cfg" "$tid" "$cred" "${rules[@]}"; then
+        _cf_rollback_partial_deploy "$tunnel_name" "$tid" "$domain" ""
+        return 1
+    fi
+    echo -e "${gl_lv}    ✅ $cfg${gl_bai}"
+
+    echo "  [4/4] 启动服务..."
+    if ! cf_helper_write_systemd "$tunnel_name" "$cfg" "Cloudflare Tunnel: Sub-Store $instance_num → $domain"; then
+        _cf_rollback_partial_deploy "$tunnel_name" "$tid" "$domain" "$cfg"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo -e "${gl_lv}🎉 Sub-Store 隧道部署完成${gl_bai}"
+    echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+    echo ""
+    echo "访问 URL:"
+    echo -e "  ${gl_lv}https://$domain?api=https://$domain/$access_path${gl_bai}"
+    echo ""
+    echo "管理命令:"
+    echo "  systemctl status/restart/stop cloudflared-$tunnel_name"
+    echo "  journalctl -u cloudflared-$tunnel_name -f"
+    return 0
+}
+
+# ---- 主菜单 ----
+manage_cf_tunnel() {
+    cf_helper_migrate_legacy   # 首次进入自动迁移老配置
+
+    while true; do
+        clear
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo -e "${gl_kjlan}  Cloudflare Tunnel 管理 🚀${gl_bai}"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+        echo ""
+
+        # 状态栏
+        local cf_ver="未安装"
+        if command -v cloudflared &>/dev/null; then
+            cf_ver=$(cloudflared --version 2>/dev/null | awk '{print $3}' | head -1)
+            [ -z "$cf_ver" ] && cf_ver="已安装"
+        fi
+        local cf_auth_str
+        if [ -f "$CF_CERT_FILE" ] || [ -f "$CF_LEGACY_CERT" ]; then
+            cf_auth_str="${gl_lv}已登录${gl_bai}"
+        else
+            cf_auth_str="${gl_hong}未登录${gl_bai}"
+        fi
+
+        local total_count=0 running_count=0 stopped_count=0 n
+        while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            total_count=$((total_count + 1))
+            if systemctl is-active --quiet "cloudflared-$n" 2>/dev/null; then
+                running_count=$((running_count + 1))
+            else
+                stopped_count=$((stopped_count + 1))
+            fi
+        done < <(_cf_list_tunnel_names)
+
+        if [ "$cf_ver" = "未安装" ]; then
+            echo -e "cloudflared: ${gl_hui}$cf_ver${gl_bai}"
+        else
+            echo -e "cloudflared: ${gl_lv}$cf_ver${gl_bai}    CF 登录: $cf_auth_str"
+        fi
+        echo -e "已部署隧道: ${gl_huang}$total_count${gl_bai} 个 (运行中: ${gl_lv}$running_count${gl_bai}, 停止: ${gl_hong}$stopped_count${gl_bai})"
+        echo ""
+
+        echo "1. 一键安装 cloudflared + 登录 CF 账户"
+        echo "2. 添加新隧道反代"
+        echo "3. 查看已部署隧道列表"
+        echo "4. 修改隧道配置 (ingress 规则)"
+        echo "5. 删除隧道 (完整清理)"
+        echo "6. 启动/停止单个隧道"
+        echo "7. 重启隧道服务"
+        echo "8. 查看隧道详细状态"
+        echo "9. 查看隧道实时日志"
+        echo "10. 切换/登出 CF 账户"
+        echo "11. 卸载 cloudflared (可选清理所有配置)"
+        echo "12. [高级] 配置迁移与备份"
+        echo ""
+        echo "0. 返回上级菜单"
+        echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
+
+        local choice
+        read -e -p "请选择操作 [0-12]: " choice
+
+        case $choice in
+            1)  cf_tunnel_install_and_auth ;;
+            2)  cf_tunnel_add ;;
+            3)  cf_tunnel_list ;;
+            4)  cf_tunnel_edit_ingress ;;
+            5)  cf_tunnel_delete ;;
+            6)  cf_tunnel_service_action "toggle" ;;
+            7)  cf_tunnel_service_action "restart" ;;
+            8)  cf_tunnel_service_action "status" ;;
+            9)  cf_tunnel_service_action "logs" ;;
+            10) cf_tunnel_switch_account ;;
+            11) cf_tunnel_uninstall_all ;;
+            12) cf_tunnel_migrate_advanced ;;
+            0)  return ;;
+            *)  echo "无效的选择"; sleep 1 ;;
         esac
     done
 }
@@ -13372,10 +14761,16 @@ install_caddy() {
 }
 
 # 快速部署 - Cloudflare Tunnel
+# P0-4 修复(split-brain):转发到新统一向导 cf_tunnel_add,避免老路径 /root/reverse-proxy-configs
+# 老实现保留在下方(_legacy_quick_deploy_cf_tunnel)但不再调用
 quick_deploy_cf_tunnel() {
+    cf_tunnel_add
+}
+
+_legacy_quick_deploy_cf_tunnel() {
     clear
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
-    echo -e "${gl_kjlan}  一键反代 - Cloudflare Tunnel${gl_bai}"
+    echo -e "${gl_kjlan}  一键反代 - Cloudflare Tunnel (legacy)${gl_bai}"
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
     echo ""
 
@@ -13632,7 +15027,9 @@ list_reverse_proxies() {
     init_reverse_proxy_config
 
     # 列出所有 cloudflared 服务
-    local services=$(systemctl list-units --type=service --all | grep "cloudflared-tunnel" | awk '{print $1}')
+    # Bug 修复:grep "cloudflared-tunnel" 会漏掉所有 tunnel_name 中不含 "tunnel" 的服务
+    # 改成匹配 "cloudflared-" 前缀的所有服务
+    local services=$(systemctl list-units --type=service --all 2>/dev/null | grep -oE '^[[:space:]]*cloudflared-[^[:space:]]+\.service' | awk '{print $1}')
 
     if [ -z "$services" ]; then
         echo -e "${gl_huang}暂无已部署的反向代理${gl_bai}"
@@ -13656,8 +15053,11 @@ list_reverse_proxies() {
             echo -e "  状态: ${gl_hong}已停止${gl_bai}"
         fi
 
-        # 读取配置文件
-        local config_file="$REVERSE_PROXY_CONFIG_DIR/cf-tunnel/$tunnel_name.yaml"
+        # 读取配置文件(优先从 systemd unit 解析,fallback 到老路径)
+        # P0-4/I-2 修复:migrate 后配置已搬到 /etc/cloudflared/configs/,不能硬编码老路径
+        local config_file
+        config_file=$(_cf_get_config_from_service "$service" 2>/dev/null)
+        [ -z "$config_file" ] && config_file="$REVERSE_PROXY_CONFIG_DIR/cf-tunnel/$tunnel_name.yaml"
         if [ -f "$config_file" ]; then
             local domain=$(grep "hostname:" "$config_file" | head -1 | awk '{print $3}')
             local port=$(grep "service:" "$config_file" | head -1 | sed -nE 's/.*:([0-9]+).*/\1/p')
@@ -13688,7 +15088,9 @@ delete_reverse_proxy() {
     echo ""
 
     # 列出所有服务
-    local services=$(systemctl list-units --type=service --all | grep "cloudflared-tunnel" | awk '{print $1}')
+    # Bug 修复:grep "cloudflared-tunnel" 会漏掉所有 tunnel_name 中不含 "tunnel" 的服务
+    # 改成匹配 "cloudflared-" 前缀的所有服务
+    local services=$(systemctl list-units --type=service --all 2>/dev/null | grep -oE '^[[:space:]]*cloudflared-[^[:space:]]+\.service' | awk '{print $1}')
 
     if [ -z "$services" ]; then
         echo -e "${gl_huang}暂无已部署的反向代理${gl_bai}"
@@ -24334,6 +25736,9 @@ main() {
 
     # 自动清理旧版功能4的MTU优化残留
     auto_cleanup_legacy_mtu
+
+    # Phase E:检测并迁移 CF Tunnel 老路径配置(空 VPS 会 fast-path 早退,耗时可忽略)
+    cf_helper_migrate_legacy 2>/dev/null
 
     # 加载用户配置（如果存在）
     [ -f "/etc/net-tcp-tune.conf" ] && source "/etc/net-tcp-tune.conf"
