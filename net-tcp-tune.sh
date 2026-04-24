@@ -8,14 +8,14 @@
 # 1. 大版本更新时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 小修复时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.0.0 更新: 新增 Cloudflare Tunnel 管理模块 (菜单 32-7)：12 项子功能 + 6 步向导含失败自动回滚；修复 Sub-Store 6 个历史 bug；统一配置到 /etc/cloudflared/ 并自动迁移老路径 (by Eric86777)
 # v4.9.8 更新: 修复Snell/VLESS/OAI2节点随机掉线：Restart=always+systemd健壮性加固；XanMod内核安装增加本地CPU检测兜底 (by Eric86777)
 # v4.9.5 更新: 修复Responses API代理SSE解析，解决502报错，重新部署生效 (by Eric86777)
 # v4.9.4 更新: 修复Responses API转换代理：兼容SSE流式响应格式，解决502 JSON解析失败 (by Eric86777)
 # v4.9.3 更新: 修复Responses API转换代理：system消息正确提取为instructions字段，修复无system消息时报错 (by Eric86777)
-# v4.9.2 更新: 移除功能4(MTU检测)，功能3的tcp_mtu_probing已覆盖；启动时自动清理旧版MTU优化残留 (by Eric86777)
 
-SCRIPT_VERSION="4.9.8"
-SCRIPT_LAST_UPDATE="OpenClaw新增sub2api兼容补丁：自动打补丁(instructions+max_output_tokens)，部署/更新/切换API均自动适配"
+SCRIPT_VERSION="5.0.0"
+SCRIPT_LAST_UPDATE="新增 Cloudflare Tunnel 管理模块(32-7):一键安装/添加/修改/删除/启停/日志/切换账户,含失败自动回滚 + 老配置迁移"
 #=============================================================================
 
 #=============================================================================

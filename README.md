@@ -1,10 +1,10 @@
-# BBR v3 优化脚本 - Ultimate Edition v4.9.8
+# BBR v3 优化脚本 - Ultimate Edition v5.0.0
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 32 项实用功能，优化你的 VPS 服务器。
 
-> **版本**: v4.9.8
+> **版本**: v5.0.0 🎉 **重大更新**：新增 Cloudflare Tunnel 管理模块（菜单 32-7）
 
 ---
 
@@ -175,9 +175,14 @@ AI 代理工具箱包含：
 - **Open WebUI**：AI 聊天界面，Docker 容器化
 - **CRS 部署管理**：Claude API 多账户中转/拼车服务
 - **Fuclaude**：Claude 网页版共享工具
+- **Sub2API 部署管理**：订阅链接转 API 工具
 - **Caddy 多域名反代**：HTTPS 反向代理，自动 SSL 证书
-- **OpenAI Responses API 转换代理**：Chat Completions → Responses API 转换
+- **🆕 Cloudflare Tunnel 管理**（v5.0.0 新增）：一键部署 + 12 项完整管理功能
 - **OpenClaw 部署管理**：AI 多渠道消息网关，支持 Telegram/WhatsApp/Discord/Slack
+- **OpenAI Responses API 转换代理**：Chat Completions → Responses API 转换
+- **Codex Console 部署管理**：OpenAI 批量注册
+- **CLIProxyAPI 部署管理**：CLI 转 API 代理
+- **OAI2 部署管理**：令牌注册面板
 
 ---
 
@@ -218,7 +223,28 @@ AI 代理工具箱包含：
 - 为 HTTP 服务快速添加 HTTPS 支持
 - 多个后端服务统一使用 443 端口对外
 
-### 4. OpenClaw AI 多渠道消息网关 (功能 32 子菜单)
+### 4. 🆕 Cloudflare Tunnel 管理 (功能 32-7，v5.0.0 新增)
+
+完整的 Cloudflare Tunnel 部署与全生命周期管理,无需开放 VPS 80/443 端口,自动 HTTPS:
+
+- **一键安装**: 自动按架构(amd64/arm64/arm/386)下载 cloudflared + 引导 OAuth 授权
+- **6 步部署向导**: 隧道名 → 反代目标 → 路由模式 → 域名 → 确认 → 自动执行
+- **两种路由模式**:
+  - _整站反代_: 域名所有请求转给单一后端(推荐,90% 场景够用)
+  - _按 path 分流_: 支持多条 `/api → 后端 A` / `/web → 后端 B` 规则(前后端分离、多服务共域名场景)
+- **失败自动回滚**: 任一步骤失败自动清理已创建的隧道 / DNS / systemd,不留孤儿
+- **修改 ingress**: 选中隧道直接进编辑器改规则,保存后 validate 校验 + 自动重启,失败回滚到备份
+- **完整删除**: 自动清理 systemd unit + CF 云端隧道(含强制删活跃连接)+ 凭证 JSON + 配置 yaml
+- **账户切换/登出**: 轻松切换到其他 CF 账户
+- **老配置自动迁移**: 从 `/root/.cloudflared/` 搬到 `/etc/cloudflared/` 并自动备份,已有隧道不中断
+
+**典型使用场景**:
+
+- VPS 没有公网 IP、被墙 443/80、想隐藏服务器真实 IP
+- 自建服务通过自己的域名访问(Sub-Store / NAS 面板 / 内网管理界面)
+- 不想花钱买 SSL 证书,让 Cloudflare 统一托管 HTTPS
+
+### 5. OpenClaw AI 多渠道消息网关 (功能 32 子菜单)
 
 自托管的 AI 多渠道消息网关，让你通过 Telegram/WhatsApp/Discord/Slack 与 AI 对话：
 
