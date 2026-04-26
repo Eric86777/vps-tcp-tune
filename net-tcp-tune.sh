@@ -7446,63 +7446,94 @@ cleanup_partial_install_snell() {
         rm -f "/etc/snell/snell-${port}.conf"
         rm -f "/etc/snell/config-${port}.txt"
         systemctl daemon-reload 2>/dev/null
+        # 同步移除已注册的保留端口（修复 Bug 4：start 失败时回滚保留登记）
+        # 注：函数定义可能晚于本函数被调用，用 type 检查兜底（早期失败路径还没读到下面定义）
+        type remove_snell_port_from_reserved >/dev/null 2>&1 && \
+            remove_snell_port_from_reserved "${port}" 2>/dev/null
     fi
     rm -f /tmp/snell-server.zip 2>/dev/null
     rm -f snell-server.zip 2>/dev/null
 }
 
 # 把 Snell 端口加入内核 ip_local_reserved_ports（修复 ③：防止被 outbound 临时端口抢占）
+# 注：合并其他 sysctl.d 文件中已设的保留端口，避免 sysctl -p 单文件加载覆盖 runtime 丢失（修复 Bug 1）
 add_snell_port_to_reserved() {
     local port="$1"
     [ -n "$port" ] || return 0
     local reserved_file="/etc/sysctl.d/99-zzz-snell-reserved-ports.conf"
+
+    # 1) 读自己文件已有的 Snell 端口
     local current=""
     if [ -f "$reserved_file" ]; then
-        current=$(grep -E '^net\.ipv4\.ip_local_reserved_ports' "$reserved_file" 2>/dev/null | sed -E 's/^[^=]+=\s*//' | tr -d ' ')
+        current=$(grep -E '^[[:space:]]*net\.ipv4\.ip_local_reserved_ports' "$reserved_file" 2>/dev/null \
+                  | sed -E 's/^[^=]+=[[:space:]]*//' | tr -d ' ')
     fi
-    local new_list
-    if [ -z "$current" ]; then
-        new_list="${port}"
-    elif echo ",${current}," | grep -q ",${port},"; then
-        new_list="${current}"
-    else
-        new_list="${current},${port}"
-    fi
+
+    # 2) 扫描其他 sysctl 文件，收集外部已设保留端口（跳过自己，避免重复合并）
+    local extra=""
+    local f line val
+    for f in /etc/sysctl.d/*.conf /etc/sysctl.conf; do
+        [ -f "$f" ] || continue
+        [ "$(basename "$f")" = "99-zzz-snell-reserved-ports.conf" ] && continue
+        line=$(grep -E '^[[:space:]]*net\.ipv4\.ip_local_reserved_ports' "$f" 2>/dev/null | tail -n 1)
+        [ -z "$line" ] && continue
+        val=$(echo "$line" | sed -E 's/^[^=]+=[[:space:]]*//' | tr -d ' ')
+        [ -z "$val" ] && continue
+        extra="${extra:+$extra,}${val}"
+    done
+
+    # 3) 三方合并：自己已有 + 外部 + 新端口 → 数字过滤、去重、排序
+    local merged
+    merged=$(echo "${current},${extra},${port}" \
+             | tr ',' '\n' | grep -E '^[0-9]+$' | sort -un | paste -sd, -)
+    [ -z "$merged" ] && merged="$port"
+
+    # 4) 写文件 + 加载（失败兜底：文件已写，重启后通过 systemd-sysctl 全量加载仍生效）
     cat > "$reserved_file" <<EOF
 # Snell 监听端口保留列表（由 net-tcp-tune 自动管理，请勿手动修改）
 # 作用：让内核 outbound 临时端口分配跳过这些端口，避免抢占 Snell 监听端口
-net.ipv4.ip_local_reserved_ports = ${new_list}
+# 包含：所有 Snell 端口 + 其他 sysctl 文件中已设置的保留端口（合并去重）
+net.ipv4.ip_local_reserved_ports = ${merged}
 EOF
-    sysctl -p "$reserved_file" >/dev/null 2>&1
+    sysctl -p "$reserved_file" >/dev/null 2>&1 || true
 }
 
 # 从内核 ip_local_reserved_ports 中移除指定 Snell 端口（修复 ④：单端口卸载清理）
+# 注：删文件分支后追加 sysctl --system 同步 runtime（修复 Bug 3）
 remove_snell_port_from_reserved() {
     local port="$1"
     [ -n "$port" ] || return 0
     local reserved_file="/etc/sysctl.d/99-zzz-snell-reserved-ports.conf"
     [ -f "$reserved_file" ] || return 0
     local current
-    current=$(grep -E '^net\.ipv4\.ip_local_reserved_ports' "$reserved_file" 2>/dev/null | sed -E 's/^[^=]+=\s*//' | tr -d ' ')
+    current=$(grep -E '^[[:space:]]*net\.ipv4\.ip_local_reserved_ports' "$reserved_file" 2>/dev/null | sed -E 's/^[^=]+=[[:space:]]*//' | tr -d ' ')
     [ -z "$current" ] && return 0
     local new_list
     new_list=$(echo "$current" | tr ',' '\n' | grep -v "^${port}$" | paste -sd, -)
     if [ -z "$new_list" ]; then
         rm -f "$reserved_file"
+        # 文件删了：全量重载 systemd-sysctl 标准流程，让 runtime 恢复到无 Snell 端口的状态
+        sysctl --system >/dev/null 2>&1 || true
     else
         cat > "$reserved_file" <<EOF
 # Snell 监听端口保留列表（由 net-tcp-tune 自动管理，请勿手动修改）
 # 作用：让内核 outbound 临时端口分配跳过这些端口，避免抢占 Snell 监听端口
 net.ipv4.ip_local_reserved_ports = ${new_list}
 EOF
-        sysctl -p "$reserved_file" >/dev/null 2>&1
+        # 文件还在：单文件加载即可覆盖 runtime
+        sysctl -p "$reserved_file" >/dev/null 2>&1 || true
     fi
 }
 
 # 全部卸载时移除整个保留端口配置文件（修复 ④：全部卸载清理）
+# 注：rm 后追加 sysctl --system 清空 runtime 中的 Snell 保留端口（修复 Bug 3）
 remove_all_snell_reserved_ports() {
     local reserved_file="/etc/sysctl.d/99-zzz-snell-reserved-ports.conf"
-    [ -f "$reserved_file" ] && rm -f "$reserved_file"
+    if [ -f "$reserved_file" ]; then
+        rm -f "$reserved_file"
+        # 全量重载，清空 runtime 中的 Snell 端口保留（其他 sysctl.d 配置不变）
+        sysctl --system >/dev/null 2>&1 || true
+    fi
 }
 
 # 安装 Snell
@@ -7673,7 +7704,10 @@ Description=Snell Proxy Service (Port ${SNELL_PORT})
 After=network.target network-online.target
 Wants=network-online.target
 # 修复 ②：关闭 systemd 重启次数限制，防止反复失败后进入永久 failed 状态
+# 双写兼容：systemd 230+ 用 StartLimitIntervalSec，旧版(CentOS 7 systemd 219)用 StartLimitInterval
+# 旧 systemd 遇到不识别字段会 warning + 忽略，不会阻止 unit 启动
 StartLimitIntervalSec=0
+StartLimitInterval=0
 StartLimitBurst=0
 
 [Service]
@@ -7716,6 +7750,10 @@ EOF
         return 1
     fi
 
+    # 提前注册保留端口（修复 Bug 4：避免 start 与 reserved 之间的窗口期被 outbound 抢占）
+    # 失败回滚由 cleanup_partial_install_snell 内的 remove_snell_port_from_reserved 处理
+    add_snell_port_to_reserved "${SNELL_PORT}"
+
     # 启动 Snell 服务
     systemctl start ${SNELL_SERVICE_NAME}
     if [ $? -ne 0 ]; then
@@ -7749,9 +7787,7 @@ EOF
     cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
 ${FINAL_CONFIG}
 EOF
-
-    # 把 Snell 端口加入内核保留列表，防止被 outbound 临时端口抢占（修复 ③）
-    add_snell_port_to_reserved "${SNELL_PORT}"
+    # 注：add_snell_port_to_reserved 已在 systemctl start 之前调用（修复 Bug 4，时机提前）
 }
 
 # 更新 Snell

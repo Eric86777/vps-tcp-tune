@@ -46,8 +46,10 @@ for svc in /etc/systemd/system/snell-*.service; do
     mkdir -p "$drop_dir"
     if ! cat > "${drop_dir}/99-net-tcp-tune-fix.conf" <<EOF
 # 由 snell-upgrade-patch.sh 自动写入
+# 双写兼容：systemd 230+ 用 StartLimitIntervalSec，旧版(CentOS 7 systemd 219)用 StartLimitInterval
 [Unit]
 StartLimitIntervalSec=0
+StartLimitInterval=0
 StartLimitBurst=0
 
 [Service]
