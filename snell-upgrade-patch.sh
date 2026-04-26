@@ -11,8 +11,10 @@
 # 卸载本补丁带来的改动：
 #   rm -rf /etc/systemd/system/snell-*.service.d/99-net-tcp-tune-fix.conf
 #   rm -f /etc/sysctl.d/99-zzz-snell-reserved-ports.conf
+#   rm -f /usr/local/bin/snell-daily-restart.sh
 #   crontab -l | grep -v "# Snell每日重启" | crontab -
-#   systemctl daemon-reload && systemctl restart 'snell-*.service'
+#   systemctl daemon-reload
+#   for s in /etc/systemd/system/snell-*.service; do [ -f "$s" ] && systemctl restart "$(basename "$s")"; done
 
 set +e
 
@@ -110,13 +112,27 @@ fi
 echo ""
 
 # === 3. 重载 systemd + 重启所有 Snell ===
+# 修复 Bug 2: systemctl glob 'snell-*.service' 在 systemd <252 不展开,
+# 在 Ubuntu 20.04 / Debian 11 / CentOS 8 / Rocky 8 上会静默失败。
+# 改用 for 循环逐个处理,所有 systemd 版本通用。
 echo -e "${YELLOW}[3/4] 应用配置 + 重启所有 Snell 实例${NC}"
 if [ "$PATCHED" -gt 0 ]; then
     systemctl daemon-reload
-    systemctl reset-failed 'snell-*.service' 2>/dev/null
-    systemctl restart 'snell-*.service'
+    for svc_file in /etc/systemd/system/snell-*.service; do
+        [ -f "$svc_file" ] || continue
+        svc_name=$(basename "$svc_file")
+        systemctl reset-failed "$svc_name" 2>/dev/null
+        systemctl restart "$svc_name"
+    done
     sleep 2
-    ACTIVE=$(systemctl is-active 'snell-*.service' 2>/dev/null | grep -c "^active$")
+    ACTIVE=0
+    for svc_file in /etc/systemd/system/snell-*.service; do
+        [ -f "$svc_file" ] || continue
+        svc_name=$(basename "$svc_file")
+        if systemctl is-active --quiet "$svc_name" 2>/dev/null; then
+            ACTIVE=$((ACTIVE + 1))
+        fi
+    done
     echo -e "  ${GREEN}✓${NC} 已重载 + 重启，当前 active 实例: ${ACTIVE}/${PATCHED}"
 else
     echo -e "  ${YELLOW}⚠ 跳过${NC}"
@@ -131,7 +147,8 @@ if [ "$PATCHED" -eq 0 ]; then
 elif ! command -v crontab >/dev/null 2>&1; then
     echo -e "  ${RED}✗${NC} 未安装 crontab 命令（需要 cron/cronie 包），跳过 cron 注册"
 else
-    # 北京时间 → 系统本地时间换算（照搬 Eric_port-traffic-dog 实现）
+    # 北京时间 → 系统本地时间换算（修复 Bug 7: fallback 不再假设 UTC,
+    # 而是用 date +%z 检测系统真实 UTC 偏移,中国机房 UTC+8 不再算错）
     bj2local() {
         local bh=$1 bm=$2 base td epoch lh lm
         base=$(TZ='Asia/Shanghai' date +%Y-%m-%d 2>/dev/null || date +%Y-%m-%d)
@@ -143,16 +160,43 @@ else
             lm=$(date -d "@$epoch" +%M 2>/dev/null || date -r "$epoch" +%M 2>/dev/null)
         fi
         if ! [[ "$lh" =~ ^[0-9]{1,2}$ ]]; then
-            lh=$((10#$bh - 8)); lm=$((10#$bm))
-            [ $lh -lt 0 ] && lh=$((lh+24))
+            # fallback: 检测系统真实 UTC 偏移,而不是假设 UTC
+            local sys_offset_str delta_h=-8
+            sys_offset_str=$(date +%z 2>/dev/null)
+            if [[ "$sys_offset_str" =~ ^([+-])([0-9]{2})([0-9]{2})$ ]]; then
+                local sign="${BASH_REMATCH[1]}"
+                local off_h=$((10#${BASH_REMATCH[2]}))
+                # 系统本地时间 = 北京时间(UTC+8) - 8 + 系统offset
+                if [ "$sign" = "+" ]; then
+                    delta_h=$((off_h - 8))
+                else
+                    delta_h=$((-off_h - 8))
+                fi
+            fi
+            lh=$((10#$bh + delta_h))
+            lm=$((10#$bm))
+            while [ "$lh" -lt 0 ]; do lh=$((lh + 24)); done
+            while [ "$lh" -ge 24 ]; do lh=$((lh - 24)); done
         fi
         printf "%02d %02d\n" $((10#$lh)) $((10#$lm))
     }
 
+    # 修复 Bug 2: 写一个 wrapper 脚本,cron 调它而不是用 systemctl glob
+    cat > /usr/local/bin/snell-daily-restart.sh <<'WRAPPER'
+#!/bin/sh
+# Snell 每日重启 wrapper(由 snell-upgrade-patch.sh 自动生成,请勿手动修改)
+# 使用 for 循环逐个 restart,兼容所有 systemd 版本(避免 glob 在旧 systemd 不展开)
+for svc in /etc/systemd/system/snell-*.service; do
+    [ -f "$svc" ] || continue
+    /bin/systemctl restart "$(basename "$svc")"
+done
+WRAPPER
+    chmod +x /usr/local/bin/snell-daily-restart.sh
+
     read -r LOCAL_H LOCAL_M < <(bj2local 04 00)
     TMP_CRON=$(mktemp)
     crontab -l 2>/dev/null | grep -v "# Snell每日重启" > "$TMP_CRON" || true
-    echo "${LOCAL_M} ${LOCAL_H} * * * systemctl restart 'snell-*.service' >/dev/null 2>&1  # Snell每日重启" >> "$TMP_CRON"
+    echo "${LOCAL_M} ${LOCAL_H} * * * /usr/local/bin/snell-daily-restart.sh >/dev/null 2>&1  # Snell每日重启" >> "$TMP_CRON"
     if crontab "$TMP_CRON" 2>/dev/null; then
         rm -f "$TMP_CRON"
         echo -e "  ${GREEN}✓${NC} 已注册：北京时间 04:00 = 本地时间 ${LOCAL_H}:${LOCAL_M}"
@@ -175,7 +219,13 @@ echo -e "====================================================${NC}"
 echo ""
 echo -e "${CYAN}Snell 实例状态:${NC}"
 if [ "$PATCHED" -gt 0 ]; then
-    systemctl --no-pager status 'snell-*.service' 2>/dev/null | grep -E "Active:|snell-[0-9]+\.service" | head -20
+    # 修复 Bug 2: glob 在旧 systemd 不展开,改 for 循环
+    for svc_file in /etc/systemd/system/snell-*.service; do
+        [ -f "$svc_file" ] || continue
+        svc_name=$(basename "$svc_file")
+        active_state=$(systemctl is-active "$svc_name" 2>/dev/null)
+        echo "  ${svc_name}: ${active_state}"
+    done
 else
     echo "  （无）"
 fi

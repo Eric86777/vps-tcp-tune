@@ -7442,7 +7442,9 @@ cleanup_partial_install_snell() {
     if [ -n "$port" ]; then
         systemctl stop "snell-${port}.service" 2>/dev/null
         systemctl disable "snell-${port}.service" 2>/dev/null
+        systemctl reset-failed "snell-${port}.service" 2>/dev/null
         rm -f "/etc/systemd/system/snell-${port}.service"
+        rm -rf "/etc/systemd/system/snell-${port}.service.d"
         rm -f "/etc/snell/snell-${port}.conf"
         rm -f "/etc/snell/config-${port}.txt"
         systemctl daemon-reload 2>/dev/null
@@ -7452,6 +7454,7 @@ cleanup_partial_install_snell() {
             remove_snell_port_from_reserved "${port}" 2>/dev/null
     fi
     rm -f /tmp/snell-server.zip 2>/dev/null
+    rm -f /tmp/snell-server.*.zip 2>/dev/null
     rm -f snell-server.zip 2>/dev/null
 }
 
@@ -7552,7 +7555,8 @@ install_snell() {
     fi
 
     # 下载 Snell 服务器文件
-    ARCH=$(arch)
+    # 修复 Bug 6: 用 uname -m 替代 arch(后者在某些精简发行版不存在),并支持 ARM 全系
+    ARCH=$(uname -m)
     VERSION="v5.0.1"
     SNELL_URL=""
     INSTALL_DIR="/usr/local/bin"
@@ -7560,32 +7564,43 @@ install_snell() {
     CONF_DIR="/etc/snell"
     CONF_FILE="${CONF_DIR}/snell-server.conf"
 
-    if [[ ${ARCH} == "aarch64" ]]; then
-        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
-    else
-        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
-    fi
+    case "$ARCH" in
+        aarch64|arm64)
+            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
+            ;;
+        x86_64|amd64)
+            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
+            ;;
+        *)
+            echo -e "${SNELL_RED}不支持的架构: ${ARCH}（仅支持 x86_64 / aarch64）${SNELL_RESET}"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - 不支持的架构: ${ARCH}" >> "$SNELL_LOG_FILE"
+            cleanup_partial_install_snell "${SNELL_PORT:-}"
+            return 1
+            ;;
+    esac
 
-    # 下载 Snell 服务器文件
-    wget ${SNELL_URL} -O snell-server.zip
-    if [ $? -ne 0 ]; then
+    # 下载 Snell 服务器文件（修复 Bug: 下载到 /tmp，加超时和重试）
+    wget --timeout=30 --tries=3 -q --show-progress "${SNELL_URL}" -O /tmp/snell-server.zip
+    if [ $? -ne 0 ] || [ ! -s /tmp/snell-server.zip ]; then
         echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
+        rm -f /tmp/snell-server.zip
         cleanup_partial_install_snell "${SNELL_PORT:-}"
         return 1
     fi
 
     # 解压缩文件到指定目录
-    unzip -o snell-server.zip -d ${INSTALL_DIR}
+    unzip -o /tmp/snell-server.zip -d ${INSTALL_DIR}
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
+        rm -f /tmp/snell-server.zip
         cleanup_partial_install_snell "${SNELL_PORT:-}"
         return 1
     fi
 
     # 删除下载的 zip 文件
-    rm snell-server.zip
+    rm -f /tmp/snell-server.zip
 
     # 赋予执行权限
     chmod +x ${INSTALL_DIR}/snell-server
@@ -7640,17 +7655,29 @@ install_snell() {
     SYSTEMD_SERVICE_FILE="/etc/systemd/system/snell-${SNELL_PORT}.service"
     SNELL_SERVICE_NAME="snell-${SNELL_PORT}.service"
 
-    # 检查端口是否被占用
-    if ss -tulpn | grep -q ":${SNELL_PORT} "; then
+    # 检查端口是否被占用（修复 Bug 3: 精确匹配端口，避免子串误匹配）
+    local port_in_use=0
+    if ss -ltnH "( sport = :${SNELL_PORT} )" 2>/dev/null | grep -q .; then
+        port_in_use=1
+    elif ss -lunH "( sport = :${SNELL_PORT} )" 2>/dev/null | grep -q .; then
+        port_in_use=1
+    fi
+    if [ "$port_in_use" -eq 1 ]; then
         echo -e "${SNELL_RED}端口 ${SNELL_PORT} 已被占用，请选择其他端口。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 端口 ${SNELL_PORT} 已被占用" >> "$SNELL_LOG_FILE"
+        return 1
+    fi
+
+    # 同端口的 systemd unit 已存在也视为占用（防止覆盖现有实例配置）
+    if [ -f "${SYSTEMD_SERVICE_FILE}" ]; then
+        echo -e "${SNELL_RED}端口 ${SNELL_PORT} 的 Snell 实例已存在，请先卸载或换端口。${SNELL_RESET}"
         return 1
     fi
 
     # 询问用户选择监听模式
     echo -e "${SNELL_CYAN}请选择监听模式:${SNELL_RESET}"
     echo "1. 仅 IPv4 (0.0.0.0)"
-    echo "2. 仅 IPv6 (::0)"
+    echo "2. 仅 IPv6 ([::])"
     echo "3. 双栈 (同时支持 IPv4 和 IPv6)"
     read -p "请输入选项 [1-3，默认为 1]: " listen_mode
     listen_mode=${listen_mode:-1}
@@ -7664,15 +7691,17 @@ install_snell() {
             echo -e "${SNELL_GREEN}已选择：仅 IPv4 模式${SNELL_RESET}"
             ;;
         2)
-            LISTEN_ADDR="::0:${SNELL_PORT}"
+            # 修复 Bug 5: IPv6 字面量必须用方括号包裹
+            LISTEN_ADDR="[::]:${SNELL_PORT}"
             IPV6_ENABLED="true"
             IP_VERSION_STR=", ip-version=v6-only"
             echo -e "${SNELL_GREEN}已选择：仅 IPv6 模式${SNELL_RESET}"
             ;;
         3)
-            LISTEN_ADDR="::0:${SNELL_PORT}"
+            # 修复 Bug 5: IPv6 字面量必须用方括号包裹（双栈靠 IPV6_V6ONLY=0 默认行为）
+            LISTEN_ADDR="[::]:${SNELL_PORT}"
             IPV6_ENABLED="true"
-            IP_VERSION_STR="" # 双栈模式不强制指定 ip-version，或者根据需求设为 prefer-v4
+            IP_VERSION_STR="" # 双栈模式不强制指定 ip-version
             echo -e "${SNELL_GREEN}已选择：双栈模式 (同时支持 IPv4 和 IPv6)${SNELL_RESET}"
             ;;
         *)
@@ -7763,126 +7792,214 @@ EOF
         return 1
     fi
 
+    # 等 2 秒让 Snell 完成 bind（systemctl start 返回 0 ≠ 进程没死）
+    sleep 2
+
+    # 二次确认服务真的在跑（修复加分项: 防止"成功"提示假阳性）
+    if ! systemctl is-active --quiet ${SNELL_SERVICE_NAME}; then
+        echo -e "${SNELL_RED}Snell 启动后立即崩溃，请检查日志：${SNELL_RESET}"
+        journalctl -u ${SNELL_SERVICE_NAME} -n 20 --no-pager 2>/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Snell 启动后立即崩溃" >> "$SNELL_LOG_FILE"
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
+    fi
+
     # 查看 Snell 日志
     echo -e "${SNELL_GREEN}Snell (端口 ${SNELL_PORT}) 安装成功${SNELL_RESET}"
-    sleep 3
-    journalctl -u ${SNELL_SERVICE_NAME} -n 8 --no-pager || echo -e "${SNELL_YELLOW}无法获取日志，但不影响服务运行${SNELL_RESET}"
+    journalctl -u ${SNELL_SERVICE_NAME} -n 8 --no-pager 2>/dev/null || echo -e "${SNELL_YELLOW}无法获取日志，但不影响服务运行${SNELL_RESET}"
 
-    # 获取本机IP地址
-    HOST_IP=$(curl -s --max-time 5 http://checkip.amazonaws.com)
+    # 获取本机 IP 地址（修复 Bug 4: 按 listen_mode 分流，避免 IPv6-only 拿到 127.0.0.1）
+    local HOST_IP=""
+    case "$listen_mode" in
+        1)  # 仅 IPv4
+            HOST_IP=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null)
+            [ -z "$HOST_IP" ] && HOST_IP=$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null)
+            ;;
+        2)  # 仅 IPv6
+            HOST_IP=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null)
+            [ -z "$HOST_IP" ] && HOST_IP=$(curl -6 -s --max-time 5 https://ifconfig.co 2>/dev/null)
+            ;;
+        3)  # 双栈：优先 IPv4
+            HOST_IP=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null)
+            [ -z "$HOST_IP" ] && HOST_IP=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null)
+            ;;
+        *)
+            HOST_IP=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null)
+            ;;
+    esac
+
+    # 失败时显式提示（不再静默 fallback 到 127.0.0.1）
     if [ -z "$HOST_IP" ]; then
-        HOST_IP=$(curl -s --max-time 5 http://ifconfig.me)
+        echo -e "${SNELL_YELLOW}⚠ 无法自动获取公网 IP，节点链接里的 IP 需要您手动替换${SNELL_RESET}"
+        HOST_IP="<请手动填写公网IP>"
     fi
-    if [ -z "$HOST_IP" ]; then
-        HOST_IP="127.0.0.1"
+
+    # 修复 Bug 4: IPv6 地址要包方括号，否则 Surge/Stash 解析失败
+    local HOST_IP_FORMATTED="$HOST_IP"
+    if echo "$HOST_IP" | grep -q ":"; then
+        HOST_IP_FORMATTED="[${HOST_IP}]"
     fi
 
     # 构造最终配置字符串
-    local FINAL_CONFIG="${NODE_NAME} = snell, ${HOST_IP}, ${SNELL_PORT}, psk=${RANDOM_PSK}, version=5, reuse=true${IP_VERSION_STR}"
+    local FINAL_CONFIG="${NODE_NAME} = snell, ${HOST_IP_FORMATTED}, ${SNELL_PORT}, psk=${RANDOM_PSK}, version=5, reuse=true${IP_VERSION_STR}"
 
     echo ""
     echo -e "${SNELL_GREEN}节点信息输出：${SNELL_RESET}"
     echo -e "${SNELL_CYAN}${FINAL_CONFIG}${SNELL_RESET}"
-    
+
     cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
 ${FINAL_CONFIG}
 EOF
+    # 修复加分项: PSK 文件权限收紧到 600（仅 root 可读）
+    chmod 600 /etc/snell/config-${SNELL_PORT}.txt
     # 注：add_snell_port_to_reserved 已在 systemctl start 之前调用（修复 Bug 4，时机提前）
 }
 
 # 更新 Snell
 update_snell() {
-    # 检查 Snell 是否已安装
-    INSTALL_DIR="/usr/local/bin"
-    SNELL_BIN="${INSTALL_DIR}/snell-server"
+    # 修复 Bug 1: 原子下载 + 失败回滚 + exit→return + 删除旧路径 cat
+    local INSTALL_DIR="/usr/local/bin"
+    local SNELL_BIN="${INSTALL_DIR}/snell-server"
     if [ ! -f "${SNELL_BIN}" ]; then
         echo -e "${SNELL_YELLOW}Snell 未安装，跳过更新${SNELL_RESET}"
-        return
+        return 0
     fi
 
     echo -e "${SNELL_GREEN}Snell 正在更新${SNELL_RESET}"
 
-    # 停止所有 Snell 实例
-    echo -e "${SNELL_GREEN}正在停止所有 Snell 服务...${SNELL_RESET}"
-    for service_file in /etc/systemd/system/snell-*.service; do
-        if [ -f "$service_file" ]; then
-            service_name=$(basename "$service_file")
-            systemctl stop "$service_name" 2>/dev/null
+    # 1. 收集当前活跃实例（用于失败回滚时重启）
+    local running_services=()
+    local svc_file svc_name
+    for svc_file in /etc/systemd/system/snell-*.service; do
+        [ -f "$svc_file" ] || continue
+        svc_name=$(basename "$svc_file")
+        if systemctl is-active --quiet "$svc_name" 2>/dev/null; then
+            running_services+=("$svc_name")
         fi
     done
     # 兼容旧版单实例
-    systemctl stop snell 2>/dev/null
+    local has_legacy=0
+    if systemctl is-active --quiet snell 2>/dev/null; then
+        has_legacy=1
+    fi
 
-    # 等待包管理器
+    # 2. 等待包管理器并装依赖
     wait_for_package_manager_snell
-
-    # 检查是否已安装 Snell 核心程序
-    echo -e "${SNELL_GREEN}正在安装 Snell 核心程序...${SNELL_RESET}"
-    
-    # 安装必要的软件包
     if ! install_required_packages_snell; then
         echo -e "${SNELL_RED}安装必要软件包失败，请检查您的网络连接。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 安装必要软件包失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        return 1
     fi
 
-    # 下载 Snell 服务器文件
-    ARCH=$(arch)
-    VERSION="v5.0.1"
-    SNELL_URL=""
+    # 3. 检测架构（修复 Bug 6: uname -m + ARM 分支）
+    local ARCH=$(uname -m)
+    local VERSION="v5.0.1"
+    local SNELL_URL=""
+    case "$ARCH" in
+        aarch64|arm64)
+            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
+            ;;
+        x86_64|amd64)
+            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
+            ;;
+        *)
+            echo -e "${SNELL_RED}不支持的架构: ${ARCH}${SNELL_RESET}"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - 不支持的架构: ${ARCH}" >> "$SNELL_LOG_FILE"
+            return 1
+            ;;
+    esac
 
-    if [[ ${ARCH} == "aarch64" ]]; then
-        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-aarch64.zip"
-    else
-        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${VERSION}-linux-amd64.zip"
-    fi
+    # 4. 下载到临时目录（不动现有二进制和服务）
+    local TMP_ZIP TMP_DIR
+    TMP_ZIP=$(mktemp /tmp/snell-server.XXXXXX.zip) || return 1
+    TMP_DIR=$(mktemp -d /tmp/snell-update.XXXXXX) || { rm -f "$TMP_ZIP"; return 1; }
 
-    # 下载 Snell 服务器文件
-    if ! wget ${SNELL_URL} -O snell-server.zip; then
+    echo -e "${SNELL_GREEN}正在下载 Snell ${VERSION}...${SNELL_RESET}"
+    if ! wget --timeout=30 --tries=3 -q --show-progress "${SNELL_URL}" -O "$TMP_ZIP"; then
         echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        rm -f "$TMP_ZIP"; rm -rf "$TMP_DIR"
+        return 1
+    fi
+    # 校验大小（防中间盒返回 0 字节 / HTML 错误页）
+    if [ ! -s "$TMP_ZIP" ]; then
+        echo -e "${SNELL_RED}下载文件为空或损坏。${SNELL_RESET}"
+        rm -f "$TMP_ZIP"; rm -rf "$TMP_DIR"
+        return 1
     fi
 
-    # 解压缩文件到指定目录
-    if ! unzip -o snell-server.zip -d ${INSTALL_DIR}; then
+    # 5. 解压到临时目录验证
+    if ! unzip -o "$TMP_ZIP" -d "$TMP_DIR" >/dev/null 2>&1; then
         echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        rm -f "$TMP_ZIP"; rm -rf "$TMP_DIR"
+        return 1
+    fi
+    if [ ! -f "$TMP_DIR/snell-server" ]; then
+        echo -e "${SNELL_RED}解压后未找到 snell-server 二进制。${SNELL_RESET}"
+        rm -f "$TMP_ZIP"; rm -rf "$TMP_DIR"
+        return 1
     fi
 
-    # 删除下载的 zip 文件
-    rm snell-server.zip
+    # 6. 备份原二进制
+    cp "${SNELL_BIN}" "${SNELL_BIN}.bak"
 
-    # 赋予执行权限
-    chmod +x ${INSTALL_DIR}/snell-server
+    # 7. 此刻才停所有实例（已确保新二进制就绪）
+    echo -e "${SNELL_GREEN}正在停止所有 Snell 服务...${SNELL_RESET}"
+    for svc_name in "${running_services[@]}"; do
+        systemctl stop "$svc_name" 2>/dev/null
+    done
+    [ "$has_legacy" -eq 1 ] && systemctl stop snell 2>/dev/null
 
-    # 重启 Snell
-    # 重启所有 Snell 实例
+    # 8. 原子替换二进制
+    if ! mv "$TMP_DIR/snell-server" "${SNELL_BIN}"; then
+        echo -e "${SNELL_RED}二进制替换失败，回滚...${SNELL_RESET}"
+        mv "${SNELL_BIN}.bak" "${SNELL_BIN}" 2>/dev/null
+        for svc_name in "${running_services[@]}"; do
+            systemctl start "$svc_name" 2>/dev/null
+        done
+        [ "$has_legacy" -eq 1 ] && systemctl start snell 2>/dev/null
+        rm -f "$TMP_ZIP"; rm -rf "$TMP_DIR"
+        return 1
+    fi
+    chmod +x "${SNELL_BIN}"
+    rm -f "$TMP_ZIP"; rm -rf "$TMP_DIR"
+
+    # 9. 重启所有原本跑着的实例
     echo -e "${SNELL_GREEN}正在重启所有 Snell 服务...${SNELL_RESET}"
     local restart_count=0
-    for service_file in /etc/systemd/system/snell-*.service; do
-        if [ -f "$service_file" ]; then
-            service_name=$(basename "$service_file")
-            if systemctl restart "$service_name"; then
-                ((restart_count++))
-            else
-                echo -e "${SNELL_RED}重启 ${service_name} 失败${SNELL_RESET}"
-            fi
+    local restart_failed=0
+    for svc_name in "${running_services[@]}"; do
+        if systemctl restart "$svc_name"; then
+            restart_count=$((restart_count + 1))
+        else
+            restart_failed=$((restart_failed + 1))
+            echo -e "${SNELL_RED}重启 ${svc_name} 失败${SNELL_RESET}"
         fi
     done
-    
-    # 兼容旧版单实例
-    if [ -f "/etc/systemd/system/snell.service" ] || [ -f "/lib/systemd/system/snell.service" ]; then
-        systemctl restart snell 2>/dev/null
+    [ "$has_legacy" -eq 1 ] && systemctl restart snell 2>/dev/null
+
+    # 10. 失败时回滚二进制
+    if [ "$restart_failed" -gt 0 ]; then
+        echo -e "${SNELL_RED}有 ${restart_failed} 个服务重启失败，回滚到旧版本二进制...${SNELL_RESET}"
+        if [ -f "${SNELL_BIN}.bak" ]; then
+            mv "${SNELL_BIN}.bak" "${SNELL_BIN}"
+            chmod +x "${SNELL_BIN}"
+            for svc_name in "${running_services[@]}"; do
+                systemctl restart "$svc_name" 2>/dev/null
+            done
+            echo -e "${SNELL_YELLOW}已回滚到旧版本，请检查日志后重试更新。${SNELL_RESET}"
+        fi
+        return 1
     fi
 
-    if [ $restart_count -eq 0 ] && ! systemctl is-active --quiet snell; then
-        echo -e "${SNELL_YELLOW}未检测到活动的 Snell 服务实例${SNELL_RESET}"
-    fi
+    # 11. 全部成功，清理备份
+    rm -f "${SNELL_BIN}.bak"
 
-    echo -e "${SNELL_GREEN}Snell 更新成功，非TF版本请改为version = 4${SNELL_RESET}"
-    cat /etc/snell/config.txt
+    echo -e "${SNELL_GREEN}Snell 更新成功（共重启 ${restart_count} 个实例）${SNELL_RESET}"
+    # 修复 Bug 1: 删除旧版 cat /etc/snell/config.txt（多实例下该文件不存在）
+    # 改为列出所有当前实例
+    list_snell_instances
 }
 
 # 列出所有 Snell 实例
@@ -8003,9 +8120,12 @@ uninstall_snell() {
             echo "正在卸载服务: ${service_name} ..."
             systemctl stop "$service_name"
             systemctl disable "$service_name"
+            systemctl reset-failed "$service_name" 2>/dev/null
             rm "/etc/systemd/system/${service_name}" 2>/dev/null
             rm "/lib/systemd/system/${service_name}" 2>/dev/null
-            
+            # 修复一致性 G: 清理 systemd drop-in 目录(补丁脚本写的 99-net-tcp-tune-fix.conf)
+            rm -rf "/etc/systemd/system/${service_name}.d" 2>/dev/null
+
             if [ "$service_name" == "snell.service" ]; then
                 rm /etc/snell/snell-server.conf 2>/dev/null
             else
@@ -8028,10 +8148,13 @@ uninstall_snell() {
                     echo "卸载端口 $port ..."
                     systemctl stop "snell-${port}.service"
                     systemctl disable "snell-${port}.service"
+                    systemctl reset-failed "snell-${port}.service" 2>/dev/null
                     rm "$service_file"
+                    # 修复一致性 G: 清理 systemd drop-in 目录
+                    rm -rf "/etc/systemd/system/snell-${port}.service.d" 2>/dev/null
                 fi
             done
-            
+
             # 卸载旧版实例
             if systemctl list-unit-files | grep -q "snell.service"; then
                 echo "卸载旧版默认实例..."
@@ -8039,8 +8162,9 @@ uninstall_snell() {
                 systemctl disable snell.service
                 rm /lib/systemd/system/snell.service 2>/dev/null
                 rm /etc/systemd/system/snell.service 2>/dev/null
+                rm -rf /etc/systemd/system/snell.service.d 2>/dev/null
             fi
-            
+
             # 清理配置目录
             rm -rf /etc/snell
             # 清理二进制文件
@@ -8048,6 +8172,17 @@ uninstall_snell() {
 
             # 移除内核保留端口配置文件（修复 ④）
             remove_all_snell_reserved_ports
+
+            # 修复一致性 G+H: 清理补丁脚本注册的每日重启 cron 和 wrapper script
+            rm -f /usr/local/bin/snell-daily-restart.sh
+            if command -v crontab >/dev/null 2>&1; then
+                local tmp_cron
+                tmp_cron=$(mktemp 2>/dev/null) && {
+                    crontab -l 2>/dev/null | grep -v "# Snell每日重启" > "$tmp_cron" || true
+                    crontab "$tmp_cron" 2>/dev/null
+                    rm -f "$tmp_cron"
+                }
+            fi
 
             systemctl daemon-reload
             echo -e "${SNELL_GREEN}所有 Snell 实例已卸载${SNELL_RESET}"
