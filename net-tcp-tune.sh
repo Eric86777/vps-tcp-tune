@@ -7436,6 +7436,75 @@ stop_snell() {
     fi
 }
 
+# Snell 安装失败回滚（修复 ⑤：避免半成品状态）
+cleanup_partial_install_snell() {
+    local port="$1"
+    if [ -n "$port" ]; then
+        systemctl stop "snell-${port}.service" 2>/dev/null
+        systemctl disable "snell-${port}.service" 2>/dev/null
+        rm -f "/etc/systemd/system/snell-${port}.service"
+        rm -f "/etc/snell/snell-${port}.conf"
+        rm -f "/etc/snell/config-${port}.txt"
+        systemctl daemon-reload 2>/dev/null
+    fi
+    rm -f /tmp/snell-server.zip 2>/dev/null
+    rm -f snell-server.zip 2>/dev/null
+}
+
+# 把 Snell 端口加入内核 ip_local_reserved_ports（修复 ③：防止被 outbound 临时端口抢占）
+add_snell_port_to_reserved() {
+    local port="$1"
+    [ -n "$port" ] || return 0
+    local reserved_file="/etc/sysctl.d/99-zzz-snell-reserved-ports.conf"
+    local current=""
+    if [ -f "$reserved_file" ]; then
+        current=$(grep -E '^net\.ipv4\.ip_local_reserved_ports' "$reserved_file" 2>/dev/null | sed -E 's/^[^=]+=\s*//' | tr -d ' ')
+    fi
+    local new_list
+    if [ -z "$current" ]; then
+        new_list="${port}"
+    elif echo ",${current}," | grep -q ",${port},"; then
+        new_list="${current}"
+    else
+        new_list="${current},${port}"
+    fi
+    cat > "$reserved_file" <<EOF
+# Snell 监听端口保留列表（由 net-tcp-tune 自动管理，请勿手动修改）
+# 作用：让内核 outbound 临时端口分配跳过这些端口，避免抢占 Snell 监听端口
+net.ipv4.ip_local_reserved_ports = ${new_list}
+EOF
+    sysctl -p "$reserved_file" >/dev/null 2>&1
+}
+
+# 从内核 ip_local_reserved_ports 中移除指定 Snell 端口（修复 ④：单端口卸载清理）
+remove_snell_port_from_reserved() {
+    local port="$1"
+    [ -n "$port" ] || return 0
+    local reserved_file="/etc/sysctl.d/99-zzz-snell-reserved-ports.conf"
+    [ -f "$reserved_file" ] || return 0
+    local current
+    current=$(grep -E '^net\.ipv4\.ip_local_reserved_ports' "$reserved_file" 2>/dev/null | sed -E 's/^[^=]+=\s*//' | tr -d ' ')
+    [ -z "$current" ] && return 0
+    local new_list
+    new_list=$(echo "$current" | tr ',' '\n' | grep -v "^${port}$" | paste -sd, -)
+    if [ -z "$new_list" ]; then
+        rm -f "$reserved_file"
+    else
+        cat > "$reserved_file" <<EOF
+# Snell 监听端口保留列表（由 net-tcp-tune 自动管理，请勿手动修改）
+# 作用：让内核 outbound 临时端口分配跳过这些端口，避免抢占 Snell 监听端口
+net.ipv4.ip_local_reserved_ports = ${new_list}
+EOF
+        sysctl -p "$reserved_file" >/dev/null 2>&1
+    fi
+}
+
+# 全部卸载时移除整个保留端口配置文件（修复 ④：全部卸载清理）
+remove_all_snell_reserved_ports() {
+    local reserved_file="/etc/sysctl.d/99-zzz-snell-reserved-ports.conf"
+    [ -f "$reserved_file" ] && rm -f "$reserved_file"
+}
+
 # 安装 Snell
 install_snell() {
     echo -e "${SNELL_GREEN}正在安装 Snell${SNELL_RESET}"
@@ -7447,7 +7516,8 @@ install_snell() {
     if ! install_required_packages_snell; then
         echo -e "${SNELL_RED}安装必要软件包失败，请检查您的网络连接。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 安装必要软件包失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
     fi
 
     # 下载 Snell 服务器文件
@@ -7470,7 +7540,8 @@ install_snell() {
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}下载 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 下载 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
     fi
 
     # 解压缩文件到指定目录
@@ -7478,7 +7549,8 @@ install_snell() {
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}解压缩 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 解压缩 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
     fi
 
     # 删除下载的 zip 文件
@@ -7487,8 +7559,8 @@ install_snell() {
     # 赋予执行权限
     chmod +x ${INSTALL_DIR}/snell-server
 
-    # 生成随机端口和密码
-    SNELL_PORT=$(shuf -i 30000-65000 -n 1)
+    # 生成随机端口和密码（修复 ①：避开 Linux 默认临时端口起点 32768，降低被抢概率）
+    SNELL_PORT=$(shuf -i 10000-29999 -n 1)
     RANDOM_PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
 
     # 检查 snell 用户组和用户是否已存在
@@ -7600,6 +7672,9 @@ EOF
 Description=Snell Proxy Service (Port ${SNELL_PORT})
 After=network.target network-online.target
 Wants=network-online.target
+# 修复 ②：关闭 systemd 重启次数限制，防止反复失败后进入永久 failed 状态
+StartLimitIntervalSec=0
+StartLimitBurst=0
 
 [Service]
 Type=simple
@@ -7610,7 +7685,7 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 LimitNOFILE=32768
 Restart=always
-RestartSec=5
+RestartSec=10
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=5s
@@ -7628,7 +7703,8 @@ EOF
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}重载 Systemd 配置失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 重载 Systemd 配置失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
     fi
 
     # 开机自启动 Snell
@@ -7636,7 +7712,8 @@ EOF
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}开机自启动 Snell 失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 开机自启动 Snell 失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
     fi
 
     # 启动 Snell 服务
@@ -7644,7 +7721,8 @@ EOF
     if [ $? -ne 0 ]; then
         echo -e "${SNELL_RED}启动 Snell 服务失败。${SNELL_RESET}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 启动 Snell 服务失败" >> "$SNELL_LOG_FILE"
-        exit 1
+        cleanup_partial_install_snell "${SNELL_PORT:-}"
+        return 1
     fi
 
     # 查看 Snell 日志
@@ -7671,6 +7749,9 @@ EOF
     cat << EOF > /etc/snell/config-${SNELL_PORT}.txt
 ${FINAL_CONFIG}
 EOF
+
+    # 把 Snell 端口加入内核保留列表，防止被 outbound 临时端口抢占（修复 ③）
+    add_snell_port_to_reserved "${SNELL_PORT}"
 }
 
 # 更新 Snell
@@ -7895,7 +7976,10 @@ uninstall_snell() {
                 rm "/etc/snell/snell-${port_to_uninstall}.conf" 2>/dev/null
                 rm "/etc/snell/config-${port_to_uninstall}.txt" 2>/dev/null
             fi
-            
+
+            # 从内核保留端口列表中移除该端口（修复 ④）
+            remove_snell_port_from_reserved "$port_to_uninstall"
+
             systemctl daemon-reload
             echo -e "${SNELL_GREEN}实例 ${port_to_uninstall} 卸载成功${SNELL_RESET}"
             ;;
@@ -7925,7 +8009,10 @@ uninstall_snell() {
             rm -rf /etc/snell
             # 清理二进制文件
             rm /usr/local/bin/snell-server
-            
+
+            # 移除内核保留端口配置文件（修复 ④）
+            remove_all_snell_reserved_ports
+
             systemctl daemon-reload
             echo -e "${SNELL_GREEN}所有 Snell 实例已卸载${SNELL_RESET}"
             ;;
