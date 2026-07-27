@@ -8,6 +8,10 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.8 更新: Snell v6 专区跟进官方 RC——内核默认版本 6.0.0b2→6.0.0rc，「Beta 测试专区」更名为「RC 测试专区」并细化
+#   预发布提示(客户端需 Surge Mac Beta/iOS TestFlight，正式版前协议仍可能变动)；版本探测新增 rc 分支
+#   (裸 rc 视为 rc1，按 b1..bN→rc→rc2..→正式版 的官方演进顺序递增探测)；实例配置显式写入 mode = default
+#   (v6.0.0b3 起的流量混淆+AES，避免官方改默认值导致行为漂移)，并提示可选 unshaped/unsafe-raw (by Eric86777)
 # v5.4.7 更新: 功能1 ARM64 分支重做——原逻辑依赖外部域名 jhb.ovh 的第三方脚本，该站校验文件已 404 导致
 #   ARM 用户按功能1 必然失败，且失败路径无暂停、报错被主菜单清屏吞掉，表现为"闪退无反应"；
 #   经查 BBR v3 至今未合入 Linux 主线(主线 tcp_bbr.c 无任何 v3 实现)，XanMod 官方亦仅提供 x86-64 构建，
@@ -22,16 +26,9 @@
 #   改用mktemp随机路径+600权限,mktemp失败即终止 (by Eric86777)
 # v5.4.4 更新: 菜单33主列表新增「重置日」「备注」两列(响应 issue #22)——有 reset_day 显示"每月X日"、无则显示"不重置"，
 #   备注为空显示"-"；同时修复到期日为空串时显示空白的问题(jq 的 // 不覆盖空串，导致永久端口到期日列一直是空白，现统一显示"永久") (by Eric86777)
-# v5.4.3 更新: 菜单33修复7项问题——①新增开机自动恢复(ptm-boot-restore.sh+systemd服务+流量快照)，
-#   重启后自动重建nftables计数/配额/tc限速并重新封锁到期端口(此前重启即失效)；②每日检查新增配额80%/95%阈值邮件通知(此前完全缺失)；
-#   ③新增到期前3天预警(此前完全缺失)；④超期≥3天端口改为cron自动完整清理并回收(此前仅记日志不清理)；
-#   ⑤tc_remove_limit改为按端口精确删除(此前用全量tc filter del会清空该网卡上所有端口的限速规则)；
-#   ⑥修正配额规则重复插入；⑦清理菜单33遗留死代码；
-#   ⑧修复Sub2API(菜单32)自定义端口显示错误——端口提取正则不匹配官方 Environment=SERVER_PORT= 格式，
-#   导致部署完成页/状态页恒显示默认8282、修改端口功能静默失效；现以systemd服务文件为准并自愈过期端口文件 (by Eric86777)
 
-SCRIPT_VERSION="5.4.7"
-SCRIPT_LAST_UPDATE="修复ARM64机器按功能1闪退;ARM改为引导至功能3,移除外部域名脚本依赖"
+SCRIPT_VERSION="5.4.8"
+SCRIPT_LAST_UPDATE="Snell v6 跟进官方RC(6.0.0rc);版本探测支持rc;配置显式写入mode=default"
 #=============================================================================
 
 #=============================================================================
@@ -127,7 +124,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
 # 版本号（SCRIPT_VERSION / SCRIPT_LAST_UPDATE 在文件头部定义）
 readonly CADDY_DEFAULT_VERSION="2.10.2"
 readonly SNELL_DEFAULT_VERSION="5.0.1"
-readonly SNELL_V6_DEFAULT_VERSION="6.0.0b2"
+readonly SNELL_V6_DEFAULT_VERSION="6.0.0rc"
 
 #=============================================================================
 # 日志系统
@@ -8909,7 +8906,7 @@ snell_menu() {
         echo "5. 更新 Snell 核心程序（低频）"
         echo "6. Snell 健康检查（只检测）"
         echo "7. 查看 Snell 配置"
-        echo "8. Snell v6 Beta 测试专区 🧪"
+        echo "8. Snell v6 RC 测试专区 🧪"
         echo "0. 返回主菜单"
         echo "======================"
         read -p "请输入选项编号: " snell_choice
@@ -8971,7 +8968,7 @@ snell_menu() {
 }
 
 #=============================================================================
-# 星辰大海 Snell v6 Beta 测试专区（与 v5 完全隔离，独立命名空间）
+# 星辰大海 Snell v6 RC 测试专区（与 v5 完全隔离，独立命名空间）
 # 隔离要点：二进制 snell-server-v6 / 服务 snellv6-{port}.service / 配置 /etc/snell-v6/
 #           / 保留端口文件 99-zzy(排在 v5 的 zzz 之前) / cron 标记 SnellV6每日重启 / 锁 fd 202
 # 铁律：v6 绝不触碰 v5 的任何文件、服务、内核保留端口 runtime。详见 docs/plans/snellv6-design.md
@@ -9133,7 +9130,7 @@ snellv6_check_binary_runnable() {
     return 0
 }
 
-# 下载并安装 libssl1.1（libcrypto.so.1.1）兼容包，供 Snell v6 Beta 二进制使用。
+# 下载并安装 libssl1.1（libcrypto.so.1.1）兼容包，供 Snell v6 预发布二进制使用。
 # 钉死 Debian bullseye-security 的 1.1.1w-0+deb11u7：
 #   - 官方源（security.debian.org）作主链接（快），点版本被升级后会 404；
 #   - snapshot.debian.org 内容寻址永久存档作兜底（永不失效），与官方源同一文件、同一 SHA256；
@@ -9170,7 +9167,7 @@ snellv6_install_legacy_libssl11() {
             ;;
     esac
 
-    echo -e "${SNELL_YELLOW}检测到 Snell v6 Beta 需要旧版 OpenSSL 1.1 运行库（libcrypto.so.1.1）。${SNELL_RESET}"
+    echo -e "${SNELL_YELLOW}检测到 Snell v6 需要旧版 OpenSSL 1.1 运行库（libcrypto.so.1.1）。${SNELL_RESET}"
     echo -e "${SNELL_YELLOW}Debian 12/13 默认不再内置该库；为测试 v6，可安装 Debian bullseye-security 的 libssl1.1 兼容包。${SNELL_RESET}"
     echo -e "${SNELL_YELLOW}该包仅提供 libcrypto.so.1.1 / libssl.so.1.1，不影响系统现有 OpenSSL 3.x；若介意旧运行库请选 N。${SNELL_RESET}"
     read -p "是否下载并安装 libssl1.1 兼容包以继续测试 Snell v6？[y/N]: " confirm
@@ -9298,7 +9295,7 @@ snellv6_ensure_binary_runnable() {
         echo -e "${SNELL_RED}Snell v6 二进制运行自检失败：${SNELL_RESET}"
         echo "$SNELLV6_LAST_CHECK_ERROR"
         if ! snellv6_install_runtime_compat_for_error "$SNELLV6_LAST_CHECK_ERROR"; then
-            echo -e "${SNELL_RED}无法自动补齐 Snell v6 Beta 运行依赖，已停止安装。${SNELL_RESET}"
+            echo -e "${SNELL_RED}无法自动补齐 Snell v6 运行依赖，已停止安装。${SNELL_RESET}"
             return 1
         fi
     done
@@ -9615,7 +9612,7 @@ SNELL_VERSION_CACHE_TTL=86400   # 24 小时
 # 官方无版本清单接口（dl 目录禁列 403、Surge 文档页 404），只能从当前版本往后做有限窗口的"并行"递增探测
 snell_probe_newer_version() {
     local current="$1"
-    local arch a maj min pat bnum i p c tmp latest=""
+    local arch a maj min pat bnum rcnum i p c tmp latest=""
     local -a candidates=()
 
     arch=$(uname -m)
@@ -9625,10 +9622,21 @@ snell_probe_newer_version() {
         *) return 1 ;;
     esac
 
+    # 候选必须严格按版本从低到高追加：下方取"最新版"依赖数组顺序，而非版本号比较
+    # 官方版本演进：X.Y.Zb1..bN → X.Y.Zrc(裸 rc 即 rc1) → X.Y.Zrc2.. → X.Y.Z 正式版
     if [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)b([0-9]+)$ ]]; then
-        # beta：往后探 8 个 beta + 同 base 正式版及 3 个补丁 + 下个次版本
+        # beta：往后探 8 个 beta + rc 系列 + 同 base 正式版及 3 个补丁 + 下个次版本
         maj="${BASH_REMATCH[1]}"; min="${BASH_REMATCH[2]}"; pat="${BASH_REMATCH[3]}"; bnum="${BASH_REMATCH[4]}"
         for i in $(seq $((bnum + 1)) $((bnum + 8))); do candidates+=("${maj}.${min}.${pat}b${i}"); done
+        candidates+=("${maj}.${min}.${pat}rc")
+        for i in $(seq 2 5); do candidates+=("${maj}.${min}.${pat}rc${i}"); done
+        for p in $(seq "$pat" $((pat + 3))); do candidates+=("${maj}.${min}.${p}"); done
+        candidates+=("${maj}.$((min + 1)).0")
+    elif [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)rc([0-9]*)$ ]]; then
+        # rc：官方裸 rc 视为 rc1；往后探 4 个 rc + 同 base 正式版及 3 个补丁 + 下个次版本
+        maj="${BASH_REMATCH[1]}"; min="${BASH_REMATCH[2]}"; pat="${BASH_REMATCH[3]}"
+        rcnum="${BASH_REMATCH[4]}"; [ -n "$rcnum" ] || rcnum=1
+        for i in $(seq $((rcnum + 1)) $((rcnum + 4))); do candidates+=("${maj}.${min}.${pat}rc${i}"); done
         for p in $(seq "$pat" $((pat + 3))); do candidates+=("${maj}.${min}.${p}"); done
         candidates+=("${maj}.$((min + 1)).0")
     elif [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -9784,7 +9792,7 @@ snellv6_check_update() {
     echo -e "  ${SNELL_GREEN}2)${SNELL_RESET} 再进本菜单「4. 更新 v6 内核 + 一键修复」即可平滑升级"
     echo -e "     （节点配置 / 端口 / PSK 全部保留不变）"
     echo ""
-    echo -e "${SNELL_YELLOW}⚠ 仍是 Beta：升级后客户端 Surge 需切到支持 v${latest} 的 Beta 渠道，两端版本要匹配。${SNELL_RESET}"
+    echo -e "${SNELL_YELLOW}⚠ 仍是预发布版本：升级后客户端 Surge 需切到支持 v${latest} 的 Beta/TestFlight 渠道，两端版本要匹配。${SNELL_RESET}"
     return 0
 }
 
@@ -9912,9 +9920,9 @@ cleanup_partial_install_snellv6() {
 
 # 安装 v6 实例
 install_snellv6() {
-    echo -e "${SNELL_GREEN}=== 安装 Snell v6 Beta 实例 ===${SNELL_RESET}"
-    echo -e "${SNELL_YELLOW}⚠ Beta 提示：客户端需 Surge Mac Beta 渠道或 iOS TestFlight；${SNELL_RESET}"
-    echo -e "${SNELL_YELLOW}  App Store 正式版 Surge 无法连接 v6 节点；协议 Beta 期可能不兼容变动。${SNELL_RESET}"
+    echo -e "${SNELL_GREEN}=== 安装 Snell v6 RC 实例 ===${SNELL_RESET}"
+    echo -e "${SNELL_YELLOW}⚠ 预发布提示：客户端需 Surge Mac Beta 渠道或 iOS TestFlight；${SNELL_RESET}"
+    echo -e "${SNELL_YELLOW}  App Store 正式版 Surge 无法连接 v6 节点；正式版发布前协议仍可能变动。${SNELL_RESET}"
     echo ""
 
     wait_for_package_manager_snell
@@ -10052,15 +10060,20 @@ install_snellv6() {
     local random_psk
     random_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
 
-    # 写配置文件（dns-ip-preference 是 outbound 解析偏好，与监听栈正交，统一用安全的 default）
+    # 写配置文件
+    # mode（v6.0.0b3 起）：default=流量混淆+AES 加密（推荐，抗指纹）；unshaped=关混淆仅 AES，约快 10%；
+    #   unsafe-raw=混淆与加密全关。显式写出 default，避免官方后续改默认值时行为漂移。
+    # dns-ip-preference 是 outbound 解析偏好，与监听栈正交，统一用安全的 default
     local conf_file="${SNELLV6_CONF_DIR}/snell-${snellv6_port}.conf"
     cat > "$conf_file" <<EOF
 [snell-server]
 listen = ${listen_addr}
 psk = ${random_psk}
+mode = default
 dns-ip-preference = default
 EOF
-    echo -e "${SNELL_CYAN}提示: dns-ip-preference 可选 default/prefer-ipv4/prefer-ipv6/ipv4-only/ipv6-only，如需修改请编辑 ${conf_file}${SNELL_RESET}"
+    echo -e "${SNELL_CYAN}提示: mode 可选 default(混淆+加密,推荐) / unshaped(关混淆仅加密,约快10%) / unsafe-raw(全关)${SNELL_RESET}"
+    echo -e "${SNELL_CYAN}      dns-ip-preference 可选 default/prefer-ipv4/prefer-ipv6/ipv4-only/ipv6-only，如需修改请编辑 ${conf_file}${SNELL_RESET}"
 
     chown snell:snell "$SNELLV6_CONF_DIR"
     chmod 750 "$SNELLV6_CONF_DIR"
@@ -10160,7 +10173,7 @@ EOF
 
     local final_config="${node_name} = snell, ${host_ip_formatted}, ${snellv6_port}, psk=${random_psk}, version=6, reuse=true${ip_version_str}"
     echo ""
-    echo -e "${SNELL_GREEN}节点信息输出（Surge 客户端需 v6 Beta 渠道）：${SNELL_RESET}"
+    echo -e "${SNELL_GREEN}节点信息输出（Surge 客户端需 Beta/TestFlight 渠道）：${SNELL_RESET}"
     echo -e "${SNELL_CYAN}${final_config}${SNELL_RESET}"
 
     cat > "${SNELLV6_CONF_DIR}/config-${snellv6_port}.txt" <<EOF
@@ -10168,7 +10181,7 @@ ${final_config}
 EOF
     chmod 600 "${SNELLV6_CONF_DIR}/config-${snellv6_port}.txt"
 
-    # 注册每日重启兜底（v6 是 Beta，兜底更重要）
+    # 注册每日重启兜底（v6 仍是预发布版本，兜底更重要）
     snellv6_install_daily_restart_cron || true
 }
 
@@ -10388,9 +10401,9 @@ uninstall_snellv6() {
 snellv6_menu() {
     while true; do
         clear
-        echo -e "${SNELL_CYAN}=== Snell v6 Beta 测试专区 🧪 ===${SNELL_RESET}"
-        echo -e "${SNELL_YELLOW}⚠ v6 仍是官方 Beta：客户端需 Surge Mac Beta 渠道 / iOS TestFlight；${SNELL_RESET}"
-        echo -e "${SNELL_YELLOW}  协议可能随 Beta 更新不兼容变动，两端需同步；勿承载主力线路。${SNELL_RESET}"
+        echo -e "${SNELL_CYAN}=== Snell v6 RC 测试专区 🧪 ===${SNELL_RESET}"
+        echo -e "${SNELL_YELLOW}⚠ v6 仍是官方预发布(RC)：客户端需 Surge Mac Beta 渠道 / iOS TestFlight；${SNELL_RESET}"
+        echo -e "${SNELL_YELLOW}  正式版发布前协议仍可能变动，两端需同步；勿承载主力线路。${SNELL_RESET}"
         echo -e "${SNELL_CYAN}  与 v5 完全隔离：独立二进制/服务/配置目录/端口保留，互不影响。${SNELL_RESET}"
 
         local instance_count=0 running_count=0 menu_unit
