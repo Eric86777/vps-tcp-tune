@@ -8,6 +8,11 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.7 更新: 功能1 ARM64 分支重做——原逻辑依赖外部域名 jhb.ovh 的第三方脚本，该站校验文件已 404 导致
+#   ARM 用户按功能1 必然失败，且失败路径无暂停、报错被主菜单清屏吞掉，表现为"闪退无反应"；
+#   经查 BBR v3 至今未合入 Linux 主线(主线 tcp_bbr.c 无任何 v3 实现)，XanMod 官方亦仅提供 x86-64 构建，
+#   ARM 平台不存在官方方案。现改为：架构检测提前到确认提示之前，ARM 直接给出说明并引导至功能3(自带BBR+fq，
+#   ARM 原生可用)，移除对外部域名脚本的下载执行(净减82行)；其余架构兜底提示补 break_end (by Eric86777)
 # v5.4.6 更新: 安全加固收尾——清理 v5.4.5 未覆盖的剩余3处可预测临时路径: ①sing-box安装临时目录改mktemp -d(700)；
 #   ②"禁止中国大陆直连"的IP列表下载改mktemp随机路径(600),不再用/tmp固定文件名；③cloudflared下载临时文件改mktemp随机后缀,
 #   三处均失败即终止；至此全脚本/tmp临时文件均为不可预测路径 (by Eric86777)
@@ -24,12 +29,9 @@
 #   ⑥修正配额规则重复插入；⑦清理菜单33遗留死代码；
 #   ⑧修复Sub2API(菜单32)自定义端口显示错误——端口提取正则不匹配官方 Environment=SERVER_PORT= 格式，
 #   导致部署完成页/状态页恒显示默认8282、修改端口功能静默失效；现以systemd服务文件为准并自愈过期端口文件 (by Eric86777)
-# v5.4.2 更新: 菜单33「快速开通端口」重做为与私有dog原版一致的多步向导(端口→计费模式→配额→备注→重置日→租期→邮箱)，
-#   恢复"合并端口为组"功能；配额/带宽输入改为dog原版的"0=无限制"约定(单位MB/GB/T、Kbps/Mbps/Gbps)；
-#   修正计费模式选项编号(2=仅出站 3=CN Premium，此前编号反了)；带宽/配额/租期管理改为按序号多选端口 (by Eric86777)
 
-SCRIPT_VERSION="5.4.6"
-SCRIPT_LAST_UPDATE="安全加固收尾:sing-box/中国IP列表/cloudflared临时文件全部改用mktemp"
+SCRIPT_VERSION="5.4.7"
+SCRIPT_LAST_UPDATE="修复ARM64机器按功能1闪退;ARM改为引导至功能3,移除外部域名脚本依赖"
 #=============================================================================
 
 #=============================================================================
@@ -2835,7 +2837,31 @@ install_xanmod_kernel() {
     echo -e "${gl_kjlan}=== 安装 XanMod 内核与 BBR v3 ===${gl_bai}"
     echo "视频教程: https://www.bilibili.com/video/BV14K421x7BS"
     echo "------------------------------------------------"
-    echo "支持系统: Debian/Ubuntu (x86_64 & ARM64)"
+
+    # 先检测架构：ARM64 无可安装内容，不应先询问用户是否安装
+    local cpu_arch
+    cpu_arch=$(uname -m)
+
+    if [ "$cpu_arch" = "aarch64" ]; then
+        echo -e "检测到 CPU 架构: ${gl_huang}aarch64 (ARM64)${gl_bai}"
+        echo ""
+        echo -e "${gl_huang}⚠ ARM64 平台暂无官方 BBR v3 方案${gl_bai}"
+        echo ""
+        echo "原因：BBR v3 至今未合入 Linux 主线内核，必须使用打过补丁"
+        echo "      重新编译的内核；而 XanMod 官方仅提供 x86-64 构建。"
+        echo ""
+        echo -e "${gl_lv}✅ 但你的 ARM 机器依然可以做网络优化：${gl_bai}"
+        echo -e "   请直接使用【${gl_lv}功能 3 - BBR 直连/落地优化${gl_bai}】"
+        echo ""
+        echo "   ARM 内核自带 BBR + fq 队列算法，配合功能 3 的带宽检测"
+        echo "   与缓冲区调优，同样能获得明显的网络性能提升。"
+        echo ""
+        echo "------------------------------------------------"
+        break_end
+        return 1
+    fi
+
+    echo "支持系统: Debian/Ubuntu x86_64（ARM64 请使用功能 3）"
     echo -e "${gl_huang}警告: 将升级 Linux 内核，请提前备份重要数据！${gl_bai}"
     echo "------------------------------------------------"
     read -e -p "确定继续安装吗？(Y/N): " choice
@@ -2848,96 +2874,12 @@ install_xanmod_kernel() {
             return 1
             ;;
     esac
-    
-    # 检测 CPU 架构
-    local cpu_arch=$(uname -m)
-    
-    # ARM 架构特殊处理
-    if [ "$cpu_arch" = "aarch64" ]; then
-        echo -e "${gl_kjlan}检测到 ARM64 架构，使用专用安装脚本${gl_bai}"
 
-        install_package curl coreutils || return 1
-
-        local tmp_dir
-        tmp_dir=$(mktemp -d 2>/dev/null)
-        if [ -z "$tmp_dir" ]; then
-            echo -e "${gl_hong}错误: 无法创建临时目录用于下载 ARM64 脚本${gl_bai}"
-            return 1
-        fi
-
-        local script_url="https://jhb.ovh/jb/bbrv3arm.sh"
-        local sha256_url="${script_url}.sha256"
-        local sha512_url="${script_url}.sha512"
-        local script_path="${tmp_dir}/bbrv3arm.sh"
-        local sha256_path="${tmp_dir}/bbrv3arm.sh.sha256"
-        local sha512_path="${tmp_dir}/bbrv3arm.sh.sha512"
-
-        echo "日志: 正在下载 ARM64 安装脚本到临时目录 ${tmp_dir}"
-
-        if ! curl -fsSL "$script_url" -o "$script_path"; then
-            echo -e "${gl_hong}错误: ARM64 安装脚本下载失败${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        if ! curl -fsSL "$sha256_url" -o "$sha256_path"; then
-            echo -e "${gl_hong}错误: 未能获取发布方提供的 SHA256 校验文件${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        if ! curl -fsSL "$sha512_url" -o "$sha512_path"; then
-            echo -e "${gl_hong}错误: 未能获取发布方提供的 SHA512 校验文件${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        local expected_sha256 expected_sha512 actual_sha256 actual_sha512
-        expected_sha256=$(awk 'NR==1 {print $1}' "$sha256_path")
-        expected_sha512=$(awk 'NR==1 {print $1}' "$sha512_path")
-
-        if [ -z "$expected_sha256" ] || [ -z "$expected_sha512" ]; then
-            echo -e "${gl_hong}错误: 校验文件内容无效${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        actual_sha256=$(sha256sum "$script_path" | awk '{print $1}')
-        actual_sha512=$(sha512sum "$script_path" | awk '{print $1}')
-
-        if [ "$expected_sha256" != "$actual_sha256" ]; then
-            echo -e "${gl_hong}错误: SHA256 校验失败，已中止${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        if [ "$expected_sha512" != "$actual_sha512" ]; then
-            echo -e "${gl_hong}错误: SHA512 校验失败，已中止${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        echo -e "${gl_lv}SHA256 与 SHA512 校验通过${gl_bai}"
-        echo -e "${gl_huang}安全提示:${gl_bai} ARM64 脚本已下载至 ${script_path}"
-        echo "如需，您可在继续前使用 cat/less 等命令手动审查脚本内容。"
-        read -s -r -p "审查完成后按 Enter 继续执行（Ctrl+C 取消）..." _
-        echo ""
-
-        if bash "$script_path"; then
-            rm -rf "$tmp_dir"
-            echo -e "${gl_lv}ARM BBR v3 安装完成${gl_bai}"
-            return 0
-        else
-            echo -e "${gl_hong}安装失败${gl_bai}"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-    fi
-    
-    # 显式检查 x86_64 架构
+    # 显式检查 x86_64 架构（aarch64 已在前面提前返回，这里兜底其余架构）
     if [ "$cpu_arch" != "x86_64" ]; then
         echo -e "${gl_hong}错误: 不支持的 CPU 架构: ${cpu_arch}${gl_bai}"
-        echo "本脚本仅支持 x86_64 和 aarch64 架构"
+        echo "XanMod 内核仅提供 x86_64 构建；其他架构可使用功能 3 做网络调优。"
+        break_end
         return 1
     fi
 
@@ -6724,10 +6666,11 @@ update_xanmod_kernel() {
     # 检测 CPU 架构
     local cpu_arch=$(uname -m)
     
-    # ARM 架构提示
+    # ARM 架构提示：XanMod 无 ARM64 构建，此处不存在可更新的内核
     if [ "$cpu_arch" = "aarch64" ]; then
-        echo -e "${gl_huang}ARM64 架构暂不支持自动更新${gl_bai}"
-        echo "建议卸载后重新安装以获取最新版本"
+        echo -e "${gl_huang}ARM64 平台无 XanMod 内核可更新${gl_bai}"
+        echo "BBR v3 未合入主线内核，XanMod 官方仅提供 x86-64 构建。"
+        echo -e "ARM 机器请使用【${gl_lv}功能 3 - BBR 直连/落地优化${gl_bai}】做网络调优。"
         break_end
         return 1
     fi
