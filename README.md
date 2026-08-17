@@ -307,6 +307,6 @@ A: 是的，首次安装内核后必须重启服务器。后续修改参数（�
 
 ## Star History
 
-<a href="https://star-history.com/#Eric86777/vps-tcp-tune&Date">
-  <img src="https://api.star-history.com/svg?repos=Eric86777/vps-tcp-tune&type=Date" alt="Star History Chart" width="600">
+<a href="https://star-history.dera.page/#Eric86777/vps-tcp-tune&Date">
+  <img src="https://star-history.dera.page/svg?repos=Eric86777/vps-tcp-tune&type=Date" alt="Star History Chart" width="600">
 </a>
