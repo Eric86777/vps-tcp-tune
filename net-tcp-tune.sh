@@ -8,6 +8,10 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.9 更新: 修复菜单33端口流量用满后状态仍显示🟢——读 nft 配额时按 "over N bytes" 解析文本，但 nft 会把能被1024整除的值
+#   换单位打印(如 over 102400 mbytes)，到量时内核还把 used 封顶成阈值(同样打印成 mbytes)，两个数都取不到，
+#   「🔴配额用尽」「🟡即将用尽」从不显示(实际限流与每月重置不受影响)；现改读 nft -j 的原始字节，读不到配额对象时
+#   仍按计数器估算 (by Eric86777)
 # v5.4.8 更新: Snell v6 专区跟进官方 RC——内核默认版本 6.0.0b2→6.0.0rc，「Beta 测试专区」更名为「RC 测试专区」并细化
 #   预发布提示(客户端需 Surge Mac Beta/iOS TestFlight，正式版前协议仍可能变动)；版本探测新增 rc 分支
 #   (裸 rc 视为 rc1，按 b1..bN→rc→rc2..→正式版 的官方演进顺序递增探测)；实例配置显式写入 mode = default
@@ -24,11 +28,9 @@
 #   常数时间比对,无密钥配置一律拒绝),移除CORS通配符,「修改配置」会同步重新生成proxy.mjs并为旧实例补发密钥(重启后生效)；
 #   ②Responses代理实例目录权限收紧为700、config.json为600(先收紧再写入)；③Xray官方安装脚本与星辰大海Xray的/tmp临时文件
 #   改用mktemp随机路径+600权限,mktemp失败即终止 (by Eric86777)
-# v5.4.4 更新: 菜单33主列表新增「重置日」「备注」两列(响应 issue #22)——有 reset_day 显示"每月X日"、无则显示"不重置"，
-#   备注为空显示"-"；同时修复到期日为空串时显示空白的问题(jq 的 // 不覆盖空串，导致永久端口到期日列一直是空白，现统一显示"永久") (by Eric86777)
 
-SCRIPT_VERSION="5.4.8"
-SCRIPT_LAST_UPDATE="Snell v6 跟进官方RC(6.0.0rc);版本探测支持rc;配置显式写入mode=default"
+SCRIPT_VERSION="5.4.9"
+SCRIPT_LAST_UPDATE="修复菜单33配额用尽/即将用尽状态不显示(nft配额输出带单位导致解析失败)"
 #=============================================================================
 
 #=============================================================================
@@ -23308,13 +23310,15 @@ ptm_get_port_running_status() {
     local quota_limit
     quota_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$PTM_CONFIG_FILE")
     if [ "$quota_limit" != "unlimited" ]; then
-        local quota_info
-        quota_info=$(nft list quota $PTM_TABLE_FAMILY $PTM_TABLE_NAME "port_${port_safe}_quota" 2>/dev/null || true)
-        if [ -n "$quota_info" ]; then
-            local over_bytes used_bytes
-            over_bytes=$(echo "$quota_info" | grep -oE 'over [0-9]+ bytes' | grep -oE '[0-9]+' | head -n1)
-            used_bytes=$(echo "$quota_info" | grep -oE 'used [0-9]+ bytes' | grep -oE '[0-9]+' | head -n1)
-            if [ -n "$over_bytes" ] && [ -n "$used_bytes" ] && [ "$over_bytes" -gt 0 ]; then
+        # 必须读 JSON 拿原始字节：nft 文本输出会把能被 1024 整除的值换单位打印(如 "over 102400 mbytes")，
+        # 到量时内核还会把 used 封顶成阈值(同样打印成 mbytes)，按 "over N bytes" 抠数字永远抠不到，到量也显示正常
+        local quota_state state_pattern='^[0-9]+ [0-9]+$'
+        quota_state=$(nft -j list quota $PTM_TABLE_FAMILY $PTM_TABLE_NAME "port_${port_safe}_quota" 2>/dev/null | \
+            jq -r '[.nftables[]? | select(.quota) | .quota][0] // empty | "\(.bytes) \(.used // 0)"' 2>/dev/null || true)
+        if [[ "$quota_state" =~ $state_pattern ]]; then
+            local over_bytes=${quota_state% *}
+            local used_bytes=${quota_state#* }
+            if [ "$over_bytes" -gt 0 ]; then
                 if [ "$used_bytes" -ge "$over_bytes" ]; then
                     echo "blocked_quota"
                     return
