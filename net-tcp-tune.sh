@@ -8,6 +8,11 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.11 更新: 修复功能3配置被镜像预置参数文件覆盖——sysctl.d 按文件名顺序加载、同名参数后加载者生效，旧文件名
+#   99-bbr-ultimate.conf 排在字母开头的文件之前(如商家镜像预置的 local.conf)，其中的同名参数在重启或 sysctl --system 后
+#   盖掉功能3的取值，而冲突检查只识别数字开头的文件名。现配置文件改名为 zzz-bbr-ultimate.conf 保证最后加载；重新执行
+#   功能3时自动迁移并删除旧文件，卸载功能同时清理新旧两个文件名；/etc/sysctl.conf 中与功能3同名的参数由只注释6项
+#   扩为全部注释(sysctl --system 总是最后加载该文件)。注意：此后功能3的配置优先于 sysctl.d 下其它文件 (by Eric86777)
 # v5.4.10 更新: 功能3/功能6/31菜单调优逻辑修正4项——①带宽档位消除「带宽变大缓冲区反而变小」的断点：实测值离预设档不足10%时
 #   按该档计算(千兆口实测9xx原落入500-1000档，亚太12MB/美欧48MB，现按1Gbps档16MB/64MB)，各区间取值均不低于旧版，9个预设档
 #   取值不变；②tcp_max_tw_buckets 不再固定写5000(在≥2G内存机器上低于内核默认值，内核文档要求不得调低)，改为
@@ -27,12 +32,9 @@
 #   经查 BBR v3 至今未合入 Linux 主线(主线 tcp_bbr.c 无任何 v3 实现)，XanMod 官方亦仅提供 x86-64 构建，
 #   ARM 平台不存在官方方案。现改为：架构检测提前到确认提示之前，ARM 直接给出说明并引导至功能3(自带BBR+fq，
 #   ARM 原生可用)，移除对外部域名脚本的下载执行(净减82行)；其余架构兜底提示补 break_end (by Eric86777)
-# v5.4.6 更新: 安全加固收尾——清理 v5.4.5 未覆盖的剩余3处可预测临时路径: ①sing-box安装临时目录改mktemp -d(700)；
-#   ②"禁止中国大陆直连"的IP列表下载改mktemp随机路径(600),不再用/tmp固定文件名；③cloudflared下载临时文件改mktemp随机后缀,
-#   三处均失败即终止；至此全脚本/tmp临时文件均为不可预测路径 (by Eric86777)
 
-SCRIPT_VERSION="5.4.10"
-SCRIPT_LAST_UPDATE="修正带宽档位断点、千兆口实测9xx按1G档/tw_buckets不低于内核默认/功能6去除无效Realm键/功能3如实显示BBR版本"
+SCRIPT_VERSION="5.4.11"
+SCRIPT_LAST_UPDATE="修复直连优化配置被商家预置参数文件覆盖(功能3配置文件改为最后加载,重跑功能3生效)"
 #=============================================================================
 
 #=============================================================================
@@ -119,7 +121,12 @@ format_fixed_width() {
 gh_proxy="https://"
 
 # 配置文件路径（使用独立文件，不破坏系统配置）
-SYSCTL_CONF="/etc/sysctl.d/99-bbr-ultimate.conf"
+# sysctl.d 下的文件按文件名顺序加载，同名参数后加载者生效。旧文件名 99-bbr-ultimate.conf
+# 排在字母开头的文件之前，会被其覆盖（如商家镜像预置的 /etc/sysctl.d/local.conf），
+# 而冲突检查只识别数字开头的文件名，查不到这类文件。v5.4.11 起改用 zzz- 前缀，
+# 保证功能3的配置最后加载；旧文件在重新执行功能3时自动迁移（删除）。
+SYSCTL_CONF="/etc/sysctl.d/zzz-bbr-ultimate.conf"
+SYSCTL_CONF_LEGACY="/etc/sysctl.d/99-bbr-ultimate.conf"
 
 #=============================================================================
 # 常量定义（版本号、URL 等集中管理）
@@ -225,6 +232,39 @@ clean_sysctl_conf() {
     sed -i '/^net\.ipv4\.tcp_wmem/s/^/# /' /etc/sysctl.conf 2>/dev/null
     sed -i '/^net\.core\.default_qdisc/s/^/# /' /etc/sysctl.conf 2>/dev/null
     sed -i '/^net\.ipv4\.tcp_congestion_control/s/^/# /' /etc/sysctl.conf 2>/dev/null
+}
+
+# 注释 /etc/sysctl.conf 中与指定配置文件同名的全部参数行
+# 原因：sysctl --system 总是最后加载 /etc/sysctl.conf（与文件名排序无关），其中的同名参数会
+# 盖掉 sysctl.d 下所有文件。clean_sysctl_conf 只处理其中 6 个参数，其余同名项（如 swappiness、
+# tcp_fin_timeout）在运行期仍会被盖回。这里按配置文件里实际写了哪些参数逐个处理，
+# 只注释同名行，其它行不动；备份沿用 /etc/sysctl.conf.bak.original。
+comment_sysctl_conf_duplicates() {
+    local our_conf="$1"
+    local target="/etc/sysctl.conf"
+    [ -f "$our_conf" ] || return 0
+    [ -f "$target" ] || return 0
+
+    if ! [ -f /etc/sysctl.conf.bak.original ]; then
+        cp "$target" /etc/sysctl.conf.bak.original 2>/dev/null
+    fi
+
+    local key key_re commented=0
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        key_re=${key//./\\.}
+        if grep -qE "^[[:space:]]*${key_re}[[:space:]]*=" "$target" 2>/dev/null; then
+            if sed -i -E "s/^([[:space:]]*${key_re}[[:space:]]*=.*)\$/# \1/" "$target" 2>/dev/null; then
+                commented=$((commented + 1))
+            fi
+        fi
+    done < <(grep -E '^[[:space:]]*[a-zA-Z0-9_.]+[[:space:]]*=' "$our_conf" 2>/dev/null \
+             | sed -E 's/^[[:space:]]*([a-zA-Z0-9_.]+)[[:space:]]*=.*/\1/' | sort -u)
+
+    if [ "$commented" -gt 0 ]; then
+        echo "已注释 /etc/sysctl.conf 中 ${commented} 个与本配置同名的参数（备份: /etc/sysctl.conf.bak.original）"
+    fi
+    return 0
 }
 
 install_package() {
@@ -2180,6 +2220,8 @@ check_and_clean_conflicts() {
     for conf in /etc/sysctl.d/[0-9]*-*.conf; do
         [ -f "$conf" ] || continue
         [ "$conf" = "$SYSCTL_CONF" ] && continue
+        # 本脚本旧版文件名：由功能3在新文件写入成功后迁移删除，不当作外部冲突处理
+        [ "$conf" = "$SYSCTL_CONF_LEGACY" ] && continue
         if grep -qE "(^|\s)net\.ipv4\.tcp_(rmem|wmem)" "$conf" 2>/dev/null; then
             base=$(basename "$conf")
             num=$(echo "$base" | sed -n 's/^\([0-9]\+\).*/\1/p')
@@ -2469,6 +2511,16 @@ EOF
         echo -e "${gl_hong}❌ 配置文件创建失败！请检查磁盘空间和权限${gl_bai}"
         return 1
     fi
+
+    # 迁移旧文件名：新文件写入成功后才删除旧的 99-bbr-ultimate.conf，避免两份并存
+    if [ -f "$SYSCTL_CONF_LEGACY" ]; then
+        if rm -f "$SYSCTL_CONF_LEGACY"; then
+            echo "已迁移旧版配置文件: $(basename "$SYSCTL_CONF_LEGACY") → $(basename "$SYSCTL_CONF")"
+        fi
+    fi
+
+    # /etc/sysctl.conf 中与本配置同名的参数全部注释（sysctl --system 最后加载它，会盖掉本配置）
+    comment_sysctl_conf_duplicates "$SYSCTL_CONF"
 
     # 步骤 4：应用配置
     echo ""
@@ -5686,7 +5738,7 @@ realm_fix_timeout() {
     # 写入 Realm 专属 sysctl 配置（仅 conntrack_max，其余由功能3管理）
     cat >/etc/sysctl.d/60-realm-tune.conf <<'SYSC'
 # Realm 转发专属优化（仅设置功能3未覆盖的参数）
-# tcp_fin_timeout / tcp_fastopen 由功能3的 99-net-tcp-tune.conf 统一管理
+# tcp_fin_timeout / tcp_fastopen 由功能3的配置文件统一管理
 
 # 连接跟踪容量（转发必需）
 net.netfilter.nf_conntrack_max = 262144
@@ -6976,7 +7028,7 @@ uninstall_xanmod() {
             rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
             echo -e "${gl_lv}✅ XanMod 软件源已清理${gl_bai}"
 
-            rm -f "$SYSCTL_CONF"
+            rm -f "$SYSCTL_CONF" "$SYSCTL_CONF_LEGACY"
             echo -e "${gl_lv}XanMod 内核已卸载${gl_bai}"
             server_reboot
             ;;
@@ -7274,7 +7326,7 @@ uninstall_all() {
     echo -e "${gl_huang}[3/8] 清理 sysctl 配置文件...${gl_bai}"
     local sysctl_files=(
         "$SYSCTL_CONF"
-        "/etc/sysctl.d/99-bbr-ultimate.conf"
+        "$SYSCTL_CONF_LEGACY"
         "/etc/sysctl.d/99-sysctl.conf"
         "/etc/sysctl.d/999-net-bbr-fq.conf"
     )
