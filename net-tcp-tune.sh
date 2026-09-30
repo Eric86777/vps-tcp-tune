@@ -8,6 +8,12 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.10 更新: 功能3/功能6/31菜单调优逻辑修正4项——①带宽档位消除「带宽变大缓冲区反而变小」的断点：实测值离预设档不足10%时
+#   按该档计算(千兆口实测9xx原落入500-1000档，亚太12MB/美欧48MB，现按1Gbps档16MB/64MB)，各区间取值均不低于旧版，9个预设档
+#   取值不变；②tcp_max_tw_buckets 不再固定写5000(在≥2G内存机器上低于内核默认值，内核文档要求不得调低)，改为
+#   max(5000, 内核默认值)，31菜单 Reality 终极优化同步修正；③功能6不再向 Realm 配置写入 resolve/nodelay/reuse_port
+#   (非 Realm 配置项，从未生效)，监听改IPv4/句柄上限/conntrack 不变；④功能3完成提示按内核模块版本区分 BBR v3 与
+#   系统自带 BBR，不再在非 v3 内核上显示「BBR v3 已生效」 (by Eric86777)
 # v5.4.9 更新: 修复菜单33端口流量用满后状态仍显示🟢——读 nft 配额时按 "over N bytes" 解析文本，但 nft 会把能被1024整除的值
 #   换单位打印(如 over 102400 mbytes)，到量时内核还把 used 封顶成阈值(同样打印成 mbytes)，两个数都取不到，
 #   「🔴配额用尽」「🟡即将用尽」从不显示(实际限流与每月重置不受影响)；现改读 nft -j 的原始字节，读不到配额对象时
@@ -24,13 +30,9 @@
 # v5.4.6 更新: 安全加固收尾——清理 v5.4.5 未覆盖的剩余3处可预测临时路径: ①sing-box安装临时目录改mktemp -d(700)；
 #   ②"禁止中国大陆直连"的IP列表下载改mktemp随机路径(600),不再用/tmp固定文件名；③cloudflared下载临时文件改mktemp随机后缀,
 #   三处均失败即终止；至此全脚本/tmp临时文件均为不可预测路径 (by Eric86777)
-# v5.4.5 更新: 安全加固3项——①菜单32-7 Responses转换代理新增访问密钥鉴权(部署时自动生成48位密钥,客户端需以 Authorization: Bearer 携带,
-#   常数时间比对,无密钥配置一律拒绝),移除CORS通配符,「修改配置」会同步重新生成proxy.mjs并为旧实例补发密钥(重启后生效)；
-#   ②Responses代理实例目录权限收紧为700、config.json为600(先收紧再写入)；③Xray官方安装脚本与星辰大海Xray的/tmp临时文件
-#   改用mktemp随机路径+600权限,mktemp失败即终止 (by Eric86777)
 
-SCRIPT_VERSION="5.4.9"
-SCRIPT_LAST_UPDATE="修复菜单33配额用尽/即将用尽状态不显示(nft配额输出带单位导致解析失败)"
+SCRIPT_VERSION="5.4.10"
+SCRIPT_LAST_UPDATE="修正带宽档位断点、千兆口实测9xx按1G档/tw_buckets不低于内核默认/功能6去除无效Realm键/功能3如实显示BBR版本"
 #=============================================================================
 
 #=============================================================================
@@ -1916,12 +1918,25 @@ calculate_buffer_size() {
         elif [ "$bandwidth" -eq 2500 ]; then
             buffer_mb=64
             bandwidth_level="预设档位（2.5 Gbps·远距离）"
-        elif [ "$bandwidth" -lt 500 ]; then
+        # 非预设值的区间兜底。两条规则：
+        #   1) 实测值离某个预设档不足 10% 时按该档计算（千兆口实测通常是 9xx，应按 1 Gbps 档）
+        #   2) 带宽越大缓冲区不减小（各区间不低于其左侧预设档的值）
+        # 各区间取值均 ≥ 旧版同带宽的取值，不会比旧版小
+        elif [ "$bandwidth" -lt 270 ]; then
             buffer_mb=16
-            bandwidth_level="小带宽（< 500 Mbps·远距离）"
-        elif [ "$bandwidth" -lt 1000 ]; then
+            bandwidth_level="小带宽（< 270 Mbps·远距离）"
+        elif [ "$bandwidth" -lt 450 ]; then
+            buffer_mb=20
+            bandwidth_level="270-449 Mbps·远距离（按 300 Mbps 档）"
+        elif [ "$bandwidth" -lt 500 ]; then
+            buffer_mb=32
+            bandwidth_level="450-499 Mbps·远距离（按 500 Mbps 档）"
+        elif [ "$bandwidth" -lt 900 ]; then
             buffer_mb=48
-            bandwidth_level="中等带宽（500-1000 Mbps·远距离）"
+            bandwidth_level="中等带宽（500-899 Mbps·远距离）"
+        elif [ "$bandwidth" -lt 1000 ]; then
+            buffer_mb=64
+            bandwidth_level="900-999 Mbps·远距离（按 1 Gbps 档）"
         elif [ "$bandwidth" -lt 2000 ]; then
             buffer_mb=64
             bandwidth_level="标准带宽（1-2 Gbps·远距离）"
@@ -1958,21 +1973,32 @@ calculate_buffer_size() {
         elif [ "$bandwidth" -eq 2500 ]; then
             buffer_mb=28
             bandwidth_level="预设档位（2.5 Gbps）"
-        elif [ "$bandwidth" -lt 500 ]; then
+        # 非预设值的区间兜底（规则同上：离预设档不足 10% 按该档；带宽越大缓冲区不减小；
+        # 各区间取值均 ≥ 旧版同带宽的取值）
+        elif [ "$bandwidth" -lt 270 ]; then
             buffer_mb=8
-            bandwidth_level="小带宽（< 500 Mbps）"
-        elif [ "$bandwidth" -lt 1000 ]; then
+            bandwidth_level="小带宽（< 270 Mbps）"
+        elif [ "$bandwidth" -lt 450 ]; then
+            buffer_mb=10
+            bandwidth_level="270-449 Mbps（按 300 Mbps 档）"
+        elif [ "$bandwidth" -lt 630 ]; then
             buffer_mb=12
-            bandwidth_level="中等带宽（500-1000 Mbps）"
-        elif [ "$bandwidth" -lt 2000 ]; then
+            bandwidth_level="450-629 Mbps（按 500 Mbps 档）"
+        elif [ "$bandwidth" -lt 900 ]; then
+            buffer_mb=14
+            bandwidth_level="630-899 Mbps（按 700 Mbps 档）"
+        elif [ "$bandwidth" -lt 1350 ]; then
             buffer_mb=16
-            bandwidth_level="标准带宽（1-2 Gbps）"
-        elif [ "$bandwidth" -lt 5000 ]; then
+            bandwidth_level="900-1349 Mbps（按 1 Gbps 档）"
+        elif [ "$bandwidth" -lt 1800 ]; then
+            buffer_mb=20
+            bandwidth_level="1350-1799 Mbps（按 1.5 Gbps 档）"
+        elif [ "$bandwidth" -lt 2250 ]; then
             buffer_mb=24
-            bandwidth_level="高带宽（2-5 Gbps）"
+            bandwidth_level="1800-2249 Mbps（按 2 Gbps 档）"
         elif [ "$bandwidth" -lt 10000 ]; then
             buffer_mb=28
-            bandwidth_level="超高带宽（5-10 Gbps）"
+            bandwidth_level="2250 Mbps 以上（按 2.5 Gbps 档）"
         else
             buffer_mb=32
             bandwidth_level="极高带宽（> 10 Gbps）"
@@ -2015,6 +2041,35 @@ calculate_buffer_size() {
             return 1
             ;;
     esac
+}
+
+#=============================================================================
+# tcp_max_tw_buckets 取值计算
+# 内核默认值 = TCP ehash 表大小 / 2（随内存增大：1G≈4096、2G≈8192、4G≈16384），
+# 官方文档明确要求不得人为调低。旧版固定写 5000，在 ≥2G 内存的机器上反而低于默认值。
+# 现规则：取 max(5000, 内核默认值)，任何机器都不低于旧版取值，也不低于内核默认值。
+#=============================================================================
+calculate_tw_buckets() {
+    local floor_val=5000
+    local candidate=0
+    local ehash
+    ehash=$(sysctl -n net.ipv4.tcp_ehash_entries 2>/dev/null)
+    if [[ "$ehash" =~ ^[0-9]+$ ]] && [ "$ehash" -gt 0 ]; then
+        # 内核 ≥ 6.1：直接读 ehash 表大小，得到准确的默认值
+        candidate=$((ehash / 2))
+    else
+        # 旧内核（无 tcp_ehash_entries）或容器内读不到：保留当前运行值，避免调低
+        local current
+        current=$(sysctl -n net.ipv4.tcp_max_tw_buckets 2>/dev/null)
+        if [[ "$current" =~ ^[0-9]+$ ]]; then
+            candidate=$current
+        fi
+    fi
+    if [ "$candidate" -gt "$floor_val" ]; then
+        echo "$candidate"
+    else
+        echo "$floor_val"
+    fi
 }
 
 #=============================================================================
@@ -2236,6 +2291,19 @@ apply_mss_clamp() {
 # BBR 配置函数（智能检测版）
 #=============================================================================
 
+# 读取当前内核 tcp_bbr 模块版本号（XanMod 的 BBR v3 输出 3；系统自带 BBR 无版本字段，输出为空）
+# 拥塞控制算法名在 v1 / v3 下都叫 bbr，只看名字无法区分版本
+detect_bbr_module_version() {
+    local ver=""
+    if command -v modinfo &>/dev/null; then
+        ver=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/ {print $2; exit}')
+    fi
+    if [ -z "$ver" ] && [ -r /sys/module/tcp_bbr/version ]; then
+        ver=$(tr -d '[:space:]' < /sys/module/tcp_bbr/version 2>/dev/null)
+    fi
+    echo "$ver"
+}
+
 # 直连/落地优化配置
 bbr_configure_direct() {
     echo -e "${gl_kjlan}=== 配置 BBR v3 + FQ 直连/落地优化（智能检测版） ===${gl_bai}"
@@ -2319,6 +2387,10 @@ bbr_configure_direct() {
         vm_min_free_kbytes=32768
     fi
     
+    # TIME_WAIT 上限：不低于内核按内存给出的默认值（旧版固定 5000 在大内存机器上偏低）
+    local tw_buckets
+    tw_buckets=$(calculate_tw_buckets)
+
     cat > "$SYSCTL_CONF" << EOF
 # BBR v3 Direct/Endpoint Configuration (Intelligent Detection Edition)
 # Generated on $(date)
@@ -2360,9 +2432,9 @@ net.ipv4.tcp_mtu_probing=1
 # 发送低水位（上传速度优化关键）
 net.ipv4.tcp_notsent_lowat=16384
 
-# 连接回收优化
+# 连接回收优化（tw_buckets 取 max(5000, 内核默认值)，不人为调低）
 net.ipv4.tcp_fin_timeout=15
-net.ipv4.tcp_max_tw_buckets=5000
+net.ipv4.tcp_max_tw_buckets=${tw_buckets}
 
 # TCP Fast Open（节省1个RTT，加速连接建立）
 net.ipv4.tcp_fastopen=3
@@ -2598,7 +2670,18 @@ LIMITSEOF
     else
         echo -e "拥塞控制: ${gl_huang}$actual_cc (期望: bbr) ⚠${gl_bai}"
     fi
-    
+
+    # 验证 BBR 版本（算法名在 v1/v3 下都是 bbr，需看内核模块版本）
+    local actual_bbr_ver
+    actual_bbr_ver=$(detect_bbr_module_version)
+    if [ "$actual_cc" = "bbr" ]; then
+        if [ "$actual_bbr_ver" = "3" ]; then
+            echo -e "BBR 版本:   ${gl_lv}v3 ✓${gl_bai}"
+        else
+            echo -e "BBR 版本:   ${gl_huang}系统自带 BBR（未检测到 v3）${gl_bai}"
+        fi
+    fi
+
     # 验证缓冲区（动态）
     local actual_wmem_mb=$((actual_wmem / 1048576))
     local actual_rmem_mb=$((actual_rmem / 1048576))
@@ -2668,7 +2751,18 @@ LIMITSEOF
     # 最终判断
     if [ "$actual_qdisc" = "fq" ] && [ "$actual_cc" = "bbr" ] && \
        [ "$actual_wmem" = "$buffer_bytes" ] && [ "$actual_rmem" = "$buffer_bytes" ]; then
-        echo -e "${gl_lv}✅ BBR v3 直连/落地优化配置完成并已生效！${gl_bai}"
+        if [ "$actual_bbr_ver" = "3" ]; then
+            echo -e "${gl_lv}✅ BBR v3 直连/落地优化配置完成并已生效！${gl_bai}"
+        else
+            # 参数已全部生效，但当前内核的 BBR 不是 v3：如实提示，不再显示“BBR v3 已生效”
+            echo -e "${gl_lv}✅ BBR 直连/落地优化配置完成并已生效！${gl_bai}"
+            if [ "$(uname -m)" = "aarch64" ]; then
+                echo -e "${gl_huang}ℹ 当前为系统自带 BBR（ARM64 平台暂无官方 BBR v3 方案），以上优化参数均已生效${gl_bai}"
+            else
+                echo -e "${gl_huang}ℹ 当前为系统自带 BBR，不是 BBR v3；以上优化参数均已生效${gl_bai}"
+                echo -e "${gl_huang}  如需 BBR v3：请执行功能 1 安装 XanMod 内核并重启${gl_bai}"
+            fi
+        fi
         echo -e "${gl_zi}配置说明: ${buffer_mb}MB 缓冲区（${detected_bandwidth} Mbps 带宽），适合直连/落地场景${gl_bai}"
     else
         echo -e "${gl_huang}⚠️ 配置已保存但部分参数未生效${gl_bai}"
@@ -3425,8 +3519,10 @@ optimize_reality_ultimate() {
     echo "  ✓ tcp_notsent_lowat = 16384 （减少延迟）"
     sysctl -w net.ipv4.tcp_fin_timeout=15 2>/dev/null
     echo "  ✓ tcp_fin_timeout = 15 （快速回收）"
-    sysctl -w net.ipv4.tcp_max_tw_buckets=5000 2>/dev/null
-    echo "  ✓ tcp_max_tw_buckets = 5000"
+    local tw_buckets
+    tw_buckets=$(calculate_tw_buckets)
+    sysctl -w net.ipv4.tcp_max_tw_buckets="$tw_buckets" 2>/dev/null
+    echo "  ✓ tcp_max_tw_buckets = ${tw_buckets} （不低于内核默认值）"
 
     # TCP缓冲区（12MB平衡配置）
     echo -e "${gl_lv}优化TCP缓冲区（12MB）...${gl_bai}"
@@ -5547,7 +5643,7 @@ realm_fix_timeout() {
     echo ""
     echo -e "${gl_huang}功能说明：${gl_bai}"
     echo "  • 连接跟踪模块加载 + 容量扩展（转发必需）"
-    echo "  • 强制 IPv4 + nodelay + reuse_port（优化 Realm 配置）"
+    echo "  • Realm 监听地址改为 IPv4（0.0.0.0）"
     echo "  • 提升 realm.service 文件句柄限制"
     echo ""
     echo -e "${gl_kjlan}已由其他功能覆盖（本功能不再重复设置）：${gl_bai}"
@@ -5599,29 +5695,17 @@ SYSC
     echo -e "${gl_lv}  ✓ nf_conntrack_max = 262144 已生效${gl_bai}"
 
     # 修改 Realm 配置
-    echo -e "${gl_lv}[3/4] 优化 Realm 配置（IPv4 + nodelay + reuse_port）${gl_bai}"
+    echo -e "${gl_lv}[3/4] 优化 Realm 配置（监听改为 IPv4）${gl_bai}"
     realm_cfg="/etc/realm/config.json"
     if [[ -f "$realm_cfg" ]]; then
         cp -a "$realm_cfg" "$BACKUP_DIR/"
 
-        if command -v jq >/dev/null 2>&1; then
-            tmpfile=$(mktemp)
-            jq '.resolve = "ipv4" | .nodelay = true | .reuse_port = true' \
-                "$realm_cfg" >"$tmpfile" && mv "$tmpfile" "$realm_cfg"
-        else
-            echo -e "${gl_huang}  未安装 jq，使用文本方式修改（推荐安装 jq）${gl_bai}"
-            if ! grep -q '"resolve"' "$realm_cfg"; then
-                sed -i.bak '0,/{/s//{\n  "resolve": "ipv4",/' "$realm_cfg" || true
-            fi
-            if ! grep -q '"nodelay"' "$realm_cfg"; then
-                sed -i.bak '0,/{/s//{\n  "nodelay": true,/' "$realm_cfg" || true
-            fi
-            if ! grep -q '"reuse_port"' "$realm_cfg"; then
-                sed -i.bak '0,/{/s//{\n  "reuse_port": true,/' "$realm_cfg" || true
-            fi
-        fi
+        # 说明：旧版在此处向 config.json 顶层写入 resolve / nodelay / reuse_port 三个键，
+        # 但它们不是 Realm 的配置项（Realm 顶层仅 log / dns / network / endpoints，未知键被忽略；
+        # TCP_NODELAY 由 Realm 自身始终开启），从未生效，v5.4.10 起不再写入。
+        # 已写入过的旧键保持原样（无害），不做删除。
 
-        # 统一用文本替换确保 IPv6 监听改为 IPv4
+        # 用文本替换确保 IPv6 监听改为 IPv4
         sed -i.bak -E 's/"listen"\s*:\s*":::([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
         sed -i.bak -E 's/"listen"\s*:\s*"\[::\]:([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
         sed -i.bak 's/:::/0.0.0.0:/g' "$realm_cfg" 2>/dev/null || true
@@ -5655,7 +5739,7 @@ OVR
     echo -e "${gl_huang}🔍 快速验证：${gl_bai}"
     echo "  • Realm 监听：  ss -tlnp | grep realm"
     echo "  • conntrack：   sysctl net.netfilter.nf_conntrack_max"
-    echo "  • Realm 配置：  cat /etc/realm/config.json | grep -E 'resolve|nodelay|reuse_port'"
+    echo "  • Realm 配置：  grep '\"listen\"' /etc/realm/config.json"
     echo ""
     echo -e "${gl_lv}💯 重启服务器后所有配置依然生效，无需重复执行！${gl_bai}"
     echo ""
