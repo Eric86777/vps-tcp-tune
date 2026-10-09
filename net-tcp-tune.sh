@@ -8,6 +8,8 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.12 更新: 修复 Sub-Store 新版 CORS 白名单兼容——安装可配置页面来源，隧道向导自动追加实际域名；更新保留已有白名单，
+#   缺失时按实例隧道识别域名并备份迁移；拉取失败不停止旧容器，更新后带 Origin 校验接口，失败不再误报成功 (by Eric86777)
 # v5.4.11 更新: 修复功能3配置被镜像预置参数文件覆盖——sysctl.d 按文件名顺序加载、同名参数后加载者生效，旧文件名
 #   99-bbr-ultimate.conf 排在字母开头的文件之前(如商家镜像预置的 local.conf)，其中的同名参数在重启或 sysctl --system 后
 #   盖掉功能3的取值，而冲突检查只识别数字开头的文件名。现配置文件改名为 zzz-bbr-ultimate.conf 保证最后加载；重新执行
@@ -27,14 +29,9 @@
 #   预发布提示(客户端需 Surge Mac Beta/iOS TestFlight，正式版前协议仍可能变动)；版本探测新增 rc 分支
 #   (裸 rc 视为 rc1，按 b1..bN→rc→rc2..→正式版 的官方演进顺序递增探测)；实例配置显式写入 mode = default
 #   (v6.0.0b3 起的流量混淆+AES，避免官方改默认值导致行为漂移)，并提示可选 unshaped/unsafe-raw (by Eric86777)
-# v5.4.7 更新: 功能1 ARM64 分支重做——原逻辑依赖外部域名 jhb.ovh 的第三方脚本，该站校验文件已 404 导致
-#   ARM 用户按功能1 必然失败，且失败路径无暂停、报错被主菜单清屏吞掉，表现为"闪退无反应"；
-#   经查 BBR v3 至今未合入 Linux 主线(主线 tcp_bbr.c 无任何 v3 实现)，XanMod 官方亦仅提供 x86-64 构建，
-#   ARM 平台不存在官方方案。现改为：架构检测提前到确认提示之前，ARM 直接给出说明并引导至功能3(自带BBR+fq，
-#   ARM 原生可用)，移除对外部域名脚本的下载执行(净减82行)；其余架构兜底提示补 break_end (by Eric86777)
 
-SCRIPT_VERSION="5.4.11"
-SCRIPT_LAST_UPDATE="修复直连优化配置被商家预置参数文件覆盖(功能3配置文件改为最后加载,重跑功能3生效)"
+SCRIPT_VERSION="5.4.12"
+SCRIPT_LAST_UPDATE="修复Sub-Store安装及更新的CORS白名单配置与迁移,增加来源校验和更新失败检查"
 #=============================================================================
 
 #=============================================================================
@@ -14864,6 +14861,139 @@ SERVICEEOF
 # Sub-Store 多实例管理功能
 #=============================================================================
 
+# 与环境检查保持一致，兼容 Compose v2 / v1。
+substore_compose() {
+    if docker compose version &>/dev/null; then
+        docker compose "$@"
+    else
+        docker-compose "$@"
+    fi
+}
+
+# 只接受 origin，不接受路径、凭证或通配符；已有白名单由更新流程保留。
+validate_substore_origins() {
+    local value=$1 origin port
+    local -a origins
+    [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+    IFS=',' read -ra origins <<< "$value"
+    for origin in "${origins[@]}"; do
+        [[ "$origin" =~ ^https?://([a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?|\[[0-9a-fA-F:]+\])(:([0-9]{1,5}))?$ ]] || return 1
+        port=${BASH_REMATCH[4]}
+        if [ -n "$port" ] && (( 10#$port < 1 || 10#$port > 65535 )); then
+            return 1
+        fi
+    done
+}
+
+# 从 Compose 规范化后的 YAML 读取标量，避免把注释/引号当成配置值。
+substore_config_value() {
+    local config=$1 key=$2 normalized value
+    normalized=$(substore_compose -f "$config" config) || return 1
+    value=$(printf '%s\n' "$normalized" | awk -v key="$key" '$1 == key ":" {$1=""; sub(/^[ \t]+/, ""); print; exit}')
+    value=${value#\"}; value=${value%\"}
+    value=${value#\'}; value=${value%\'}
+    [ "$value" = null ] && value=""
+    printf '%s' "$value"
+}
+
+# 缺失时迁移；传入 origin 时追加（供隧道部署使用）。不会改动其它配置或数据。
+substore_ensure_cors() {
+    local config=$1 instance_num=$2 requested=${3:-} current origins domain cfg port tmp backup
+    current=$(substore_config_value "$config" SUB_STORE_CORS_ALLOWED_ORIGINS) || return 1
+    if [ -n "$current" ]; then
+        [ -z "$requested" ] && return 0
+        [[ "$current" = '*' || ",$current," = *",$requested,"* ]] && return 0
+        origins="$current,$requested"
+    else
+        origins=$requested
+    fi
+
+    if [ -z "$origins" ]; then
+        port=$(substore_config_value "$config" SUB_STORE_BACKEND_API_PORT) || return 1
+        # 只读取本实例、且 service 端口匹配的隧道规则；不猜其它服务的域名。
+        for cfg in "${CF_CONFIGS_DIR:-/etc/cloudflared/configs}/sub-store-$instance_num.yml" \
+                   "${CF_CONFIGS_DIR:-/etc/cloudflared/configs}/sub-store-cf-tunnel-$instance_num.yaml" \
+                   "/root/sub-store-cf-tunnel-$instance_num.yaml"; do
+            [ -f "$cfg" ] || continue
+            while IFS= read -r domain; do
+                validate_substore_origins "https://$domain" || continue
+                [[ ",$origins," = *",https://$domain,"* ]] || origins="${origins:+$origins,}https://$domain"
+            done < <(awk -v backend="http://127.0.0.1:$port" '
+                $1 == "-" {host=""}
+                $1 == "-" && $2 == "hostname:" {host=$3; gsub(/[\047\042]/, "", host)}
+                $1 == "service:" && $2 == backend && host != "" {print host}
+            ' "$cfg")
+        done
+    fi
+
+    while ! validate_substore_origins "$origins"; do
+        echo "Sub-Store 需要配置浏览器页面来源，例如 https://sub.example.com（多个用逗号分隔，不含路径）。"
+        read -r -e -p "请输入允许来源（留空取消，不更新此实例）: " origins || return 1
+        [ -n "$origins" ] || return 1
+    done
+
+    # 只迁移本脚本生成的单实例 mapping 格式，非标准布局不做猜测性重写。
+    if [ "$(grep -Ec '^    environment:[[:space:]]*$' "$config")" != 1 ] ||
+       grep -Eq '^[[:space:]]+-[[:space:]]+SUB_STORE_|^[[:space:]]+environment:[[:space:]]*\{' "$config"; then
+        echo "❌ 无法安全迁移此 Compose 布局，请手动配置 SUB_STORE_CORS_ALLOWED_ORIGINS: $origins"
+        return 1
+    fi
+    tmp=$(mktemp "${config}.cors.XXXXXX") || return 1
+    cp -p "$config" "$tmp" || { rm -f "$tmp"; return 1; }
+    if ! awk -v origins="$origins" '
+        /^      SUB_STORE_CORS_ALLOWED_ORIGINS:/ {next}
+        {print}
+        /^    environment:[[:space:]]*$/ {print "      SUB_STORE_CORS_ALLOWED_ORIGINS: \042" origins "\042"}
+    ' "$config" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! substore_compose -f "$tmp" config --quiet; then
+        rm -f "$tmp"
+        echo "❌ CORS 配置校验失败，原配置保持不变"
+        return 1
+    fi
+    backup=$(mktemp "${config}.bak-cors.XXXXXX") || { rm -f "$tmp"; return 1; }
+    cp -p "$config" "$backup" && mv -f "$tmp" "$config" || { rm -f "$tmp"; return 1; }
+    echo "✅ 已配置浏览器来源: ${origins}（原配置备份: ${backup}）"
+}
+
+# 带 Origin 验证后端，防止只有无 Origin 的探测通过却仍无法预览/保存。
+substore_verify_api() {
+    local config=$1 origins origin port prefix attempt response
+    origins=$(substore_config_value "$config" SUB_STORE_CORS_ALLOWED_ORIGINS) || return 1
+    port=$(substore_config_value "$config" SUB_STORE_BACKEND_API_PORT) || return 1
+    prefix=$(substore_config_value "$config" SUB_STORE_FRONTEND_BACKEND_PATH) || return 1
+    local -a checks
+    IFS=',' read -ra checks <<< "$origins"
+    [ "$origins" = '*' ] && checks=('https://sub-store.vercel.app')
+    [ ${#checks[@]} -gt 0 ] || return 1
+    for origin in "${checks[@]}"; do
+        for ((attempt=0; attempt<10; attempt++)); do
+            response=$(curl --noproxy '*' -fsS --max-time 3 -H "Origin: $origin" "http://127.0.0.1:$port${prefix%/}/api/utils/env" 2>/dev/null) &&
+                [[ "$response" =~ \"status\"[[:space:]]*:[[:space:]]*\"success\" ]] && break
+            sleep 1
+        done
+        if [ "$attempt" -eq 10 ]; then
+            echo "❌ 后端来源校验未通过: ${origin}，请检查容器日志；未删除订阅数据"
+            return 1
+        fi
+    done
+}
+
+substore_update_one() {
+    local config=$1 instance_num=$2
+    substore_ensure_cors "$config" "$instance_num" || return 1
+    # 拉取失败时保留运行中的旧容器，不再先 down 再尝试启动。
+    if ! substore_compose -f "$config" pull "sub-store-$instance_num"; then
+        echo "❌ 镜像拉取失败，未重建容器"
+        return 1
+    fi
+    substore_compose -f "$config" up -d --no-deps "sub-store-$instance_num" || return 1
+    substore_verify_api "$config" || return 1
+    echo "✅ 实例 store-$instance_num 更新完成，浏览器来源校验通过"
+}
+
 # 检查端口是否被占用
 check_substore_port() {
     local port=$1
@@ -15012,7 +15142,7 @@ install_substore_instance() {
     # 输入实例编号
     local instance_num
     while true; do
-        read -e -p "请输入实例编号（建议: $suggested_num）: " instance_num
+        read -e -p "请输入实例编号（建议: ${suggested_num}）: " instance_num
         
         if [ -z "$instance_num" ]; then
             echo -e "${gl_hong}实例编号不能为空${gl_bai}"
@@ -15039,7 +15169,7 @@ install_substore_instance() {
     local api_port
     local default_api_port=3001
     while true; do
-        read -e -p "请输入后端 API 端口（回车使用默认 $default_api_port）: " api_port
+        read -e -p "请输入后端 API 端口（回车使用默认 ${default_api_port}）: " api_port
         
         if [ -z "$api_port" ]; then
             api_port=$default_api_port
@@ -15103,7 +15233,7 @@ install_substore_instance() {
     local data_dir
     local default_data_dir="/root/data-sub-store-$instance_num"
     
-    read -e -p "请输入数据存储目录（回车使用默认 $default_data_dir）: " data_dir
+    read -e -p "请输入数据存储目录（回车使用默认 ${default_data_dir}）: " data_dir
     
     if [ -z "$data_dir" ]; then
         data_dir="$default_data_dir"
@@ -15122,6 +15252,18 @@ install_substore_instance() {
         fi
     fi
     
+    # 浏览器来源必须与页面地址一致；后续隧道向导还会自动追加实际域名。
+    local cors_origins
+    local default_cors_origins="https://sub-store.vercel.app,http://substore.stash,https://substore.stash"
+    echo "请输入 Sub-Store 页面来源，例如 https://sub.example.com（多个用逗号分隔，不含路径）。"
+    echo "回车保留官方前端；如果接下来配置 Cloudflare Tunnel，会自动加入隧道域名。"
+    while true; do
+        read -r -e -p "浏览器来源: " cors_origins || return 1
+        cors_origins=${cors_origins:-$default_cors_origins}
+        validate_substore_origins "$cors_origins" && break
+        echo "来源格式无效，请填写 http(s)://域名[:端口]，不要填写路径或通配符。"
+    done
+
     # 确认信息
     echo ""
     echo "=================================="
@@ -15132,6 +15274,7 @@ install_substore_instance() {
     echo "服务端口:  $api_port (前后端共用)"
     echo "访问路径: /$access_path"
     echo "数据目录: $data_dir"
+    echo "浏览器来源: $cors_origins"
     echo "=================================="
     echo ""
     
@@ -15167,6 +15310,7 @@ services:
       SUB_STORE_BACKEND_API_PORT: $api_port
       SUB_STORE_BACKEND_MERGE: true
       SUB_STORE_FRONTEND_BACKEND_PATH: /$access_path
+      SUB_STORE_CORS_ALLOWED_ORIGINS: "$cors_origins"
       HOST: 127.0.0.1
     volumes:
       - $data_dir:/opt/app/data
@@ -15174,7 +15318,8 @@ EOF
     
     # 启动容器
     echo "正在启动 Sub-Store 实例..."
-    if docker compose -f "$config_file" up -d; then
+    if substore_compose -f "$config_file" config --quiet &&
+       substore_compose -f "$config_file" up -d && substore_verify_api "$config_file"; then
         echo ""
         echo -e "${gl_lv}=========================================="
         echo "  Sub-Store 实例安装成功！"
@@ -15183,7 +15328,7 @@ EOF
         echo -e "${gl_zi}实例信息：${gl_bai}"
         echo "  - 实例编号: $instance_num"
         echo "  - 容器名称: sub-store-$instance_num"
-        echo "  - 服务端口: $api_port（前后端共用，监听 127.0.0.1）"
+        echo "  - 服务端口: ${api_port}（前后端共用，监听 127.0.0.1）"
         echo "  - 访问路径: /$access_path"
         echo "  - 数据目录: $data_dir"
         echo "  - 配置文件: $config_file"
@@ -15254,12 +15399,17 @@ CFEOF
             1)
                 # Phase D:改用新模块的 Sub-Store 专用部署函数(基于 cf_helper_* 族)
                 # 原 configure_cf_tunnel 保留但不再被 Sub-Store 调用,作为历史兼容
-                cf_tunnel_deploy_for_substore "$instance_num" "$api_port" "$access_path"
+                if ! cf_tunnel_deploy_for_substore "$instance_num" "$api_port" "$access_path"; then
+                    echo "❌ Sub-Store 容器已保留，但隧道部署未完成，请查看上方错误"
+                    break_end
+                    return 1
+                fi
                 ;;
             2)
                 echo ""
                 echo -e "${gl_huang}已跳过配置${gl_bai}"
                 echo "稍后可手动配置,推荐走菜单 32 → 7 → 2 添加隧道"
+                echo "手动配置新域名时，须将页面 origin 加入 $config_file 的 SUB_STORE_CORS_ALLOWED_ORIGINS，并执行 compose up -d 生效。"
                 echo ""
                 ;;
             *)
@@ -15680,22 +15830,26 @@ update_substore_instance() {
             return 1
         fi
         
-        echo "正在拉取最新镜像..."
-        docker pull xream/sub-store:http-meta
-        
+        local failed=0
         for instance in "${instances[@]}"; do
             local config_file="/root/sub-store-configs/${instance}.yaml"
             local instance_num=$(echo "$instance" | sed 's/store-//')
             
             echo ""
             echo "正在更新实例: $instance"
-            docker compose -f "$config_file" down
-            docker compose -f "$config_file" up -d
-            echo -e "${gl_lv}✅ 实例 $instance 更新完成${gl_bai}"
+            if ! substore_update_one "$config_file" "$instance_num"; then
+                echo -e "${gl_hong}❌ 实例 $instance 更新未完成${gl_bai}"
+                failed=$((failed + 1))
+            fi
         done
         
         echo ""
-        echo -e "${gl_lv}所有实例更新完成！${gl_bai}"
+        if [ "$failed" -gt 0 ]; then
+            echo -e "${gl_hong}有 $failed 个实例未完成更新，请查看上方错误${gl_bai}"
+            break_end
+            return 1
+        fi
+        echo -e "${gl_lv}所有实例更新完成，来源校验通过！${gl_bai}"
         break_end
         return 0
     fi
@@ -15721,16 +15875,11 @@ update_substore_instance() {
         return 1
     fi
     
-    echo "正在拉取最新镜像..."
-    docker pull xream/sub-store:http-meta
-    
-    echo "正在停止容器..."
-    docker compose -f "$config_file" down
-    
-    echo "正在启动更新后的容器..."
-    docker compose -f "$config_file" up -d
-    
-    echo -e "${gl_lv}✅ 实例 $instance_name 更新完成！${gl_bai}"
+    if ! substore_update_one "$config_file" "$instance_num"; then
+        echo -e "${gl_hong}❌ 实例 $instance_name 更新未完成${gl_bai}"
+        break_end
+        return 1
+    fi
     
     break_end
 }
@@ -17219,6 +17368,12 @@ cf_tunnel_deploy_for_substore() {
         echo "已取消"; return 1
     fi
     echo ""
+
+    # 合并实际页面来源并生效，再创建隧道，避免部署成功后所有浏览器 API 都被拒绝。
+    local substore_config="/root/sub-store-configs/store-$instance_num.yaml"
+    substore_ensure_cors "$substore_config" "$instance_num" "https://$domain" || return 1
+    substore_compose -f "$substore_config" up -d --no-deps "sub-store-$instance_num" || return 1
+    substore_verify_api "$substore_config" || return 1
 
     # 执行(含 P0-3 回滚 + P1-8 凭证严格校验)
     echo "  [1/4] 创建隧道..."
