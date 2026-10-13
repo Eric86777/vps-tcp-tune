@@ -1,10 +1,10 @@
-# BBR v3 优化脚本 - Ultimate Edition v5.4.12
+# BBR v3 优化脚本 - Ultimate Edition v5.4.13
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 33 项实用功能，优化你的 VPS 服务器。
 
-> **版本**: v5.4.12 🐛 修复 Sub-Store 安装与更新缺少 CORS 来源白名单的问题，增加旧配置迁移、接口验证及更新失败检查。
+> **版本**: v5.4.13 🐛 修复 Xray 卸载范围、失败恢复与 Snell 保护，取消菜单启动时的自动网络维护。
 
 ---
 
@@ -310,3 +310,20 @@ A: 是的，首次安装内核后必须重启服务器。后续修改参数（�
 <a href="https://star-history.com/#Eric86777/vps-tcp-tune&Date">
   <img src="https://api.star-history.com/svg?repos=Eric86777/vps-tcp-tune&type=Date" alt="Star History Chart" width="600">
 </a>
+
+## Xray 安全卸载（菜单 13 → 12）
+
+卸载为脚本内置逻辑，不联网、不自动安装依赖。支持默认目录中的临时 VLESS/Xray；发现其他协议、未知文件、目录链接/挂载、自定义服务钩子或停止联动时拒绝自动清理。公共日志轮转模板、共享依赖、Snell 和网络配置保留。
+
+先输入 `卸载Xray`；程序会暂存文件、核对 Snell 文件/服务/进程/监听。原有 Snell 正在运行时，还需使用原客户端验证代理请求并输入 `Snell已验证`，之后才清除恢复材料。取消验证会尝试恢复 Xray；恢复失败会保留事务并明确报告。清除恢复材料后不保证能回滚。
+
+独立入口绕过用户配置加载，适用于残缺安装及恢复：
+
+```bash
+sudo bash net-tcp-tune.sh --xray-uninstall-check     # 只读检查
+sudo bash net-tcp-tune.sh --xray-uninstall           # 交互卸载
+sudo bash net-tcp-tune.sh --xray-uninstall-resume    # 继续清理；早期中断先恢复
+sudo bash net-tcp-tune.sh --xray-uninstall-rollback  # 恢复尚未清除的材料
+```
+
+需要 Linux/systemd、`/usr/bin/python3`（3.8+）和 `ss`；缺少工具会停止。恢复记录在 `/var/lib/net-tcp-tune/xray-uninstall/`（root 专用），新安装/更新会登记核心归属。跨文件系统、不受 systemd 管理的核心或无法确认归属的遗留布局需要人工核实，不会扩大删除范围兜底。旧 MTU 残留改在菜单 4 明确确认后清理，CF 老配置仍在 CF 管理入口迁移。

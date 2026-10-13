@@ -8,6 +8,8 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.13 更新: Xray 卸载改为内置固定范围事务，校验服务联动/目录归属/挂载与 Snell 基线，失败可恢复、残缺安装可检查；
+#   保留公共日志模板及共享依赖，增加只读/继续/恢复入口。菜单启动不再自动清理 MTU 或迁移 CF，依赖仅在安装/更新时准备 (by Eric86777)
 # v5.4.12 更新: 修复 Sub-Store 新版 CORS 白名单兼容——安装可配置页面来源，隧道向导自动追加实际域名；更新保留已有白名单，
 #   缺失时按实例隧道识别域名并备份迁移；拉取失败不停止旧容器，更新后带 Origin 校验接口，失败不再误报成功 (by Eric86777)
 # v5.4.11 更新: 修复功能3配置被镜像预置参数文件覆盖——sysctl.d 按文件名顺序加载、同名参数后加载者生效，旧文件名
@@ -25,13 +27,9 @@
 #   换单位打印(如 over 102400 mbytes)，到量时内核还把 used 封顶成阈值(同样打印成 mbytes)，两个数都取不到，
 #   「🔴配额用尽」「🟡即将用尽」从不显示(实际限流与每月重置不受影响)；现改读 nft -j 的原始字节，读不到配额对象时
 #   仍按计数器估算 (by Eric86777)
-# v5.4.8 更新: Snell v6 专区跟进官方 RC——内核默认版本 6.0.0b2→6.0.0rc，「Beta 测试专区」更名为「RC 测试专区」并细化
-#   预发布提示(客户端需 Surge Mac Beta/iOS TestFlight，正式版前协议仍可能变动)；版本探测新增 rc 分支
-#   (裸 rc 视为 rc1，按 b1..bN→rc→rc2..→正式版 的官方演进顺序递增探测)；实例配置显式写入 mode = default
-#   (v6.0.0b3 起的流量混淆+AES，避免官方改默认值导致行为漂移)，并提示可选 unshaped/unsafe-raw (by Eric86777)
 
-SCRIPT_VERSION="5.4.12"
-SCRIPT_LAST_UPDATE="修复Sub-Store安装及更新的CORS白名单配置与迁移,增加来源校验和更新失败检查"
+SCRIPT_VERSION="5.4.13"
+SCRIPT_LAST_UPDATE="修复Xray卸载边界、失败恢复与Snell保护,菜单启动不再自动改MTU或迁移CF配置"
 #=============================================================================
 
 #=============================================================================
@@ -190,7 +188,6 @@ cleanup_temp_files() {
                 ;;
         esac
     done
-    rm -f /tmp/caddy.tar.gz 2>/dev/null || true
 }
 
 # 退出时清理
@@ -6597,7 +6594,7 @@ show_main_menu() {
     echo ""
     echo -e "${gl_kjlan}[BBR/网络优化]${gl_bai}"
     echo "3. BBR 直连/落地优化（智能带宽检测）⭐ 推荐"
-    echo -e "4. ${gl_hui}已移除（功能3已覆盖MTU智能探测）${gl_bai}"
+    echo -e "4. ${gl_hui}清理旧版 MTU 残留（需明确确认）${gl_bai}"
     echo "5. NS论坛-DNS净化（抗污染/驯服DHCP）"
     echo "6. Realm转发timeout修复 ⭐ 推荐"
     echo ""
@@ -6677,7 +6674,11 @@ show_main_menu() {
             break_end
             ;;
         4)
-            echo -e "${gl_huang}⚠️ 功能4已在v4.9.2移除，功能3的tcp_mtu_probing已覆盖MTU智能探测${gl_bai}"
+            echo -e "${gl_huang}功能4仅用于清理旧版 MTU 残留，会恢复路由/链路 MTU。${gl_bai}"
+            local mtu_cleanup_confirm
+            if read -r -p "输入 清理MTU 才执行，其他输入取消: " mtu_cleanup_confirm && [ "$mtu_cleanup_confirm" = "清理MTU" ]; then
+                auto_cleanup_legacy_mtu
+            fi
             break_end
             ;;
         5)
@@ -10619,6 +10620,823 @@ snellv6_menu() {
 # 星辰大海 Xray 一键多协议
 #=============================================================================
 
+# 本地 Xray 卸载：发布脚本内置，不联网下载；只接受固定操作模式。
+run_xray_safe_uninstall() {
+    if [ ! -x /usr/bin/python3 ]; then
+        echo "缺少 /usr/bin/python3，无法安全验证卸载；不会自动安装。" >&2
+        return 1
+    fi
+    /usr/bin/python3 -I - "$@" <<'XRAY_SAFE_UNINSTALL_PY'
+"""Local, conservative Xray uninstall transaction. No network/package operations."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+XRAY_UNIT = re.compile(r"xray(?:@[^/\s]+)?\.service\Z")
+SNELL_UNIT = re.compile(r"snell[^/\s]*\.service\Z", re.I)
+STATE = "/var/lib/net-tcp-tune/xray-uninstall"
+INSTALL_RECORD = "/var/lib/net-tcp-tune/xray-install.json"
+COMMON_LOCK = "/run/net-tcp-tune-xray/lock"
+FIXED = (
+    "/usr/local/bin/xray", "/usr/local/etc/xray", "/usr/local/share/xray",
+    "/var/log/xray", "/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service",
+    "/etc/systemd/system/xray.service.d", "/etc/systemd/system/xray@.service.d",
+    "/etc/logrotate.d/xray", INSTALL_RECORD,
+)
+SNELL_PATHS = (
+    "/etc/snell", "/etc/snell-v6", "/usr/local/bin/snell-server", "/usr/local/bin/snell-server-v6",
+    "/usr/local/bin/snell-daily-restart.sh", "/usr/local/bin/snellv6-daily-restart.sh",
+    "/etc/sysctl.d/99-zzz-snell-reserved-ports.conf", "/etc/sysctl.d/99-zzy-snellv6-reserved-ports.conf",
+    "/etc/systemd/system/logrotate@.service", "/etc/systemd/system/logrotate@.timer",
+)
+PROPS = (
+    "Id", "Names", "LoadState", "ActiveState", "SubState", "UnitFileState", "MainPID",
+    "ExecMainStartTimestampMonotonic", "FragmentPath", "DropInPaths", "ExecStart", "ExecStop",
+    "ExecStopPost", "ExecStartPre", "ExecStartPost", "ExecCondition", "Requires", "RequiredBy", "Wants", "BindsTo", "BoundBy", "PartOf", "ConsistsOf", "UpheldBy",
+    "PropagatesStopTo", "StopPropagatedFrom", "Triggers", "TriggeredBy", "ControlGroup",
+)
+UNIT_KEYS = {
+    "Unit": {"Description", "Documentation", "After", "StartLimitIntervalSec", "StartLimitBurst"},
+    "Service": {"User", "Group", "CapabilityBoundingSet", "AmbientCapabilities", "NoNewPrivileges",
+                "ExecStart", "Restart", "RestartSec", "RestartPreventExitStatus", "LimitNPROC", "LimitNOFILE",
+                "RuntimeDirectory", "RuntimeDirectoryMode", "KillMode", "KillSignal", "TimeoutStopSec",
+                "OOMScoreAdjust", "Type"},
+    "Install": {"WantedBy"},
+}
+
+
+class Refused(RuntimeError):
+    pass
+
+
+class Cancelled(Refused):
+    pass
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class Environment:
+    def __init__(self, root="/"):
+        # Production always constructs Environment() with no user-supplied root.
+        self.root = Path(root)
+        self.home = pwd.getpwuid(0).pw_dir
+        self.systemctl = "/usr/bin/systemctl"
+        self.state = self.path(STATE)
+
+    def path(self, name):
+        if not isinstance(name, str) or not name.startswith("/") or ".." in Path(name).parts:
+            raise Refused("非法路径")
+        return self.root / name.lstrip("/")
+
+    def logical(self, path):
+        return "/" + str(path.relative_to(self.root)).lstrip("/")
+
+    def command(self, *args, ok=(0,)):
+        # Do not inherit PATH, BASH_ENV, JSON_PATH, proxy settings or Python variables.
+        result = subprocess.run([self.systemctl, *args], capture_output=True, text=True, timeout=40,
+                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+        if result.returncode not in ok:
+            raise Refused("systemctl " + " ".join(args[:2]) + " 失败: " + result.stderr.strip()[:300])
+        return result.stdout.strip()
+
+    def units(self):
+        result = set()
+        for action in ("list-unit-files", "list-units"):
+            text = self.command(action, "--all", "--type=service", "--plain", "--no-legend", "--no-pager")
+            for line in text.splitlines():
+                if line.split():
+                    name = line.split()[0]
+                    if XRAY_UNIT.fullmatch(name) or SNELL_UNIT.fullmatch(name):
+                        result.add(name)
+        return sorted(result)
+
+    def show(self, name):
+        text = self.command("show", name, "--no-pager", "--property=" + ",".join(PROPS))
+        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+    def mounts(self):
+        output = []
+        for line in self.path("/proc/self/mountinfo").read_text().splitlines():
+            part = line.split()[4]
+            part = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), part)
+            output.append(part)
+        return output
+
+    def processes(self):
+        output = []
+        for proc in self.path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                exe = os.readlink(proc / "exe")
+                if exe.endswith(" (deleted)"):
+                    exe = exe[:-10]
+                if Path(exe).name == "xray" or "snell" in Path(exe).name.lower():
+                    # Process start time prevents accepting a reused PID.
+                    start = (proc / "stat").read_text().rsplit(")", 1)[1].split()[19]
+                    output.append((int(proc.name), exe, start))
+            except (OSError, IndexError):
+                continue
+        return sorted(output)
+
+    def listeners(self):
+        command = next((p for p in ("/usr/bin/ss", "/usr/sbin/ss", "/bin/ss") if Path(p).is_file()), None)
+        if command is None:
+            raise Refused("缺少 ss，不能验证监听；不会自动安装")
+        result = subprocess.run([command, "-H", "-lntup"], capture_output=True, text=True, timeout=15,
+                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+        if result.returncode:
+            raise Refused("读取监听失败")
+        # Listener queue lengths are live counters, not configuration changes.
+        return sorted(" ".join(line.split()[:2] + line.split()[4:]) for line in result.stdout.splitlines()
+                      if "snell" in line.lower() or '"xray"' in line)
+
+    def confirm(self, phrase, message):
+        print(message, flush=True)
+        try:
+            # Buffered r+ streams require seeking; a terminal is not seekable.
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+            with os.fdopen(fd, "r", encoding="utf-8") as tty:
+                os.write(tty.fileno(), ("请输入 " + phrase + "（其他输入取消）: ").encode())
+                answer = tty.readline().strip()
+        except OSError:
+            raise Cancelled("没有交互终端；未确认，不执行删除")
+        if answer != phrase:
+            raise Cancelled("操作已取消")
+
+    def candidates(self):
+        return (*FIXED, self.home.rstrip("/") + "/xray_subscription_info.txt")
+
+    def safe_path(self, name, *, writable=False):
+        path = self.path(name)
+        current = self.root
+        for part in path.relative_to(self.root).parts:
+            current /= part
+            if current.is_symlink():
+                raise Refused("拒绝符号链接路径: " + self.logical(current))
+            if current.exists():
+                s = current.stat()
+                if current.is_dir() and (s.st_uid != 0 or s.st_mode & 0o022):
+                    raise Refused("目录不是 root 专属可信目录: " + self.logical(current))
+        if writable and path.exists() and path.stat().st_uid != 0:
+            raise Refused("恢复记录不是 root 所有")
+        return path
+
+    @staticmethod
+    def metadata_file(path):
+        if os.path.lexists(path):
+            s = path.lstat()
+            if not stat.S_ISREG(s.st_mode) or s.st_uid != 0 or s.st_nlink != 1 or s.st_mode & 0o022:
+                raise Refused("事务/安装记录类型、权限或链接异常；拒绝读写")
+
+    def tree(self, name, hashes=True):
+        base = self.path(name)
+        if not base.exists() and not base.is_symlink():
+            return {}
+        paths = [base, *sorted(base.rglob("*"))] if base.is_dir() and not base.is_symlink() else [base]
+        output = {}
+        for path in paths:
+            s = path.lstat()
+            key = self.logical(path)
+            row = {"mode": stat.S_IMODE(s.st_mode), "uid": s.st_uid, "gid": s.st_gid, "type": stat.S_IFMT(s.st_mode)}
+            if path.is_symlink():
+                row["link"] = os.readlink(path)
+            elif path.is_file() and hashes:
+                row["sha256"] = digest(path)
+            output[key] = row
+        return output
+
+    def snell_snapshot(self):
+        paths = set(SNELL_PATHS)
+        units = {}
+        for name in self.units():
+            if SNELL_UNIT.fullmatch(name):
+                info = self.show(name)
+                units[name] = {k: info.get(k, "") for k in PROPS if k not in {"ControlGroup"}}
+                for key in ("Names", "Requires", "RequiredBy", "Wants", "BindsTo", "BoundBy", "PartOf", "ConsistsOf",
+                            "UpheldBy", "PropagatesStopTo", "StopPropagatedFrom", "Triggers", "TriggeredBy"):
+                    units[name][key] = " ".join(sorted(units[name][key].split()))
+                paths.update(info.get("DropInPaths", "").split())
+                if info.get("FragmentPath"):
+                    paths.add(info["FragmentPath"])
+                for executable in re.findall(r"path=(/[^ ;{}]+)", info.get("ExecStart", "")):
+                    paths.add(executable)
+                for argument in re.findall(r"(?:^|[\s=])(/[^ ;{}]+)", info.get("ExecStart", "")):
+                    if self.path(argument).exists():
+                        paths.add(argument)
+        files = {}
+        for path in sorted(paths):
+            files.update(self.tree(path))
+        return {"units": units, "files": files,
+                "processes": [list(p) for p in self.processes() if "snell" in Path(p[1]).name.lower()],
+                "listeners": [line for line in self.listeners() if "snell" in line.lower()]}
+
+    def check_snell(self, before):
+        if self.snell_snapshot() != before:
+            raise Refused("Snell 文件/服务/进程/监听与原基线不一致；停止清理，不自动修改或重启 Snell")
+
+    def validate_unit(self, name, info):
+        if name != "xray@.service" and not XRAY_UNIT.fullmatch(name):
+            raise Refused("非 Xray 服务")
+        if info.get("LoadState") in {"not-found", ""}:
+            return
+        if info.get("LoadState") != "loaded":
+            raise Refused("Xray 服务不是正常 loaded 状态: " + name)
+        if info.get("Id") != name or set(info.get("Names", name).split()) != {name}:
+            raise Refused("Xray 服务存在别名，拒绝处理: " + name)
+        for key in ("ExecStop", "ExecStopPost", "ExecStartPre", "ExecStartPost", "ExecCondition", "RequiredBy", "BoundBy", "ConsistsOf", "UpheldBy", "PropagatesStopTo", "StopPropagatedFrom", "TriggeredBy"):
+            if info.get(key):
+                raise Refused("Xray 存在停止钩子或服务联动: " + name + "/" + key)
+        executable = re.findall(r"path=([^ ;{}]+)", info.get("ExecStart", ""))
+        if executable != ["/usr/local/bin/xray"]:
+            raise Refused("systemd 内存中的 Xray 启动程序异常，需要先核实配置")
+        command = re.search(r"argv\[\]=([^;{}]+)", info.get("ExecStart", ""))
+        if command is None or not re.fullmatch(r"/usr/local/bin/xray run -config /usr/local/etc/xray/[\w.-]+\.json", command[1].strip()):
+            raise Refused("systemd 内存中的 Xray 配置路径异常")
+        paths = [info.get("FragmentPath", ""), *info.get("DropInPaths", "").split()]
+        for path in paths:
+            if not path:
+                continue
+            if path not in FIXED and not any(path.startswith(p + "/") for p in FIXED if p.endswith(".service.d")):
+                raise Refused("非默认 Xray 服务路径: " + path)
+            self.validate_unit_file(path)
+
+    def validate_unit_file(self, name):
+        path = self.safe_path(name)
+        if not path.exists():
+            return
+        if not path.is_file() or path.stat().st_uid != 0 or path.stat().st_mode & 0o022:
+            raise Refused("服务文件类型或所有者异常: " + name)
+        section = ""
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1]
+                continue
+            if "=" not in line or line.endswith("\\"):
+                raise Refused("无法可靠解析服务文件: " + name)
+            key, value = line.split("=", 1)
+            if key not in UNIT_KEYS.get(section, set()):
+                raise Refused("发现非默认服务指令: " + name + "/" + key)
+            if key == "ExecStart" and value and not re.fullmatch(
+                    r"/usr/local/bin/xray run -config /usr/local/etc/xray/(?:config|%i)\.json", value):
+                raise Refused("Xray 启动程序或配置路径异常")
+            if key == "RuntimeDirectory" and value not in {"xray", "xray-%i"}:
+                raise Refused("Xray 运行目录异常")
+            if key == "WantedBy" and value != "multi-user.target":
+                raise Refused("Xray 安装目标异常")
+
+    def config_check(self):
+        directory = self.path("/usr/local/etc/xray")
+        for path in directory.rglob("*") if directory.exists() else []:
+            if not path.is_file():
+                continue
+            if not re.fullmatch(r"[\w.-]+\.json(?:\.bak\.[\w.-]+)?", path.name):
+                raise Refused("配置目录包含无法确认归属的文件: " + self.logical(path))
+            try:
+                content = json.loads(path.read_text())
+            except (ValueError, UnicodeError):
+                raise Refused("配置或备份不是有效 JSON: " + self.logical(path))
+            if not isinstance(content, dict):
+                raise Refused("配置不是 JSON 对象")
+            if any(not isinstance(v, dict) or v.get("protocol") != "vless" for v in content.get("inbounds", [])):
+                raise Refused("发现非 VLESS 节点；不能按临时 VLESS 的范围卸载整套 Xray")
+            for key in ("access", "error"):
+                value = content.get("log", {}).get(key)
+                if value and value != "none" and not value.startswith("/var/log/xray/"):
+                    raise Refused("发现默认目录以外的 Xray 日志；需要先核实归属")
+
+    def links(self):
+        links = {}
+        for directory in ("/etc/systemd/system", "/run/systemd/system"):
+            base = self.path(directory)
+            if not base.exists():
+                continue
+            for link in base.rglob("*"):
+                if link.is_symlink() and (XRAY_UNIT.fullmatch(link.name) or link.name == "logrotate@xray.timer"):
+                    logical = self.logical(link)
+                    if link.parent.name not in {"multi-user.target.wants", "timers.target.wants"}:
+                        raise Refused("Xray 存在自定义别名/启动链接: " + logical)
+                    target = os.readlink(link)
+                    resolved = str(Path(os.path.normpath(str(link.parent / target)))) if not target.startswith("/") else target
+                    # Absolute symlinks in a sandbox still represent production paths.
+                    if resolved.startswith(str(self.root)) and self.root != Path("/"):
+                        resolved = self.logical(Path(resolved))
+                    expected = "/etc/systemd/system/" + ("xray@.service" if "@" in link.name and link.name != "logrotate@xray.timer" else link.name)
+                    if link.name == "logrotate@xray.timer":
+                        expected = "/etc/systemd/system/logrotate@.timer"
+                    if resolved != expected:
+                        raise Refused("启动链接指向非默认 Xray 文件: " + logical)
+                    links[logical] = target
+        return links
+
+    def preflight(self):
+        self.safe_path(STATE, writable=True)
+        for name in ("current.json", "current.tmp", "last-result.json"):
+            self.metadata_file(self.state / name)
+        snell = self.snell_snapshot()
+        protected = set(snell["files"]) | set(SNELL_PATHS)
+        candidates = []
+        identities = {}
+        mounts = self.mounts()
+        for name in self.candidates():
+            path = self.safe_path(name)
+            if not path.exists():
+                continue
+            for protected_path in protected:
+                if name == protected_path or name.startswith(protected_path + "/") or protected_path.startswith(name + "/"):
+                    raise Refused("删除范围与 Snell 重叠")
+            if any(m == name or m.startswith(name + "/") for m in mounts):
+                raise Refused("Xray 路径包含挂载，拒绝递归清理: " + name)
+            for item in [path, *path.rglob("*")] if path.is_dir() else [path]:
+                s = item.lstat()
+                if stat.S_ISLNK(s.st_mode) or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)) or (item.is_file() and s.st_nlink != 1):
+                    raise Refused("Xray 目录存在链接或特殊文件: " + self.logical(item))
+                identities[self.logical(item)] = [s.st_dev, s.st_ino, s.st_uid, s.st_gid, stat.S_IMODE(s.st_mode)]
+            candidates.append(name)
+        self.config_check()
+        for name, pattern in (("/usr/local/share/xray", r"(?:geoip\.dat|geosite\.dat|\.undat)"),
+                              ("/var/log/xray", r"(?:access|error)\.log(?:\.\d+)?(?:\.gz)?")):
+            directory = self.path(name)
+            if directory.exists() and any(not p.is_file() or not re.fullmatch(pattern, p.name) for p in directory.iterdir()):
+                raise Refused("目录包含未知文件，不能确认全部专属于 Xray: " + name)
+        subscription = self.path(self.home.rstrip("/") + "/xray_subscription_info.txt")
+        if subscription.exists() and any(line.strip() and not line.startswith("vless://") for line in subscription.read_text().splitlines()):
+            raise Refused("订阅文件含非 VLESS 内容，无法按临时 VLESS 范围清理")
+        rotate = self.path("/etc/logrotate.d/xray")
+        if rotate.exists():
+            lines = [line.strip() for line in rotate.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+            if not lines or lines[0] != "/var/log/xray/*.log {" or lines[-1] != "}" or any(
+                    not re.fullmatch(r"(?:daily|missingok|compress|delaycompress|notifempty|rotate \d+|create 0?[0-7]{3} [\w-]+ [\w-]+)", line)
+                    for line in lines[1:-1]):
+                raise Refused("日志轮转规则包含未知路径或脚本指令，拒绝处理")
+        for name in ("/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service"):
+            self.validate_unit_file(name)
+        for folder in ("/etc/systemd/system/xray.service.d", "/etc/systemd/system/xray@.service.d"):
+            for path in self.path(folder).glob("*"):
+                self.validate_unit_file(self.logical(path))
+        binary = self.path("/usr/local/bin/xray")
+        if binary.exists():
+            if not binary.is_file() or binary.stat().st_uid != 0 or binary.stat().st_mode & 0o022:
+                raise Refused("Xray 核心权限或所有者异常")
+            with binary.open("rb") as stream:
+                if stream.read(4) != b"\x7fELF":
+                    raise Refused("Xray 核心不是 ELF 文件")
+        record = self.path(INSTALL_RECORD)
+        if record.exists():
+            self.metadata_file(record)
+            installed = json.loads(record.read_text())
+            if installed.get("version") != 1 or installed.get("paths") != list(self.candidates()):
+                raise Refused("安装归属记录异常")
+            if binary.exists() and installed.get("binary_sha256") != digest(binary):
+                raise Refused("Xray 核心与安装记录不一致；需先核实更改")
+        elif binary.exists() and not any(self.path(p).exists() for p in (
+                "/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service")):
+            raise Refused("只有孤立核心，缺少服务及安装记录，无法确认归属")
+        units = {}
+        for name in self.units():
+            if XRAY_UNIT.fullmatch(name) and name != "xray@.service":
+                info = self.show(name)
+                self.validate_unit(name, info)
+                if info.get("LoadState") != "not-found":
+                    units[name] = {"active": info.get("ActiveState") == "active", "enabled": info.get("UnitFileState", "")}
+        for pid, exe, _ in self.processes():
+            if Path(exe).name == "xray":
+                if exe != "/usr/local/bin/xray":
+                    raise Refused("发现非默认路径的 Xray 进程")
+                if not any(self.show(u).get("MainPID") == str(pid) for u in units):
+                    raise Refused("发现不受已核实服务管理的 Xray 进程")
+        timer = self.show("logrotate@xray.timer")
+        timer_relevant = (timer.get("ActiveState") in {"active", "activating", "deactivating"} or
+                          timer.get("UnitFileState") in {"enabled", "enabled-runtime", "linked", "linked-runtime"} or rotate.exists())
+        if timer.get("LoadState") == "loaded" and timer_relevant:
+            # Shared templates are preserved; only known logrotate timer instances are acted on.
+            for f in ("/etc/systemd/system/logrotate@.timer", "/etc/systemd/system/logrotate@.service"):
+                path = self.safe_path(f)
+                if path.exists() and (not path.is_file() or path.stat().st_uid != 0 or path.stat().st_mode & 0o022):
+                    raise Refused("公共日志模板权限异常")
+                text = path.read_text() if path.exists() else ""
+                section = ""
+                allowed = {"Unit": {"Description", "Documentation"}, "Timer": {"OnCalendar", "Persistent"},
+                           "Service": {"Type", "ExecStart"}, "Install": {"WantedBy"}}
+                if not text:
+                    raise Refused("日志轮转模板不存在，不能确认实例归属")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith(("#", ";")):
+                        continue
+                    if line.startswith("[") and line.endswith("]"):
+                        section = line[1:-1]
+                        continue
+                    if "=" not in line:
+                        raise Refused("日志轮转模板无法解析")
+                    key, value = line.split("=", 1)
+                    if key not in allowed.get(section, set()) or (
+                            key == "ExecStart" and value != "/usr/sbin/logrotate /etc/logrotate.d/%i"):
+                        raise Refused("日志轮转模板包含未知钩子或联动")
+            for name in ("logrotate@xray.timer", "logrotate@xray.service"):
+                info = self.show(name)
+                for key in ("ExecStop", "ExecStopPost", "ExecStartPre", "ExecStartPost", "RequiredBy", "BoundBy", "ConsistsOf", "PropagatesStopTo", "StopPropagatedFrom"):
+                    if info.get(key):
+                        raise Refused("日志轮转实例存在服务联动")
+            units["logrotate@xray.timer"] = {"active": timer.get("ActiveState") == "active", "enabled": timer.get("UnitFileState", "")}
+            service = self.show("logrotate@xray.service")
+            if service.get("ActiveState") in {"active", "activating", "deactivating"}:
+                raise Refused("Xray 日志轮转正在执行，请稍后重试")
+        links = self.links()
+        # All staged paths must be on the transaction filesystem. Check before any stop.
+        ancestor = self.state
+        while not ancestor.exists():
+            ancestor = ancestor.parent
+        self.safe_path(self.logical(ancestor), writable=True)
+        device = ancestor.stat().st_dev
+        if any(self.path(p).stat().st_dev != device for p in candidates):
+            raise Refused("Xray 文件跨文件系统，当前安全事务不支持；未停止服务")
+        static_files = {}
+        for name in candidates:
+            if name != "/var/log/xray":
+                static_files.update(self.tree(name))
+        return {"paths": candidates, "identities": identities, "files": static_files,
+                "units": units, "links": links, "snell": snell}
+
+    def common_lock(self, readonly=False):
+        path = self.safe_path(COMMON_LOCK, writable=True)
+        if readonly and not path.exists():
+            return None
+        if not path.exists():
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Menu actions inherit the same open file description on fd 9.
+        try:
+            inherited = os.fstat(9)
+            current = path.stat()
+            fd = 9 if (inherited.st_dev, inherited.st_ino) == (current.st_dev, current.st_ino) else None
+        except OSError:
+            fd = None
+        if fd is None:
+            fd = os.open(path, (os.O_RDONLY if readonly else os.O_RDWR | os.O_CREAT) | os.O_NOFOLLOW, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1:
+            os.close(fd)
+            raise Refused("Xray 操作锁类型异常")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise Refused("另一个 Xray 操作正在进行")
+        return fd
+
+    def record_install(self):
+        # Called only after successful install/update by the embedded manager.
+        self.safe_path(INSTALL_RECORD, writable=True)
+        binary = self.path("/usr/local/bin/xray")
+        if not binary.is_file() or binary.is_symlink() or binary.stat().st_uid != 0:
+            raise Refused("不能登记异常 Xray 核心")
+        for name in ("/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service"):
+            self.validate_unit_file(name)
+        target = self.path(INSTALL_RECORD)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp")
+        self.metadata_file(temporary)
+        if temporary.is_symlink():
+            raise Refused("安装登记临时文件异常")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"version": 1, "paths": list(self.candidates()), "binary_sha256": digest(binary)}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        self.fsync(target.parent)
+
+    def state_prepare(self):
+        self.safe_path(STATE, writable=True)
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.state, 0o700)
+
+    def save(self, data):
+        temporary = self.state / "current.tmp"
+        self.metadata_file(temporary)
+        if temporary.is_symlink():
+            raise Refused("事务临时文件异常")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump(data, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, self.state / "current.json")
+        self.fsync(self.state)
+
+    @staticmethod
+    def fsync(directory):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def read_state(self):
+        path = self.safe_path(STATE + "/current.json", writable=True)
+        self.metadata_file(path)
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+        self.safe_path(STATE + "/files", writable=True)
+        if not isinstance(data, dict) or data.get("version") != 1 or data.get("phase") not in {"prepared", "stopping", "moving", "verifying", "purging"}:
+            raise Refused("事务记录损坏，停止自动处理")
+        if set(data.get("plan", {}).get("paths", [])) - set(self.candidates()):
+            raise Refused("事务路径超出白名单")
+        if len(data["plan"]["paths"]) != len(set(data["plan"]["paths"])):
+            raise Refused("事务包含重复路径")
+        if set(data["plan"].get("units", {})) - {n for n in data["plan"].get("units", {}) if XRAY_UNIT.fullmatch(n) or n == "logrotate@xray.timer"}:
+            raise Refused("事务包含非 Xray 服务")
+        for name, target in data["plan"].get("links", {}).items():
+            parent = Path(name).parent
+            if not (name.startswith(("/etc/systemd/system/", "/run/systemd/system/")) and
+                    parent.name in {"multi-user.target.wants", "timers.target.wants"} and
+                    (XRAY_UNIT.fullmatch(Path(name).name) or Path(name).name == "logrotate@xray.timer")):
+                raise Refused("事务启动链接超出白名单")
+            expected = "/etc/systemd/system/" + ("logrotate@.timer" if Path(name).name == "logrotate@xray.timer" else
+                        "xray@.service" if "@" in Path(name).name else "xray.service")
+            resolved = os.path.normpath(str(parent / target)) if not target.startswith("/") else target
+            if resolved != expected:
+                raise Refused("事务启动链接指向非 Xray 文件")
+        return data
+
+    def staged(self, index):
+        return self.state / "files" / str(index)
+
+    def validate_staged(self, data, partial=False, only=None):
+        mounts = self.mounts()
+        for index, name in enumerate(data["plan"]["paths"]):
+            if only is not None and index != only:
+                continue
+            backup = self.staged(index)
+            logical = self.logical(backup)
+            self.safe_path(logical)
+            if any(m == logical or m.startswith(logical + "/") for m in mounts):
+                raise Refused("恢复区内出现挂载，停止处理")
+            if not os.path.lexists(backup):
+                if partial:
+                    continue
+                raise Refused("恢复材料缺失: " + name)
+            expected = {p: v for p, v in data["plan"].get("restore_files", {}).items() if p == name or p.startswith(name + "/")}
+            actual = {name + p[len(logical):]: v for p, v in self.tree(logical).items()}
+            if not expected or (actual != expected if not partial else any(expected.get(p) != v for p, v in actual.items())):
+                raise Refused("恢复区内容发生变化，拒绝删除或恢复: " + name)
+
+    def rollback(self, data):
+        if data["phase"] == "purging":
+            raise Refused("已开始清除恢复材料，不能保证回滚；请继续清理")
+        if "restore_files" in data["plan"]:
+            self.validate_staged(data, partial=True)
+        errors = []
+        for i, name in reversed(list(enumerate(data["plan"]["paths"]))):
+            backup = self.staged(i)
+            original = self.safe_path(name)
+            if backup.exists():
+                if backup.is_symlink():
+                    errors.append("恢复材料为符号链接，拒绝恢复")
+                    continue
+                expected = {p: v for p, v in data["plan"].get("restore_files", {}).items() if p == name or p.startswith(name + "/")}
+                actual = {name + p[len(self.logical(backup)):]: v for p, v in self.tree(self.logical(backup)).items()}
+                if not expected or actual != expected:
+                    errors.append("恢复材料与记录不一致: " + name)
+                    continue
+                if original.exists():
+                    errors.append("原位置已有文件，不覆盖: " + name)
+                    continue
+                try:
+                    os.rename(backup, original)
+                    self.fsync(original.parent)
+                except OSError as exc:
+                    errors.append(str(exc))
+        if errors:
+            raise Refused("恢复未完成: " + "; ".join(errors))
+        restored = {}
+        for name in data["plan"]["paths"]:
+            if not self.path(name).exists():
+                raise Refused("恢复材料与原文件均缺失: " + name)
+            if "restore_files" in data["plan"] or name != "/var/log/xray":
+                restored.update(self.tree(name))
+        if restored != data["plan"].get("restore_files", data["plan"]["files"]):
+            raise Refused("恢复后的文件与原记录不一致")
+        # Revalidate unit definitions before starting anything.
+        for name in data["plan"]["units"]:
+            if XRAY_UNIT.fullmatch(name):
+                self.validate_unit_file("/etc/systemd/system/" + ("xray@.service" if "@" in name else name))
+        for name, target in data["plan"]["links"].items():
+            path = self.path(name)
+            if not (name.startswith(("/etc/systemd/system/", "/run/systemd/system/")) and
+                    path.parent.name in {"multi-user.target.wants", "timers.target.wants"} and
+                    (XRAY_UNIT.fullmatch(path.name) or path.name == "logrotate@xray.timer")):
+                raise Refused("恢复链接范围异常")
+            self.safe_path(self.logical(path.parent))
+            if os.path.lexists(path):
+                if not path.is_symlink() or os.readlink(path) != target:
+                    raise Refused("恢复链接冲突，不覆盖")
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.symlink_to(target)
+        self.command("daemon-reload")
+        for name, old in data["plan"]["units"].items():
+            self.validate_unit(name, self.show(name)) if XRAY_UNIT.fullmatch(name) else None
+            if old["active"]:
+                self.command("start", name)
+                if self.show(name).get("ActiveState") != "active":
+                    raise Refused("Xray 运行状态未恢复: " + name)
+            if self.show(name).get("UnitFileState", "") != old["enabled"]:
+                raise Refused("Xray 启用状态未恢复: " + name)
+        self.check_snell(data["plan"]["snell"])
+        self.finish("rolled_back")
+        print("已恢复此次卸载改变的 Xray 文件和状态；Snell 基线一致。")
+
+    def verify_removed(self, data):
+        for name in data["plan"]["paths"]:
+            if os.path.lexists(self.path(name)):
+                raise Refused("原位置仍有残留: " + name)
+        if any(Path(exe).name == "xray" for _, exe, _ in self.processes()):
+            raise Refused("仍存在 Xray 进程")
+        if any('"xray"' in line for line in self.listeners()):
+            raise Refused("仍存在 Xray 监听")
+        for name in data["plan"]["units"]:
+            info = self.show(name)
+            if info.get("ActiveState") in {"active", "activating", "deactivating", "reloading"}:
+                raise Refused("Xray 服务或定时器仍运行: " + name)
+            if info.get("UnitFileState") in {"enabled", "enabled-runtime", "linked", "linked-runtime"}:
+                raise Refused("Xray 服务仍启用: " + name)
+        if self.links():
+            raise Refused("仍存在 Xray 启动链接")
+        self.check_snell(data["plan"]["snell"])
+
+    def finish(self, result):
+        files = self.state / "files"
+        if files.exists():
+            if any(files.iterdir()):
+                raise Refused("恢复区仍有文件，不能标记完成")
+            files.rmdir()
+        summary = self.state / "last-result.json"
+        self.metadata_file(summary)
+        if summary.is_symlink():
+            raise Refused("结果文件异常")
+        summary.write_text(json.dumps({"result": result, "time": int(time.time())}))
+        os.chmod(summary, 0o600)
+        (self.state / "current.json").unlink()
+        self.fsync(self.state)
+
+    def complete(self, data):
+        if data["phase"] != "purging":
+            self.verify_removed(data)
+            if data["plan"]["snell"]["processes"]:
+                self.confirm("Snell已验证", "服务器侧 Snell 基线一致。请用原客户端完成连接和代理请求后再确认；取消会恢复 Xray。")
+            self.verify_removed(data)
+            self.validate_staged(data)
+            data["phase"] = "purging"
+            self.save(data)
+        for index, _ in enumerate(data["plan"]["paths"]):
+            self.validate_staged(data, partial=True, only=index)
+            path = self.staged(index)
+            if path.is_symlink():
+                raise Refused("恢复区出现符号链接，停止清理")
+            if path.exists():
+                shutil.rmtree(path) if path.is_dir() else path.unlink()
+        self.verify_removed(data)
+        self.finish("complete")
+        print("Xray 专属文件、进程、监听和启动链接已清除；Snell 基线一致。共享依赖和公共日志模板保留。")
+
+    def uninstall(self, check=False):
+        if self.read_state():
+            raise Refused("存在未完成事务，请使用 --xray-uninstall-resume 或 --xray-uninstall-rollback")
+        plan = self.preflight()
+        if not plan["paths"] and not plan["units"] and not plan["links"]:
+            print("未发现 Xray 残留，无需卸载。")
+            return
+        print("仅处理已核实的默认 VLESS/Xray 布局。以下候选文件将暂存后清除：")
+        for name in plan["paths"]:
+            print("  " + name)
+        print("服务: " + (", ".join(plan["units"]) or "无"))
+        print("公共日志模板、Snell、网络配置、共享依赖均保留。")
+        if check:
+            print("只读预检通过；未停止服务或修改文件。")
+            return
+        self.confirm("卸载Xray", "整套临时 VLESS/Xray 将卸载。异常时停止并尝试恢复；恢复材料清除后不能保证回滚。")
+        self.state_prepare()
+        fd = os.open(self.state / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.read_state():
+                raise Refused("另一个事务已开始")
+            if self.preflight() != plan:
+                raise Refused("预检后状态发生变化，取消操作")
+            data = {"version": 1, "phase": "prepared", "plan": plan}
+            self.save(data)
+            try:
+                data["phase"] = "stopping"
+                self.save(data)
+                for name in plan["units"]:
+                    self.command("stop", name)
+                    if self.show(name).get("ActiveState") in {"active", "activating", "deactivating", "reloading"}:
+                        raise Refused("服务未停止: " + name)
+                    self.command("disable", "--no-reload", name)
+                if any(Path(exe).name == "xray" for _, exe, _ in self.processes()):
+                    raise Refused("停止后仍有 Xray 进程，不删除文件")
+                self.check_snell(plan["snell"])
+                fresh = self.preflight()
+                if fresh["identities"] != plan["identities"] or fresh["files"] != plan["files"]:
+                    raise Refused("停止服务后文件身份发生变化，不删除")
+                data["phase"] = "moving"
+                data["plan"]["restore_files"] = {}
+                for name in plan["paths"]:
+                    data["plan"]["restore_files"].update(self.tree(name))
+                self.save(data)
+                (self.state / "files").mkdir(mode=0o700)
+                for index, name in enumerate(plan["paths"]):
+                    original = self.safe_path(name)
+                    os.rename(original, self.staged(index))
+                    self.fsync(original.parent)
+                    self.fsync(self.state / "files")
+                self.command("daemon-reload")
+                data["phase"] = "verifying"
+                self.save(data)
+                self.complete(data)
+            except (Exception, KeyboardInterrupt) as exc:
+                if data["phase"] != "purging":
+                    try:
+                        self.rollback(data)
+                    except Exception as restore:
+                        raise Refused(str(exc) + "；恢复未完成: " + str(restore)) from exc
+                    raise Refused(str(exc) + "；已恢复 Xray，本次卸载未完成") from exc
+                raise Refused("Xray 已从原位置卸载，但恢复材料清理/最终核验未完成；请继续事务。" + str(exc)) from exc
+        except BlockingIOError:
+            raise Refused("另一个 Xray 操作正在进行")
+        finally:
+            os.close(fd)
+
+    def recover(self, rollback=False):
+        self.state_prepare()
+        fd = os.open(self.state / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            data = self.read_state()
+            if not data:
+                print("没有未完成事务。")
+                return
+            self.confirm("恢复Xray" if rollback else "继续清理", "事务阶段: " + data["phase"])
+            if rollback or data["phase"] in {"prepared", "stopping", "moving"}:
+                self.rollback(data)
+            else:
+                self.complete(data)
+        except BlockingIOError:
+            raise Refused("另一个 Xray 操作正在进行")
+        finally:
+            os.close(fd)
+
+
+def main():
+    if sys.version_info < (3, 8):
+        raise Refused("安全卸载需要 Python 3.8 或更新版本；不会自动安装")
+    if os.geteuid() != 0 or sys.platform != "linux":
+        raise Refused("此功能仅支持 root 下的 Linux/systemd；不会自动安装依赖")
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] not in {"--check", "--resume", "--rollback", "--record-install"}):
+        raise Refused("不支持的卸载参数")
+    mode = sys.argv[1] if len(sys.argv) == 2 else ""
+    env = Environment()
+    fd = env.common_lock(readonly=mode == "--check")
+    try:
+        if mode == "--record-install":
+            env.record_install()
+        elif mode in {"--resume", "--rollback"}:
+            env.recover(rollback=mode == "--rollback")
+        else:
+            env.uninstall(check=mode == "--check")
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Exception, KeyboardInterrupt) as error:
+        print("未完成: " + str(error), file=sys.stderr)
+        sys.exit(1)
+XRAY_SAFE_UNINSTALL_PY
+}
+
 run_xinchendahai_xray() {
     clear
     echo -e "${gl_kjlan}=== 星辰大海Xray一键多协议（增强版） ===${gl_bai}"
@@ -10649,7 +11467,10 @@ run_xinchendahai_xray() {
 
 # ==============================================================================
 # Xray VLESS-Reality & Shadowsocks 2022 多功能管理脚本
-# 版本: Final v2.9.3
+# 版本: Final v2.9.4
+# 更新日志 (v2.9.4):
+# - 卸载使用内置事务、固定路径和 Snell 基线核验，不联网、不删除公共模板。
+# - 增加恢复入口；菜单预检查不自动安装依赖。
 # 更新日志 (v2.9.3):
 # - [修复] 兼容 Xray x25519 的 Private key/Public key 与 PrivateKey/PublicKey 输出格式
 # - [修复] 避免 Reality 密钥对解析为空导致新增 VLESS 失败
@@ -10659,9 +11480,11 @@ run_xinchendahai_xray() {
 set -euo pipefail
 
 # --- 全局常量 ---
-readonly XRAY_SCRIPT_VERSION="Final v2.9.3"
+readonly XRAY_SCRIPT_VERSION="Final v2.9.4"
 readonly xray_config_path="/usr/local/etc/xray/config.json"
 readonly xray_binary_path="/usr/local/bin/xray"
+readonly xray_root_home="$(getent passwd 0 | cut -d: -f6)"
+readonly xray_subscription_path="${xray_root_home}/xray_subscription_info.txt"
 readonly xray_install_script_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
 
 # --- 颜色定义 ---
@@ -10735,15 +11558,31 @@ get_public_ip() {
 pre_check() {
     [[ "$(id -u)" != 0 ]] && error "错误: 您必须以root用户身份运行此脚本" && exit 1
     if [ ! -f /etc/debian_version ]; then error "错误: 此脚本仅支持 Debian/Ubuntu 及其衍生系统。" && exit 1; fi
-    if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
-        info "检测到缺失的依赖 (jq/curl)，正在尝试自动安装..."
-        (DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl) &> /dev/null &
-        spinner $!
-        if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
-            error "依赖 (jq/curl) 自动安装失败。请手动运行 'apt update && apt install -y jq curl' 后重试。"
-            exit 1
+}
+
+ensure_xray_dependencies() {
+    require_no_xray_transaction || return 1
+    if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null || [ ! -x /usr/bin/python3 ]; then
+        info "安装/更新功能需要 jq、curl、python3，正在安装依赖..."
+        if ! DEBIAN_FRONTEND=noninteractive apt-get update || ! DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl python3; then
+            error "依赖安装失败。"
+            return 1
         fi
-        success "依赖已成功安装。"
+    fi
+}
+
+require_no_xray_transaction() {
+    if [ -e /var/lib/net-tcp-tune/xray-uninstall/current.json ]; then
+        error "存在未完成的 Xray 卸载事务，请先选择18继续或19恢复。"
+        return 1
+    fi
+}
+
+require_xray_tools() {
+    require_no_xray_transaction || return 1
+    if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
+        error "此操作需要 jq/curl；请选择安装功能准备依赖，卸载不依赖它们。"
+        return 1
     fi
 }
 
@@ -11024,11 +11863,11 @@ execute_official_script() {
     chmod +x "$temp_script"
 
     if [[ "$is_quiet" = false ]]; then
-        bash "$temp_script" $args &
+        env -u DAT_PATH -u JSON_PATH -u JSONS_PATH bash "$temp_script" $args &
         spinner $!
         wait $! || { rm -f "$temp_script"; return 1; }
     else
-        bash "$temp_script" $args &>/dev/null || { rm -f "$temp_script"; return 1; }
+        env -u DAT_PATH -u JSON_PATH -u JSONS_PATH bash "$temp_script" $args &>/dev/null || { rm -f "$temp_script"; return 1; }
     fi
 
     rm -f "$temp_script"
@@ -11066,6 +11905,10 @@ StartLimitBurst=10
 XRAY_OVR
     systemctl daemon-reload
 
+    if ! run_xray_safe_uninstall --record-install; then
+        error "Xray 安装归属登记失败，停止继续配置。"
+        return 1
+    fi
     success "Xray 核心及数据文件已准备就绪。"
 }
 
@@ -11488,19 +12331,10 @@ update_xray() {
 }
 
 uninstall_xray() {
-    if [[ ! -f "$xray_binary_path" ]]; then error "错误: Xray 未安装。" && return; fi
-    read -p "$(echo -e "${yellow}您确定要卸载 Xray 吗？这将删除所有配置！[Y/n]: ${none}")" confirm || true
-    if [[ "$confirm" =~ ^[nN]$ ]]; then
-        info "操作已取消。"
-        return
+    # 失败不能被 set -e 带出菜单，也不能改用联网卸载兜底。
+    if ! run_xray_safe_uninstall; then
+        warning "卸载未完成，请阅读上面的原因；有未完成事务时使用恢复选项。"
     fi
-    info "正在卸载 Xray..."
-    if ! execute_official_script "remove --purge"; then
-        error "Xray 卸载失败！"
-        return 1
-    fi
-    rm -f ~/xray_subscription_info.txt
-    success "Xray 已成功卸载。"
 }
 
 # 增加 VLESS 协议
@@ -12019,8 +12853,8 @@ view_all_info() {
             printf "%s\n" "${links_array[@]}"
         else
             draw_divider
-            printf "%s\n" "${links_array[@]}" > ~/xray_subscription_info.txt
-            success "所有订阅链接已汇总保存到: ~/xray_subscription_info.txt"
+            printf "%s\n" "${links_array[@]}" > "$xray_subscription_path"
+            success "所有订阅链接已汇总保存到: $xray_subscription_path"
             
             echo -e "\n${yellow} --- V2Ray / Clash 等客户端可直接导入以下链接 --- ${none}\n"
             for link in "${links_array[@]}"; do
@@ -12616,30 +13450,34 @@ main_menu() {
         printf "  ${red}%-2s${none} %-35s\n" "0." "退出脚本"
         draw_divider
 
-        read -p " 请输入选项 [0-17]: " choice || true
+        printf "  ${yellow}%-2s${none} %-35s\n" "18." "继续未完成的 Xray 卸载"
+        printf "  ${yellow}%-2s${none} %-35s\n" "19." "恢复未完成的 Xray 卸载"
+        if ! read -p " 请输入选项 [0-19]: " choice; then return; fi
 
         local needs_pause=true
 
         case "$choice" in
-            1) install_menu ;;
-            2) add_new_vless ;;
-            3) delete_vless_node ;;
-            4) modify_vless_config ;;
-            5) add_new_ss ;;
-            6) delete_ss_node ;;
-            7) modify_ss_config ;;
-            8) add_socks5_proxy ;;
-            9) list_socks5_proxies ;;
-            10) delete_socks5_proxy ;;
-            11) update_xray ;;
+            1) if ensure_xray_dependencies; then install_menu; fi ;;
+            2) if require_xray_tools; then add_new_vless; fi ;;
+            3) if require_xray_tools; then delete_vless_node; fi ;;
+            4) if require_xray_tools; then modify_vless_config; fi ;;
+            5) if require_xray_tools; then add_new_ss; fi ;;
+            6) if require_xray_tools; then delete_ss_node; fi ;;
+            7) if require_xray_tools; then modify_ss_config; fi ;;
+            8) if require_xray_tools; then add_socks5_proxy; fi ;;
+            9) if require_xray_tools; then list_socks5_proxies; fi ;;
+            10) if require_xray_tools; then delete_socks5_proxy; fi ;;
+            11) if ensure_xray_dependencies; then update_xray; fi ;;
             12) uninstall_xray ;;
-            13) restart_xray ;;
+            13) if require_no_xray_transaction; then restart_xray; fi ;;
             14) view_xray_log; needs_pause=false ;;
-            15) view_all_info ;;
-            16) manage_routing_rules ;;
-            17) wget -O vless-server.sh https://gitlab.com/chil30-group/vless-all-in-one/-/raw/main/vless-server.sh && chmod +x vless-server.sh && bash vless-server.sh; needs_pause=false ;;
+            15) if require_xray_tools; then view_all_info; fi ;;
+            16) if require_xray_tools; then manage_routing_rules; fi ;;
+            18) if ! run_xray_safe_uninstall --resume; then warning "继续清理未完成。"; fi ;;
+            19) if ! run_xray_safe_uninstall --rollback; then warning "恢复未完成。"; fi ;;
+            17) if require_no_xray_transaction; then wget -O vless-server.sh https://gitlab.com/chil30-group/vless-all-in-one/-/raw/main/vless-server.sh && chmod +x vless-server.sh && bash vless-server.sh; fi; needs_pause=false ;;
             0) success "感谢使用！"; exit 0 ;;
-            *) error "无效选项。请输入 0-17。" ;;
+            *) error "无效选项。请输入 0-19。" ;;
         esac
 
         if [ "$needs_pause" = true ]; then
@@ -12662,7 +13500,23 @@ XRAY_ENHANCED_SCRIPT_EOF
     echo ""
 
     # 执行脚本
-    if bash "$script_path"; then
+    if (
+        local lock_dir=/run/net-tcp-tune-xray
+        if ! command -v flock >/dev/null 2>&1; then echo "缺少 flock，无法保证 Xray 操作互斥。" >&2; exit 1; fi
+        if [ -L "$lock_dir" ] || { [ -e "$lock_dir" ] && { [ ! -d "$lock_dir" ] || [ "$(stat -c %u "$lock_dir")" != 0 ]; }; }; then
+            echo "Xray 操作锁目录异常。" >&2; exit 1
+        fi
+        (umask 077; mkdir -p "$lock_dir") || exit 1
+        chmod 700 "$lock_dir" || exit 1
+        if [ -L "$lock_dir/lock" ] || { [ -e "$lock_dir/lock" ] && { [ ! -f "$lock_dir/lock" ] || [ "$(stat -c %u:%h "$lock_dir/lock")" != 0:1 ]; }; }; then
+            echo "Xray 操作锁文件异常。" >&2; exit 1
+        fi
+        (umask 077; : >> "$lock_dir/lock") || exit 1
+        exec 9<>"$lock_dir/lock" || exit 1
+        if ! flock -n 9; then echo "另一个 Xray 操作正在进行。" >&2; exit 1; fi
+        export -f run_xray_safe_uninstall
+        bash "$script_path"
+    ); then
         echo ""
         echo -e "${gl_lv}✅ 星辰大海Xray增强版脚本执行完成${gl_bai}"
     else
@@ -25654,6 +26508,9 @@ parse_args() {
                 LOG_LEVEL="ERROR"
                 shift
                 ;;
+            --xray-uninstall|--xray-uninstall-check|--xray-uninstall-resume|--xray-uninstall-rollback)
+                break
+                ;;
             -*)
                 echo "未知选项: $1"
                 echo "使用 -h 或 --help 查看帮助"
@@ -25674,11 +26531,14 @@ main() {
     # 检查 root 权限
     check_root
 
-    # 自动清理旧版功能4的MTU优化残留
-    auto_cleanup_legacy_mtu
-
-    # Phase E:检测并迁移 CF Tunnel 老路径配置(空 VPS 会 fast-path 早退,耗时可忽略)
-    cf_helper_migrate_legacy 2>/dev/null
+    # 卸载专用入口必须在配置 source 和任何维护动作之前分流。
+    case "${1:-}" in
+        --xray-uninstall) run_xray_safe_uninstall; return $? ;;
+        --xray-uninstall-check) run_xray_safe_uninstall --check; return $? ;;
+        --xray-uninstall-resume) run_xray_safe_uninstall --resume; return $? ;;
+        --xray-uninstall-rollback) run_xray_safe_uninstall --rollback; return $? ;;
+    esac
+    # 启动菜单不自动改 MTU 或迁移 CF；迁移留在 CF 管理入口。
 
     # 加载用户配置（如果存在）
     [ -f "/etc/net-tcp-tune.conf" ] && source "/etc/net-tcp-tune.conf"
