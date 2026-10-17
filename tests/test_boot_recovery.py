@@ -390,5 +390,373 @@ main --repair-boot-recovery
         self.assertEqual(self.calls_text(), "repair\n")
 
 
+class AutomaticEntryTests(unittest.TestCase):
+    """Run real migration orchestration in fixture paths, with fake systemd only."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "run").mkdir()
+        (self.root / "home").mkdir()
+        (self.root / "usr/local").mkdir(parents=True)
+        self.calls = self.root / "calls"
+        self.env = dict(os.environ, TEST_ROOT=str(self.root), CALLS=str(self.calls), HOME=str(self.root / "home"))
+
+    def mapped(self, value):
+        return re.sub(r"(?<![\w/])/(?:usr|lib|etc|var|run)(?=/)", lambda m: str(self.root) + m[0], value)
+
+    def write(self, name, content):
+        path = self.root / name.lstrip("/")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.mapped(content))
+        return path
+
+    def snell(self, port=15479, v6=False):
+        name = f"snellv6-{port}.service" if v6 else f"snell-{port}.service"
+        label = "Snell V6" if v6 else "Snell"
+        binary = "snell-server-v6" if v6 else "snell-server"
+        directory = "snell-v6" if v6 else "snell"
+        self.write("/etc/systemd/system/" + name,
+                   f"[Unit]\nDescription={label} Proxy Service (Port{port})\n[Service]\n"
+                   f"ExecStart=/usr/local/bin/{binary} -c /etc/{directory}/snell-{port}.conf\n")
+        return name
+
+    def harness(self):
+        return self.mapped(BLOCK) + r'''
+# Fixture files represent root-owned production files; permission hardening itself
+# is separately exercised by the root Linux filesystem/uninstall tests.
+boot_recovery_trusted_file() { [ -f "$1" ] && [ ! -L "$1" ]; }
+boot_recovery_emit_helper() {
+cat <<'FIXTURE_HELPER'
+#!/bin/bash
+# NET_TCP_BOOT_RECOVERY_V1
+printf 'helper %s\n' "$*" >> "$CALLS"
+case "$1" in
+    --migrate-resolved)
+        [ "${HELPER_FAIL:-0}" = 0 ] || exit 1
+        rm -f "$TEST_ROOT/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf";;
+    --check-current-ipv6) exit "${IPV6_RC:-0}";;
+    *) exit 98;;
+esac
+FIXTURE_HELPER
+}
+flock() { return 0; }
+systemctl() {
+    printf 'systemctl %s\n' "$*" >> "$CALLS"
+    case "$1" in
+        is-enabled)
+            [ "$2" = net-tcp-boot-watch.timer ] || return 99
+            [ -f "$TEST_ROOT/timer-enabled" ] && { echo enabled; return 0; }
+            echo disabled; return 1;;
+        is-active)
+            [ "$3" = net-tcp-boot-watch.timer ] || return 99
+            [ -f "$TEST_ROOT/timer-active" ];;
+        enable)
+            [ "$*" = 'enable --now net-tcp-boot-watch.timer' ] || return 99
+            touch "$TEST_ROOT/timer-enabled" "$TEST_ROOT/timer-active";;
+        daemon-reload)
+            if [ "${FAIL_RELOAD_ONCE:-0}" = 1 ] && [ ! -f "$TEST_ROOT/reload-failed" ]; then
+                touch "$TEST_ROOT/reload-failed"; return 1
+            fi
+            return 0;;
+        *) return 99;;
+    esac
+}
+info() { :; }
+success() { echo "success $*" >> "$CALLS"; }
+error() { echo "error $*" >> "$CALLS"; }
+'''
+
+    def run_code(self, code, *, extra=None):
+        env = dict(self.env, **(extra or {}))
+        return subprocess.run(["bash", "-c", self.harness() + "\n" + code], env=env,
+                              text=True, capture_output=True, timeout=10)
+
+    def assert_ok(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def calls_text(self):
+        return self.calls.read_text() if self.calls.exists() else ""
+
+    def guard(self, unit):
+        return self.root / ("etc/systemd/system/" + unit + ".d/90-net-tcp-boot-recovery.conf")
+
+    def test_empty_and_unowned_xray_menu_do_not_create_recovery_assets(self):
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertFalse((self.root / "usr/local/libexec").exists())
+        self.write("/etc/systemd/system/xray.service",
+                   "[Service]\nExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json\n")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertFalse(self.guard("xray.service").exists())
+        self.assertEqual(self.calls_text(), "")
+
+    def test_owned_snell_v5_v6_menu_migrates_without_starting_business(self):
+        v5, v6 = self.snell(), self.snell(15480, True)
+        self.write("/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf", "legacy fixture\n")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertTrue(self.guard(v5).exists())
+        self.assertTrue(self.guard(v6).exists())
+        self.assertFalse((self.root / "etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf").exists())
+        self.assertNotRegex(self.calls_text(), r"systemctl (?:start|stop|restart|try-restart|disable) ")
+        self.assertNotIn("enable --now " + v5, self.calls_text())
+
+    def test_repeated_menu_is_quiet_but_missing_guard_and_new_instance_repair(self):
+        unit = self.snell()
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        guard = self.guard(unit)
+        before = guard.stat().st_mtime_ns
+        self.calls.write_text("")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertEqual(guard.stat().st_mtime_ns, before)
+        self.assertEqual(self.calls_text().count("daemon-reload"), 1)
+        self.assertNotIn("enable --now", self.calls_text())
+        guard.unlink()
+        other = self.snell(15481)
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertTrue(guard.exists())
+        self.assertTrue(self.guard(other).exists())
+        self.assertEqual(self.calls_text().count("daemon-reload"), 2)
+
+    def test_reload_failure_is_retried_when_files_are_already_complete(self):
+        unit = self.snell()
+        first = self.run_code("boot_recovery_migrate auto", extra={"FAIL_RELOAD_ONCE": "1"})
+        self.assertNotEqual(first.returncode, 0)
+        before = self.guard(unit).stat().st_mtime_ns
+        self.assert_ok(self.run_code("boot_recovery_migrate auto", extra={"FAIL_RELOAD_ONCE": "1"}))
+        self.assertEqual(self.guard(unit).stat().st_mtime_ns, before)
+        self.assertEqual(self.calls_text().count("daemon-reload"), 2)
+        self.assertTrue((self.root / "timer-active").exists())
+
+    def test_deleted_helper_is_recreated_despite_previously_complete_migration(self):
+        self.snell()
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        helper = self.root / "usr/local/libexec/net-tcp-boot-recovery"
+        helper.unlink()
+        self.calls.write_text("")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertTrue(helper.is_file())
+        self.assertIn("daemon-reload", self.calls_text())
+
+    def test_modified_project_guard_is_preserved_and_migration_fails(self):
+        unit = self.snell()
+        path = self.guard(unit)
+        path.parent.mkdir(parents=True)
+        original = "# NET_TCP_BOOT_RECOVERY_V1\n[Service]\nExecStartPre=/operator/custom\n"
+        path.write_text(original)
+        self.assertNotEqual(self.run_code("boot_recovery_migrate auto").returncode, 0)
+        self.assertEqual(path.read_text(), original)
+        self.assertNotIn("enable --now", self.calls_text())
+
+    def test_same_marker_does_not_authorize_overwriting_custom_watch_timer(self):
+        self.snell()
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        timer = self.root / "etc/systemd/system/net-tcp-boot-watch.timer"
+        original = timer.read_text() + "# operator changes\n"
+        timer.write_text(original)
+        self.calls.write_text("")
+        self.assertNotEqual(self.run_code("boot_recovery_migrate auto").returncode, 0)
+        self.assertEqual(timer.read_text(), original)
+        self.assertEqual(self.calls_text(), "")
+
+    def test_ipv6_conflict_reports_completed_recovery_and_returns_two(self):
+        unit = self.snell()
+        result = self.run_code("boot_recovery_migrate auto", extra={"IPV6_RC": "1"})
+        self.assertEqual(result.returncode, 2)
+        self.assertTrue(self.guard(unit).exists())
+        self.assertIn("启动恢复配置已补齐，但IPv6", result.stderr)
+        self.assertNotRegex(self.calls_text(), r"systemctl (?:restart|start|stop) ")
+
+    def test_migration_lock_descriptor_is_released_before_next_call(self):
+        self.snell()
+        self.assert_ok(self.run_code(r'''
+boot_recovery_migrate auto || exit
+if (: <&209) 2>/dev/null; then exit 90; fi
+boot_recovery_migrate auto
+'''))
+
+    def test_xray_install_record_allows_menu_but_unknown_record_does_not(self):
+        self.write("/etc/systemd/system/xray.service",
+                   "[Service]\nExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json\n")
+        record = self.write("/var/lib/net-tcp-tune/xray-install.json", '{"version": 1, "paths": ["/usr/local/bin/xray"]}')
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertTrue(self.guard("xray.service").exists())
+        self.guard("xray.service").unlink()
+        record.write_text('{"version": 99, "paths": []}')
+        self.calls.write_text("")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertFalse(self.guard("xray.service").exists())
+        self.assertEqual(self.calls_text(), "")
+
+    def test_old_xray_exact_project_override_is_recognized_without_install_record(self):
+        self.write("/etc/systemd/system/xray.service",
+                   "[Service]\nExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json\n")
+        override = self.write("/etc/systemd/system/xray.service.d/override.conf",
+                              "[Service]\nRestart=always\nRestartSec=5\nKillMode=mixed\nKillSignal=SIGTERM\n"
+                              "TimeoutStopSec=5s\nOOMScoreAdjust=-500\n\n[Unit]\nStartLimitIntervalSec=60\nStartLimitBurst=10\n")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertTrue(self.guard("xray.service").exists())
+        self.guard("xray.service").unlink()
+        override.write_text(override.read_text() + "# operator changes\n")
+        self.calls.write_text("")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertFalse(self.guard("xray.service").exists())
+        self.assertEqual(self.calls_text(), "")
+
+    def test_legacy_dns_only_menu_migrates_without_enabling_disabled_dns_service(self):
+        head = BLOCK.split("cat <<'LEGACY_DNS_HEAD'\n", 1)[1].split("\nLEGACY_DNS_HEAD", 1)[0]
+        body = BLOCK.split("cat <<'LEGACY_DNS_BODY'\n", 1)[1].split("\nLEGACY_DNS_BODY", 1)[0]
+        apply = self.write("/usr/local/bin/dns-purify-apply.sh",
+                           head + '\nDNS_PRIMARY="8.8.8.8"\nDNS_SECONDARY="1.1.1.1"\n' + body + "\n")
+        unit = BLOCK.split("cat <<'LEGACY_DNS_UNIT'\n", 1)[1].split("\nLEGACY_DNS_UNIT", 1)[0]
+        service = self.write("/etc/systemd/system/dns-purify-persist.service", unit + "\n")
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertIn("NET_TCP_BOOT_RECOVERY_V1", apply.read_text())
+        self.assertIn("Restart=on-failure", service.read_text())
+        self.assertNotIn("enable dns-purify-persist", self.calls_text())
+        self.assertNotIn("restart dns-purify-persist", self.calls_text())
+        before = apply.stat().st_mtime_ns
+        self.assert_ok(self.run_code("boot_recovery_migrate auto"))
+        self.assertEqual(apply.stat().st_mtime_ns, before)
+
+    def test_modified_managed_dns_wrapper_is_preserved_without_migration(self):
+        apply = self.write("/usr/local/bin/dns-purify-apply.sh",
+                           '#!/bin/bash\n# NET_TCP_BOOT_RECOVERY_V1\nDNS_PRIMARY="8.8.8.8"\n'
+                           'DNS_SECONDARY="1.1.1.1"\n/operator/custom\n')
+        before = apply.read_text()
+        self.assertNotEqual(self.run_code("boot_recovery_migrate auto").returncode, 0)
+        self.assertEqual(apply.read_text(), before)
+        self.assertEqual(self.calls_text(), "")
+
+    def test_explicit_unenabled_install_target_is_protected(self):
+        self.assert_ok(self.run_code("boot_recovery_migrate install xray.service"))
+        self.assertTrue(self.guard("xray.service").exists())
+        self.assertNotIn("enable --now xray", self.calls_text())
+        self.assertNotIn("start xray", self.calls_text())
+
+    def test_real_child_bash_receives_complete_recovery_function_closure(self):
+        self.assert_ok(self.run_code(r'''
+boot_recovery_export_functions
+export -f systemctl flock
+bash -euc 'boot_recovery_migrate install xray.service'
+'''))
+        self.assertTrue(self.guard("xray.service").exists())
+
+    def test_main_migrates_before_loading_user_config(self):
+        (self.root / "home/.net-tcp-tune.conf").write_text('echo config >> "$CALLS"\n')
+        code = function("parse_args") + "\n" + function("main") + r'''
+check_root() { :; }
+boot_recovery_migrate() { echo migrate >> "$CALLS"; }
+show_main_menu() { echo menu >> "$CALLS"; exit 0; }
+main
+'''
+        self.assert_ok(self.run_code(self.mapped(code)))
+        self.assertEqual(self.calls_text(), "migrate\nconfig\nmenu\n")
+
+    def test_help_version_and_readonly_uninstall_skip_automatic_migration(self):
+        code = function("parse_args") + "\n" + function("main") + r'''
+check_root() { :; }
+boot_recovery_migrate() { echo forbidden >> "$CALLS"; return 90; }
+run_xray_safe_uninstall() { echo "uninstall $*" >> "$CALLS"; }
+show_help() { :; }
+log_debug() { :; }
+SCRIPT_VERSION=fixture
+read -r -a entry_args <<< "$ENTRY_ARG"
+main "${entry_args[@]}"
+'''
+        for arg in ("-h", "-v", "--xray-uninstall-check", "--debug --xray-uninstall-check", "-q --xray-uninstall-check"):
+            with self.subTest(arg=arg):
+                self.assert_ok(self.run_code(self.mapped(code), extra={"ENTRY_ARG": arg}))
+        self.assertEqual(self.calls_text(), "uninstall --check\n" * 3)
+
+    def test_snell_v5_update_stops_before_download_on_recovery_failure(self):
+        self.write("/usr/local/bin/snell-server", "fixture")
+        code = self.mapped(function("update_snell")) + r'''
+snell_acquire_lock() { return 0; }
+snell_release_lock() { echo release >> "$CALLS"; }
+snell_apply_runtime_guards() { echo recovery-failure >> "$CALLS"; return 1; }
+wait_for_package_manager_snell() { echo forbidden-download >> "$CALLS"; }
+update_snell
+'''
+        self.assertNotEqual(self.run_code(code).returncode, 0)
+        self.assertEqual(self.calls_text(), "recovery-failure\nrelease\n")
+
+    def test_snell_v6_latest_path_migrates_before_version_shortcut(self):
+        self.write("/usr/local/bin/snell-server-v6", "fixture")
+        self.write("/etc/snell-v6/.binary-version", "6.0.0")
+        code = function("snellv6_update_and_repair") + r'''
+SNELLV6_BIN="$TEST_ROOT/usr/local/bin/snell-server-v6"
+SNELLV6_VERSION_FILE="$TEST_ROOT/etc/snell-v6/.binary-version"
+SNELL_V6_DEFAULT_VERSION=6.0.0
+snellv6_acquire_lock() { return 0; }
+snellv6_release_lock() { echo release >> "$CALLS"; }
+snellv6_list_units() { echo snellv6-15480.service; }
+snellv6_apply_runtime_guards() { echo recovery-failure >> "$CALLS"; return 1; }
+snellv6_restart_units_with_healthcheck() { echo forbidden-restart >> "$CALLS"; }
+snellv6_update_and_repair
+'''
+        self.assertNotEqual(self.run_code(code).returncode, 0)
+        self.assertEqual(self.calls_text(), "recovery-failure\nrelease\n")
+
+    def test_snell_v6_latest_success_migrates_and_preserves_manual_stop(self):
+        unit = self.snell(15480, True)
+        self.write("/usr/local/bin/snell-server-v6", "fixture")
+        self.write("/etc/snell-v6/.binary-version", "6.0.0")
+        code = self.mapped(function("snellv6_apply_runtime_guards")) + "\n" + function("snellv6_update_and_repair") + r'''
+SNELLV6_BIN="$TEST_ROOT/usr/local/bin/snell-server-v6"
+SNELLV6_VERSION_FILE="$TEST_ROOT/etc/snell-v6/.binary-version"
+SNELL_V6_DEFAULT_VERSION=6.0.0
+snellv6_acquire_lock() { return 0; }
+snellv6_release_lock() { :; }
+snellv6_list_units() { echo snellv6-15480.service; }
+snellv6_sync_reserved_ports() { return 0; }
+snellv6_current_ports_csv() { echo 15480; }
+snellv6_install_daily_restart_cron() { return 0; }
+snell_should_restart_unit() { return 1; }
+snellv6_restart_units_with_healthcheck() { [ "$#" -eq 0 ] || return 91; echo preserved-manual-stop >> "$CALLS"; }
+snellv6_health_check() { return 0; }
+snellv6_update_and_repair
+'''
+        self.assert_ok(self.run_code(code))
+        self.assertTrue(self.guard(unit).exists())
+        self.assertIn("preserved-manual-stop", self.calls_text())
+        self.assertNotIn("systemctl start", self.calls_text())
+
+    def test_xray_core_install_guard_exists_before_official_installer(self):
+        code = self.mapped(function("run_core_install")) + r'''
+execute_official_script() {
+    [ -f "$TEST_ROOT/etc/systemd/system/xray.service.d/90-net-tcp-boot-recovery.conf" ] || return 91
+    echo "official $*" >> "$CALLS"
+}
+run_xray_safe_uninstall() { echo record >> "$CALLS"; }
+run_core_install
+'''
+        self.assert_ok(self.run_code(code))
+        self.assertIn("official install\n", self.calls_text())
+        self.assertLess(self.calls_text().index("helper --migrate-resolved"), self.calls_text().index("official install"))
+
+    def test_xray_core_install_aborts_before_official_on_migration_failure(self):
+        code = self.mapped(function("run_core_install")) + r'''
+execute_official_script() { echo forbidden-official >> "$CALLS"; }
+run_core_install
+'''
+        self.assertNotEqual(self.run_code(code, extra={"HELPER_FAIL": "1"}).returncode, 0)
+        self.assertNotIn("official", self.calls_text())
+
+    def test_xray_already_latest_update_runs_full_migration(self):
+        binary = self.write("/usr/local/bin/xray", "#!/bin/sh\necho 'Xray 26.3.27'\n")
+        binary.chmod(0o755)
+        code = function("update_xray") + r'''
+xray_binary_path="$TEST_ROOT/usr/local/bin/xray"
+curl() { echo '{"tag_name":"v26.3.27"}'; }
+jq() { echo v26.3.27; }
+run_core_install() { echo forbidden-core-update >> "$CALLS"; return 99; }
+restart_xray() { echo forbidden-restart >> "$CALLS"; return 99; }
+update_xray
+'''
+        self.assert_ok(self.run_code(code))
+        self.assertTrue(self.guard("xray.service").exists())
+        self.assertNotIn("forbidden", self.calls_text())
+
+
 if __name__ == "__main__":
     unittest.main()

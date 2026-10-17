@@ -8,6 +8,7 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.15 更新: 已有项目安装进入菜单自动幂等迁移启动恢复；Snell/Xray新装、更新及已最新版路径统一补齐，失败停止并报告，空机器浏览和只读CLI不迁移 (by Eric86777)
 # v5.4.14 更新: 修复 resolved/D-Bus 启动依赖环，DNS失败返回失败并重试；Snell/Xray等待DNS，有限恢复Snell错误解析器；IPv6禁用前检查ifupdown冲突 (by Eric86777)
 # v5.4.13 更新: Xray 卸载改为内置固定范围事务，校验服务联动/目录归属/挂载与 Snell 基线，失败可恢复、残缺安装可检查；
 #   保留公共日志模板及共享依赖，增加只读/继续/恢复入口。菜单启动不再自动清理 MTU 或迁移 CF，依赖仅在安装/更新时准备 (by Eric86777)
@@ -29,8 +30,8 @@
 #   「🔴配额用尽」「🟡即将用尽」从不显示(实际限流与每月重置不受影响)；现改读 nft -j 的原始字节，读不到配额对象时
 #   仍按计数器估算 (by Eric86777)
 
-SCRIPT_VERSION="5.4.14"
-SCRIPT_LAST_UPDATE="修复开机DNS依赖与恢复、Snell/Xray启动保护、IPv6与ifupdown冲突检查"
+SCRIPT_VERSION="5.4.15"
+SCRIPT_LAST_UPDATE="安装/更新与旧机菜单自动补齐启动恢复，保留业务启停状态"
 #=============================================================================
 
 #=============================================================================
@@ -1306,13 +1307,29 @@ boot_recovery_put() {
         cp -p "$dest" "$backup_dir/$(basename "$dest")" || { rm -f "$tmp"; return 1; }
     fi
     chmod "$mode" "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+    BOOT_RECOVERY_CHANGED=1
 }
 boot_recovery_install_assets() {
+    # The 5.4.14 helper/watch templates are unchanged. Exact comparison preserves
+    # operator edits even when they retain our generated marker comment.
+    boot_recovery_asset_can_install /usr/local/libexec/net-tcp-boot-recovery boot_recovery_emit_helper &&
+        boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.service boot_recovery_emit_watch_service &&
+        boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.timer boot_recovery_emit_watch_timer || return 1
     # ExecStartPre also runs as the non-root Snell user. A new libexec directory
     # must be traversable even when the caller uses umask 077.
     [ -d /usr/local/libexec ] || mkdir -m 755 /usr/local/libexec || return 1
-    boot_recovery_emit_helper | boot_recovery_put /usr/local/libexec/net-tcp-boot-recovery 755 || return 1
-    boot_recovery_put /etc/systemd/system/net-tcp-boot-watch.service 644 <<'WATCH_SERVICE' || return 1
+    boot_recovery_put /usr/local/libexec/net-tcp-boot-recovery 755 < <(boot_recovery_emit_helper) || return 1
+    boot_recovery_put /etc/systemd/system/net-tcp-boot-watch.service 644 < <(boot_recovery_emit_watch_service) || return 1
+    boot_recovery_put /etc/systemd/system/net-tcp-boot-watch.timer 644 < <(boot_recovery_emit_watch_timer)
+}
+boot_recovery_asset_can_install() {
+    local dest="$1" emitter="$2"
+    [ ! -L "$dest" ] && { [ ! -e "$dest" ] || { [ -f "$dest" ] && cmp -s "$dest" <("$emitter"); }; } && return 0
+    echo "保留自定义恢复组件，迁移未完成: $dest" >&2
+    return 1
+}
+boot_recovery_emit_watch_service() {
+    cat <<'WATCH_SERVICE'
 # NET_TCP_BOOT_RECOVERY_V1
 [Unit]
 Description=Check managed DNS and stale Snell resolver initialization
@@ -1322,7 +1339,9 @@ Type=oneshot
 ExecStart=/usr/local/libexec/net-tcp-boot-recovery --watch
 TimeoutStartSec=30
 WATCH_SERVICE
-    boot_recovery_put /etc/systemd/system/net-tcp-boot-watch.timer 644 <<'WATCH_TIMER'
+}
+boot_recovery_emit_watch_timer() {
+    cat <<'WATCH_TIMER'
 # NET_TCP_BOOT_RECOVERY_V1
 [Unit]
 Description=Periodically check managed DNS and active Snell instances
@@ -1337,7 +1356,14 @@ WATCH_TIMER
 boot_recovery_patch_unit() {
     local unit="$1"
     [[ "$unit" =~ ^(snell\.service|snell-[0-9]+\.service|snellv6-[0-9]+\.service|xray(@[[:alnum:]_.:-]+)?\.service)$ ]] || return 1
-    boot_recovery_put "/etc/systemd/system/${unit}.d/90-net-tcp-boot-recovery.conf" 644 <<'DNS_GUARD'
+    local dest="/etc/systemd/system/${unit}.d/90-net-tcp-boot-recovery.conf"
+    if [ -e "$dest" ] && ! cmp -s "$dest" <(boot_recovery_emit_guard); then
+        echo "保留自定义启动保护: $dest" >&2; return 1
+    fi
+    boot_recovery_put "$dest" 644 < <(boot_recovery_emit_guard)
+}
+boot_recovery_emit_guard() {
+    cat <<'DNS_GUARD'
 # NET_TCP_BOOT_RECOVERY_V1
 [Unit]
 After=network-online.target nss-lookup.target systemd-resolved.service dns-purify-persist.service
@@ -1423,26 +1449,25 @@ LEGACY_DNS_UNIT
 }
 boot_recovery_write_dns_service() {
     local primary="$1" secondary="$2" old=/usr/local/bin/dns-purify-apply.sh unit=/etc/systemd/system/dns-purify-persist.service
-    local old_primary old_secondary
     [[ "$primary" =~ ^[[:alnum:].:%#_-]+$ && "$secondary" =~ ^[[:alnum:].:%#_-]+$ ]] || return 1
     # Exact legacy bodies only: a matching comment/Description alone is not ownership proof.
-    if [ -e "$old" ] && ! grep -q 'NET_TCP_BOOT_RECOVERY_V1' "$old"; then
-        # The menu may be changing providers: verify the old body against its own
-        # literal values, never source it or compare it against the new choices.
-        old_primary=$(sed -n 's/^DNS_PRIMARY="\([^"]*\)"$/\1/p' "$old")
-        old_secondary=$(sed -n 's/^DNS_SECONDARY="\([^"]*\)"$/\1/p' "$old")
-        [ ! -L "$old" ] &&
-            [[ "$old_primary" =~ ^[[:alnum:].:%#_-]+$ && "$old_secondary" =~ ^[[:alnum:].:%#_-]+$ ]] &&
-            boot_recovery_legacy_dns_apply_matches "$old" "$old_primary" "$old_secondary" || {
+    if [ -e "$old" ]; then
+        # Verify against its own literal values before changing DNS providers.
+        boot_recovery_project_dns || {
             echo "保留自定义DNS脚本: $old" >&2; return 1;
         }
     fi
-    if [ -e "$unit" ] && ! grep -q 'NET_TCP_BOOT_RECOVERY_V1' "$unit"; then
-        [ ! -L "$unit" ] && boot_recovery_legacy_dns_unit_matches "$unit" || {
+    if [ -e "$unit" ]; then
+        [ ! -L "$unit" ] && { boot_recovery_legacy_dns_unit_matches "$unit" || cmp -s "$unit" <(boot_recovery_emit_dns_service); } || {
             echo "保留自定义DNS服务: $unit" >&2; return 1;
         }
     fi
-    boot_recovery_put "$old" 755 yes <<DNS_APPLY || return 1
+    boot_recovery_put "$old" 755 yes < <(boot_recovery_emit_dns_apply "$primary" "$secondary") || return 1
+    boot_recovery_put "$unit" 644 yes < <(boot_recovery_emit_dns_service)
+}
+boot_recovery_emit_dns_apply() {
+    local primary="$1" secondary="$2"
+    cat <<DNS_APPLY
 #!/bin/bash
 # NET_TCP_BOOT_RECOVERY_V1
 # 由 net-tcp-tune.sh DNS净化功能自动生成
@@ -1450,7 +1475,9 @@ DNS_PRIMARY="$primary"
 DNS_SECONDARY="$secondary"
 exec /usr/local/libexec/net-tcp-boot-recovery --restore-dns "\$DNS_PRIMARY" "\$DNS_SECONDARY" 40
 DNS_APPLY
-    boot_recovery_put "$unit" 644 yes <<'DNS_SERVICE'
+}
+boot_recovery_emit_dns_service() {
+    cat <<'DNS_SERVICE'
 # NET_TCP_BOOT_RECOVERY_V1
 [Unit]
 Description=DNS Purify - Restore DNS Configuration on Boot
@@ -1480,27 +1507,147 @@ boot_recovery_patch_enabled_units() {
         esac
     done < <(printf '%s\n' "$listing" | awk '{ print $1, $2 }')
 }
-run_boot_recovery_repair() {
-    local primary secondary rc=0
-    [ "$#" -eq 0 ] || { echo '用法: --repair-boot-recovery（不重启机器或网络，不启动手动停止的业务）' >&2; return 2; }
+boot_recovery_project_dns() {
+    local file=/usr/local/bin/dns-purify-apply.sh expected actual
+    [ -f "$file" ] || return 1
+    [ ! -L "$file" ] || return 2
+    BOOT_RECOVERY_DNS_PRIMARY=$(sed -n 's/^DNS_PRIMARY="\([^"]*\)"$/\1/p' "$file")
+    BOOT_RECOVERY_DNS_SECONDARY=$(sed -n 's/^DNS_SECONDARY="\([^"]*\)"$/\1/p' "$file")
+    if [[ "$BOOT_RECOVERY_DNS_PRIMARY" =~ ^[[:alnum:].:%#_-]+$ && "$BOOT_RECOVERY_DNS_SECONDARY" =~ ^[[:alnum:].:%#_-]+$ ]]; then
+        boot_recovery_legacy_dns_apply_matches "$file" "$BOOT_RECOVERY_DNS_PRIMARY" "$BOOT_RECOVERY_DNS_SECONDARY" && return 0
+        expected=$(cat <<EOF
+#!/bin/bash
+# NET_TCP_BOOT_RECOVERY_V1
+# 由 net-tcp-tune.sh DNS净化功能自动生成
+DNS_PRIMARY="$BOOT_RECOVERY_DNS_PRIMARY"
+DNS_SECONDARY="$BOOT_RECOVERY_DNS_SECONDARY"
+exec /usr/local/libexec/net-tcp-boot-recovery --restore-dns "\$DNS_PRIMARY" "\$DNS_SECONDARY" 40
+EOF
+        )
+        actual=$(cat "$file") || return 2
+        [ "$actual" != "$expected" ] || return 0
+    fi
+    # Known project provenance plus edits is a conflict, never an overwrite grant.
+    if grep -q 'NET_TCP_BOOT_RECOVERY_V1\|由 net-tcp-tune.sh DNS净化功能自动生成' "$file"; then
+        echo "保留自定义DNS脚本，自动恢复迁移未完成: $file" >&2; return 2
+    fi
+    return 1
+}
+boot_recovery_trusted_file() {
+    local file="$1" owner="" mode=""
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    read -r owner mode < <(stat -c '%u %a' "$file" 2>/dev/null || stat -f '%u %Lp' "$file" 2>/dev/null)
+    [ "$owner" = 0 ] && [[ "$mode" =~ ^[0-7]{3,4}$ ]] && [ "$((8#$mode & 8#022))" -eq 0 ]
+}
+boot_recovery_xray_owned() {
+    local record=/var/lib/net-tcp-tune/xray-install.json override=/etc/systemd/system/xray.service.d/override.conf expected actual
+    if boot_recovery_trusted_file "$record" && command -v python3 >/dev/null 2>&1 &&
+        python3 - "$record" <<'BOOT_XRAY_RECORD'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        record = json.load(stream)
+    valid = isinstance(record, dict) and record.get("version") == 1 and isinstance(record.get("paths"), list) and "/usr/local/bin/xray" in record["paths"]
+except (OSError, ValueError, TypeError):
+    valid = False
+sys.exit(0 if valid else 1)
+BOOT_XRAY_RECORD
+    then return 0; fi
+    boot_recovery_trusted_file "$override" || return 1
+    expected=$(cat <<'XRAY_PROJECT_OVERRIDE'
+[Service]
+Restart=always
+RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
+OOMScoreAdjust=-500
+
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=10
+XRAY_PROJECT_OVERRIDE
+    )
+    actual=$(cat "$override") || return 1
+    [ "$actual" = "$expected" ]
+}
+boot_recovery_project_units() {
+    local file unit xray_owned=no
+    boot_recovery_xray_owned && xray_owned=yes
+    for file in /etc/systemd/system/snell*.service /lib/systemd/system/snell*.service /usr/lib/systemd/system/snell*.service \
+        /etc/systemd/system/xray*.service; do
+        boot_recovery_trusted_file "$file" || continue
+        unit=$(basename "$file")
+        case "$unit" in
+            snell.service|snell-[0-9]*.service)
+                [[ "$unit" =~ ^(snell\.service|snell-[0-9]+\.service)$ ]] || continue
+                grep -Eq '^ExecStart=/usr/local/bin/snell-server -c /etc/snell/(snell-server|snell-[0-9]+)\.conf$' "$file" &&
+                    grep -Eq '^Description=Snell Proxy Service( \(Port[[:space:]]*[0-9]+\))?$' "$file" || continue;;
+            snellv6-[0-9]*.service)
+                [[ "$unit" =~ ^snellv6-[0-9]+\.service$ ]] || continue
+                grep -Eq '^ExecStart=/usr/local/bin/snell-server-v6 -c /etc/snell-v6/snell-[0-9]+\.conf$' "$file" &&
+                    grep -Eq '^Description=Snell V6 Proxy Service \(Port[[:space:]]*[0-9]+\)$' "$file" || continue;;
+            xray.service|xray@*.service)
+                [ "$xray_owned" = yes ] && [[ "$unit" =~ ^xray(@[[:alnum:]_.:-]+)?\.service$ ]] || continue
+                grep -Eq '^ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/(config|%i|[[:alnum:]_.-]+)\.json$' "$file" || continue;;
+            *) continue;;
+        esac
+        printf '%s\n' "$unit"
+    done | awk '!seen[$0]++'
+}
+boot_recovery_migrate() (
+    # Subshell owns and releases its lock, including every error/early-return path.
+    local mode="${1:-auto}" units unit dns_state=0 legacy_dropin=/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf rc=0
+    shift || return 1
+    BOOT_RECOVERY_CHANGED=0
+    units=$(boot_recovery_project_units) || return 1
+    boot_recovery_project_dns || dns_state=$?
+    [ "$dns_state" -ne 2 ] || return 1
+    if [ "$mode" = auto ] && [ -z "$units" ] && [ "$dns_state" -ne 0 ] && [ "$#" -eq 0 ]; then return 0; fi
+    for unit in "$@"; do
+        [[ "$unit" =~ ^(snell\.service|snell-[0-9]+\.service|snellv6-[0-9]+\.service|xray(@[[:alnum:]_.:-]+)?\.service)$ ]] || return 1
+        units="${units}${units:+
+}${unit}"
+    done
     command -v flock >/dev/null 2>&1 || { echo '缺少flock，未安装或修改服务' >&2; return 1; }
     exec 209>/run/net-tcp-boot-repair.lock
     flock -n 209 || { echo '另一个启动恢复修复正在运行' >&2; return 1; }
     boot_recovery_install_assets || return 1
+    [ ! -e "$legacy_dropin" ] || BOOT_RECOVERY_CHANGED=1
     /usr/local/libexec/net-tcp-boot-recovery --migrate-resolved || return 1
-    systemctl daemon-reload || return 1
-    if [ -f /usr/local/bin/dns-purify-apply.sh ]; then
-        primary=$(sed -n 's/^DNS_PRIMARY="\([^"]*\)"$/\1/p' /usr/local/bin/dns-purify-apply.sh)
-        secondary=$(sed -n 's/^DNS_SECONDARY="\([^"]*\)"$/\1/p' /usr/local/bin/dns-purify-apply.sh)
-        boot_recovery_write_dns_service "$primary" "$secondary" || return 1
+    if [ "$dns_state" -eq 0 ]; then
+        boot_recovery_write_dns_service "$BOOT_RECOVERY_DNS_PRIMARY" "$BOOT_RECOVERY_DNS_SECONDARY" || return 1
     fi
-    boot_recovery_patch_enabled_units || return 1
-    systemctl daemon-reload || return 1
-    systemctl enable --now net-tcp-boot-watch.timer || return 1
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        boot_recovery_patch_unit "$unit" || return 1
+    done < <(printf '%s\n' "$units" | awk '!seen[$0]++')
+    # Always retry a quiet reload: a previous invocation may have written all
+    # files and then failed to reload, leaving the old definitions in memory.
+    systemctl daemon-reload >/dev/null || return 1
+    if [ "$(systemctl is-enabled net-tcp-boot-watch.timer 2>/dev/null)" != enabled ] ||
+        ! systemctl is-active --quiet net-tcp-boot-watch.timer; then
+        systemctl enable --now net-tcp-boot-watch.timer || return 1
+    fi
+    [ "$(systemctl is-enabled net-tcp-boot-watch.timer 2>/dev/null)" = enabled ] &&
+        systemctl is-active --quiet net-tcp-boot-watch.timer || return 1
     /usr/local/libexec/net-tcp-boot-recovery --check-current-ipv6 || rc=2
-    echo '启动恢复配置已安装；未重启机器、网络、Snell或Xray。原enable/手动停止状态保持。'
-    [ "$rc" -eq 0 ] || echo 'IPv6/ifupdown仍冲突：已保留全部网络配置，请先备份并协调cloud-init源和inet6段，再重新运行本入口。' >&2
+    if [ "$rc" -ne 0 ]; then
+        echo '启动恢复配置已补齐，但IPv6/ifupdown仍冲突：已保留全部网络配置，安装/更新未继续；请先备份并协调cloud-init源和inet6段。' >&2
+    elif [ "$BOOT_RECOVERY_CHANGED" -ne 0 ] || [ "$mode" = repair ]; then
+        echo '启动恢复配置已补齐；原业务enable/手动停止状态保持，未重启机器、网络或业务服务。'
+    fi
     return "$rc"
+)
+run_boot_recovery_repair() {
+    [ "$#" -eq 0 ] || { echo '用法: --repair-boot-recovery（不重启机器或网络，不启动手动停止的业务）' >&2; return 2; }
+    boot_recovery_migrate repair
+}
+boot_recovery_export_functions() {
+    local kind flag fn
+    while read -r kind flag fn; do
+        case "$fn" in boot_recovery_*|run_boot_recovery_repair) export -f "$fn";; esac
+    done < <(declare -F)
 }
 # END BOOT_RECOVERY
 
@@ -8376,7 +8523,7 @@ EOF
         rm -f "$tmp_file" 2>/dev/null
         return 1
     }
-    boot_recovery_install_assets && boot_recovery_patch_unit "$unit"
+    return 0
 }
 
 snell_sync_reserved_ports() {
@@ -8534,6 +8681,7 @@ snell_apply_runtime_guards() {
         return 0
     fi
 
+    boot_recovery_migrate install "${units[@]}" || return 1
     echo -e "${SNELL_CYAN}正在补齐 Snell 稳定性防护...${SNELL_RESET}"
     for unit in "${units[@]}"; do
         if snell_write_systemd_dropin "$unit"; then
@@ -8568,7 +8716,6 @@ snell_apply_runtime_guards() {
         systemctl reset-failed "$unit" 2>/dev/null || true
     done
     echo -e "  ${SNELL_GREEN}✓ 已清理 Snell failed/start-limit 状态${SNELL_RESET}"
-    systemctl enable --now net-tcp-boot-watch.timer || failed=$((failed + 1))
 
     if [ "$enable_cron" = "yes" ]; then
         snell_install_daily_restart_cron || failed=$((failed + 1))
@@ -8707,7 +8854,10 @@ repair_snell_connectivity() {
         fi
     done
 
-    snell_apply_runtime_guards yes || repair_failed=1
+    if ! snell_apply_runtime_guards yes; then
+        snell_release_lock
+        return 1
+    fi
     echo -e "${SNELL_CYAN}正在重启原本运行中或 failed+enabled 的 Snell 实例...${SNELL_RESET}"
     snell_restart_units_with_healthcheck "${restart_targets[@]}" || repair_failed=1
     snell_health_check || repair_failed=1
@@ -9057,7 +9207,7 @@ SyslogIdentifier=snell-${SNELL_PORT}
 WantedBy=multi-user.target
 EOF
 
-    if ! boot_recovery_install_assets || ! boot_recovery_patch_unit "$SNELL_SERVICE_NAME"; then
+    if ! boot_recovery_migrate install "$SNELL_SERVICE_NAME"; then
         echo -e "${SNELL_RED}安装Snell DNS启动保护失败${SNELL_RESET}"
         cleanup_partial_install_snell "${SNELL_PORT:-}"
         return 1
@@ -9107,6 +9257,10 @@ EOF
     fi
 
     # 查看 Snell 日志
+    if ! snell_apply_runtime_guards no; then
+        echo -e "${SNELL_RED}Snell已启动，但稳定性配置未完成，请检查上面的错误。${SNELL_RESET}"
+        return 1
+    fi
     echo -e "${SNELL_GREEN}Snell (端口 ${SNELL_PORT}) 安装成功${SNELL_RESET}"
     journalctl -u ${SNELL_SERVICE_NAME} -n 8 --no-pager 2>/dev/null || echo -e "${SNELL_YELLOW}无法获取日志，但不影响服务运行${SNELL_RESET}"
 
@@ -9155,8 +9309,6 @@ EOF
     # 修复加分项: PSK 文件权限收紧到 600（仅 root 可读）
     chmod 600 /etc/snell/config-${SNELL_PORT}.txt
     # 注：add_snell_port_to_reserved 已在 systemctl start 之前调用（修复 Bug 4，时机提前）
-    # 安装成功后再补一次统一 drop-in，便于后续健康检查和旧实例修复逻辑保持一致
-    snell_apply_runtime_guards no || true
 }
 
 # 更新 Snell
@@ -9178,9 +9330,11 @@ update_snell() {
     echo -e "${SNELL_GREEN}Snell 正在更新核心程序${SNELL_RESET}"
     echo -e "${SNELL_CYAN}更新前先补齐旧实例稳定性防护（不会删除节点配置）${SNELL_RESET}"
 
-    snell_apply_runtime_guards no || {
-        echo -e "${SNELL_YELLOW}⚠ 稳定性防护存在未完成项，仍继续更新核心程序；请留意后续健康检查。${SNELL_RESET}"
-    }
+    if ! snell_apply_runtime_guards no; then
+        echo -e "${SNELL_RED}启动恢复迁移失败，未继续更新Snell。${SNELL_RESET}"
+        snell_release_lock
+        return 1
+    fi
 
     # 收集需要恢复的实例：active 或 failed+enabled；不自动拉起用户手动停止/禁用的实例
     while IFS= read -r svc_name; do
@@ -10068,13 +10222,7 @@ snellv6_apply_runtime_guards() {
 
     echo -e "${SNELL_CYAN}正在补齐 Snell v6 稳定性防护...${SNELL_RESET}"
 
-    if boot_recovery_install_assets; then
-        for unit in "${units[@]}"; do
-            boot_recovery_patch_unit "$unit" || failed=$((failed + 1))
-        done
-    else
-        failed=$((failed + 1))
-    fi
+    boot_recovery_migrate install "${units[@]}" || return 1
 
     if snellv6_sync_reserved_ports; then
         ports_csv=$(snellv6_current_ports_csv)
@@ -10095,7 +10243,6 @@ snellv6_apply_runtime_guards() {
         systemctl reset-failed "$unit" 2>/dev/null || true
     done
     echo -e "  ${SNELL_GREEN}✓ 已清理 Snell v6 failed 状态${SNELL_RESET}"
-    systemctl enable --now net-tcp-boot-watch.timer || failed=$((failed + 1))
 
     if [ "$enable_cron" = "yes" ]; then
         snellv6_install_daily_restart_cron || failed=$((failed + 1))
@@ -10675,7 +10822,7 @@ SyslogIdentifier=snellv6-${snellv6_port}
 WantedBy=multi-user.target
 EOF
 
-    if ! boot_recovery_install_assets || ! boot_recovery_patch_unit "snellv6-${snellv6_port}.service"; then
+    if ! boot_recovery_migrate install "snellv6-${snellv6_port}.service"; then
         cleanup_partial_install_snellv6 "$snellv6_port"
         return 1
     fi
@@ -10749,7 +10896,7 @@ EOF
     chmod 600 "${SNELLV6_CONF_DIR}/config-${snellv6_port}.txt"
 
     # 注册每日重启兜底（v6 仍是预发布版本，兜底更重要）
-    systemctl enable --now net-tcp-boot-watch.timer || echo 'Snell v6已安装，但定时恢复检查未启用，请检查systemd' >&2
+    # The full migration enabled and verified the timer before starting this unit.
     snellv6_install_daily_restart_cron || true
 }
 
@@ -10777,7 +10924,10 @@ snellv6_update_and_repair() {
     fi
 
     # 先补齐稳定性防护（不动二进制）
-    snellv6_apply_runtime_guards yes || repair_failed=1
+    if ! snellv6_apply_runtime_guards yes; then
+        snellv6_release_lock
+        return 1
+    fi
 
     # 收集需恢复实例：active 或 failed+enabled（不自动拉起用户手动停止/禁用的实例）
     for unit in "${units[@]}"; do
@@ -12343,6 +12493,12 @@ execute_official_script() {
 
 run_core_install() {
     info "正在下载并安装 Xray 核心..."
+    # Explicit installation owns this target even before the official installer
+    # enables it. Install the guard before any installer-triggered start.
+    if ! boot_recovery_migrate install xray.service; then
+        error "Xray 启动恢复配置失败，未继续安装或更新。"
+        return 1
+    fi
     if ! execute_official_script "install"; then
         error "Xray 核心安装失败！"
         return 1
@@ -12370,7 +12526,11 @@ OOMScoreAdjust=-500
 StartLimitIntervalSec=60
 StartLimitBurst=10
 XRAY_OVR
-    systemctl daemon-reload
+    systemctl daemon-reload || return 1
+    if ! boot_recovery_migrate install xray.service; then
+        error "Xray 启动恢复配置未完成。"
+        return 1
+    fi
 
     if ! run_xray_safe_uninstall --record-install; then
         error "Xray 安装归属登记失败，停止继续配置。"
@@ -12762,6 +12922,10 @@ install_dual() {
 
 update_xray() {
     if [[ ! -f "$xray_binary_path" ]]; then error "错误: Xray 未安装。" && return; fi
+    if ! boot_recovery_migrate install xray.service; then
+        error "Xray 启动恢复迁移失败，未继续更新。"
+        return 1
+    fi
     info "正在检查最新版本..."
     local current_version latest_version
     current_version=$("$xray_binary_path" version 2>/dev/null | head -n 1 | awk '{print $2}')
@@ -13982,6 +14146,7 @@ XRAY_ENHANCED_SCRIPT_EOF
         exec 9<>"$lock_dir/lock" || exit 1
         if ! flock -n 9; then echo "另一个 Xray 操作正在进行。" >&2; exit 1; fi
         export -f run_xray_safe_uninstall
+        boot_recovery_export_functions
         bash "$script_path"
     ); then
         echo ""
@@ -26948,6 +27113,7 @@ EOF
 
 # 解析命令行参数
 parse_args() {
+    NET_TCP_PARSED_ARGS=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)
@@ -26990,11 +27156,13 @@ parse_args() {
                 ;;
         esac
     done
+    NET_TCP_PARSED_ARGS=("$@")
 }
 
 main() {
     # 先解析参数
     parse_args "$@"
+    set -- "${NET_TCP_PARSED_ARGS[@]}"
 
     # 检查 root 权限
     check_root
@@ -27007,6 +27175,13 @@ main() {
         --xray-uninstall-resume) run_xray_safe_uninstall --resume; return $? ;;
         --xray-uninstall-rollback) run_xray_safe_uninstall --rollback; return $? ;;
     esac
+    # Existing project installations migrate once per normal invocation. Content
+    # checks keep later invocations quiet and repair missing assets/new instances.
+    local boot_recovery_rc=0
+    boot_recovery_migrate auto || boot_recovery_rc=$?
+    if [ "$boot_recovery_rc" -ne 0 ]; then
+        echo '启动恢复自动迁移仍有未完成项（详见上方）；菜单可继续用于检查和处理，未自动重启业务或网络。' >&2
+    fi
     # 启动菜单不自动改 MTU 或迁移 CF；迁移留在 CF 管理入口。
 
     # 加载用户配置（如果存在）
