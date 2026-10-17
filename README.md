@@ -1,10 +1,18 @@
-# BBR v3 优化脚本 - Ultimate Edition v5.4.13
+# BBR v3 优化脚本 - Ultimate Edition v5.4.14
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 33 项实用功能，优化你的 VPS 服务器。
 
-> **版本**: v5.4.13 🐛 修复 Xray 卸载范围、失败恢复与 Snell 保护，取消菜单启动时的自动网络维护。
+> **版本**: v5.4.14：修复 DNS 启动依赖循环，增加业务启动前的 DNS 就绪检查与本地恢复；保留 Xray 卸载及 Snell 保护。
+
+### 已安装机器的开机恢复迁移
+
+使用新版脚本执行 `bbr --repair-boot-recovery`，或对已下载的新版文件执行 `bash net-tcp-tune.sh --repair-boot-recovery`。该入口只修复本脚本的 DNS 启动配置及已安装 Snell/Xray 的恢复机制，不下载或升级服务程序，不更换内核，不重启整机或网卡，也不启用、拉起用户手动停止的业务服务。
+
+迁移会备份并移除本脚本旧版生成的 `systemd-resolved.service.d/dbus-fix.conf`；自定义同名文件会保留并报告冲突。Snell/Xray 启动前会等待有效的解析配置及实际 DNS 查询成功，失败时保留日志并重试。定时检查仅处理启用且正在运行、日志明确选中了无监听本地 DNS 的 Snell，避免因公网短断反复重启。
+
+首次部署或迁移后，应在维护窗口检查服务日志与实际域名请求；只有进程 `active` 不代表代理业务验证完成。永久禁用 IPv6 前若发现 ifupdown 仍配置 `inet6`，脚本会拒绝产生冲突，需先在有控制台和回退方案的情况下协调网络配置。
 
 ---
 
