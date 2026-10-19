@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import stat
 import tempfile
 import unittest
 
@@ -426,6 +427,14 @@ class AutomaticEntryTests(unittest.TestCase):
 # Fixture files represent root-owned production files; permission hardening itself
 # is separately exercised by the root Linux filesystem/uninstall tests.
 boot_recovery_trusted_file() { [ -f "$1" ] && [ ! -L "$1" ]; }
+boot_recovery_path_metadata() {
+    python3 - "$1" <<'FIXTURE_METADATA'
+import os, stat, sys
+path = sys.argv[1]
+owner = 65534 if path == os.environ.get("UNTRUSTED_DIR", "") else 0
+print(owner, format(stat.S_IMODE(os.stat(path).st_mode), "o"))
+FIXTURE_METADATA
+}
 boot_recovery_emit_helper() {
 cat <<'FIXTURE_HELPER'
 #!/bin/bash
@@ -633,6 +642,108 @@ boot_recovery_migrate auto
         self.assertNotIn("enable --now xray", self.calls_text())
         self.assertNotIn("start xray", self.calls_text())
 
+    def test_existing_private_libexec_gets_search_but_no_new_read_permissions(self):
+        directory = self.root / "usr/local/libexec"
+        directory.mkdir(mode=0o700)
+        for original, expected in ((0o700, 0o711), (0o750, 0o751), (0o701, 0o711)):
+            with self.subTest(original=original):
+                directory.chmod(original)
+                self.assert_ok(self.run_code("boot_recovery_migrate install xray.service"))
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), expected)
+        helper = directory / "net-tcp-boot-recovery"
+        self.assertEqual(stat.S_IMODE(helper.stat().st_mode), 0o755)
+
+    def test_untrusted_or_world_writable_exec_directory_is_not_changed(self):
+        directory = self.root / "usr/local/libexec"
+        directory.mkdir(mode=0o700)
+        for mode, extra in ((0o700, {"UNTRUSTED_DIR": str(directory)}), (0o777, {}), (0o770, {})):
+            with self.subTest(mode=mode, extra=extra):
+                directory.chmod(mode)
+                self.assertNotEqual(self.run_code("boot_recovery_migrate install xray.service", extra=extra).returncode, 0)
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), mode)
+                self.assertFalse((directory / "net-tcp-boot-recovery").exists())
+
+    def test_symlink_exec_directory_is_not_followed(self):
+        directory = self.root / "usr/local/libexec"
+        other = self.root / "other-tools"
+        other.mkdir()
+        directory.symlink_to(other, target_is_directory=True)
+        self.assertNotEqual(self.run_code("boot_recovery_migrate install xray.service").returncode, 0)
+        self.assertEqual(list(other.iterdir()), [])
+
+    def test_restricted_exec_ancestor_is_reported_without_permission_changes(self):
+        ancestor = self.root / "usr/local"
+        ancestor.chmod(0o700)
+        result = self.run_code("boot_recovery_migrate install xray.service")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(stat.S_IMODE(ancestor.stat().st_mode), 0o700)
+        self.assertFalse((ancestor / "libexec/net-tcp-boot-recovery").exists())
+
+    def dependency_fixture(self):
+        binary = self.write("/usr/bin/python3", "fixture")
+        binary.chmod(0o755)
+        return self.mapped(function("ensure_xray_dependencies")) + r'''
+require_no_xray_transaction() { return 0; }
+command() {
+    if [ "${1:-}" = -v ]; then
+        case "$2" in
+            jq|curl|timeout|getent|openssl)
+                case " ${EXTRA_MISSING_TOOLS:-} " in
+                    *" $2 "*) [ -f "$TEST_ROOT/deps-installed" ]; return $?;;
+                esac
+                return 0;;
+            ss) [ -f "$TEST_ROOT/ss-installed" ]; return $?;;
+        esac
+    fi
+    builtin command "$@"
+}
+apt-get() {
+    echo "apt $*" >> "$CALLS"
+    [ "${APT_FAIL:-0}" = 0 ] || return 1
+    if [ "$1" = install ] && [ "${LEAVE_SS_MISSING:-0}" = 0 ]; then touch "$TEST_ROOT/ss-installed" "$TEST_ROOT/deps-installed"; fi
+    return 0
+}
+ensure_xray_dependencies
+'''
+
+    def test_xray_prepares_missing_dns_socket_probe_before_installing_guard(self):
+        self.assert_ok(self.run_code(self.dependency_fixture()))
+        self.assertIn("iproute2", self.calls_text())
+        self.assertTrue((self.root / "ss-installed").exists())
+
+    def test_xray_dependency_install_failure_is_not_reported_as_ready(self):
+        self.assertNotEqual(self.run_code(self.dependency_fixture(), extra={"APT_FAIL": "1"}).returncode, 0)
+
+    def test_xray_dependency_commands_are_verified_after_package_success(self):
+        result = self.run_code(self.dependency_fixture(), extra={"LEAVE_SS_MISSING": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ss", self.calls_text())
+
+    def test_xray_ready_dependencies_do_not_run_package_manager(self):
+        (self.root / "ss-installed").touch()
+        self.assert_ok(self.run_code(self.dependency_fixture()))
+        self.assertEqual(self.calls_text(), "")
+
+    def test_xray_installs_dns_and_key_generation_packages_when_missing(self):
+        self.assert_ok(self.run_code(self.dependency_fixture(), extra={"EXTRA_MISSING_TOOLS": "timeout getent openssl"}))
+        packages = self.calls_text()
+        for package in ("iproute2", "coreutils", "libc-bin", "openssl"):
+            self.assertIn(package, packages)
+
+    def test_snell_install_prepares_dns_guard_dependencies_on_both_package_families(self):
+        code = self.mapped(function("install_required_packages_snell")) + r'''
+get_system_type_snell() { echo "$FIXTURE_DISTRO"; }
+apt() { echo "apt $*" >> "$CALLS"; }
+yum() { echo "yum $*" >> "$CALLS"; }
+install_required_packages_snell
+'''
+        for distro, package in (("debian", "iproute2"), ("centos", "iproute")):
+            with self.subTest(distro=distro):
+                self.calls.write_text("")
+                self.assert_ok(self.run_code(code, extra={"FIXTURE_DISTRO": distro}))
+                self.assertIn(package, self.calls_text())
+                self.assertIn("coreutils", self.calls_text())
+
     def test_real_child_bash_receives_complete_recovery_function_closure(self):
         self.assert_ok(self.run_code(r'''
 boot_recovery_export_functions
@@ -728,6 +839,7 @@ execute_official_script() {
     echo "official $*" >> "$CALLS"
 }
 run_xray_safe_uninstall() { echo record >> "$CALLS"; }
+xray_sync_existing_config_owner() { echo fixture-config-sync >> "$CALLS"; }
 run_core_install
 '''
         self.assert_ok(self.run_code(code))

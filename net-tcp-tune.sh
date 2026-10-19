@@ -8,6 +8,7 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.16 更新: 修复libexec0700导致启动保护203/EXEC；补齐DNS依赖；兼容官方Xray运行用户、配置/数据权限及UMask，失败安装重试补齐开机自启 (by Eric86777)
 # v5.4.15 更新: 已有项目安装进入菜单自动幂等迁移启动恢复；Snell/Xray新装、更新及已最新版路径统一补齐，失败停止并报告，空机器浏览和只读CLI不迁移 (by Eric86777)
 # v5.4.14 更新: 修复 resolved/D-Bus 启动依赖环，DNS失败返回失败并重试；Snell/Xray等待DNS，有限恢复Snell错误解析器；IPv6禁用前检查ifupdown冲突 (by Eric86777)
 # v5.4.13 更新: Xray 卸载改为内置固定范围事务，校验服务联动/目录归属/挂载与 Snell 基线，失败可恢复、残缺安装可检查；
@@ -30,8 +31,8 @@
 #   「🔴配额用尽」「🟡即将用尽」从不显示(实际限流与每月重置不受影响)；现改读 nft -j 的原始字节，读不到配额对象时
 #   仍按计数器估算 (by Eric86777)
 
-SCRIPT_VERSION="5.4.15"
-SCRIPT_LAST_UPDATE="安装/更新与旧机菜单自动补齐启动恢复，保留业务启停状态"
+SCRIPT_VERSION="5.4.16"
+SCRIPT_LAST_UPDATE="修复新机Xray启动权限、官方用户迁移与失败重试开机自启"
 #=============================================================================
 
 #=============================================================================
@@ -1315,18 +1316,49 @@ boot_recovery_install_assets() {
     boot_recovery_asset_can_install /usr/local/libexec/net-tcp-boot-recovery boot_recovery_emit_helper &&
         boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.service boot_recovery_emit_watch_service &&
         boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.timer boot_recovery_emit_watch_timer || return 1
-    # ExecStartPre also runs as the non-root Snell user. A new libexec directory
-    # must be traversable even when the caller uses umask 077.
-    [ -d /usr/local/libexec ] || mkdir -m 755 /usr/local/libexec || return 1
+    boot_recovery_prepare_exec_dir || return 1
     boot_recovery_put /usr/local/libexec/net-tcp-boot-recovery 755 < <(boot_recovery_emit_helper) || return 1
+    [ -x /usr/local/libexec/net-tcp-boot-recovery ] || {
+        echo '启动恢复程序不可执行；请检查/usr/local/libexec所在挂载的noexec和路径权限，未更改挂载或祖先目录。' >&2
+        return 1
+    }
     boot_recovery_put /etc/systemd/system/net-tcp-boot-watch.service 644 < <(boot_recovery_emit_watch_service) || return 1
     boot_recovery_put /etc/systemd/system/net-tcp-boot-watch.timer 644 < <(boot_recovery_emit_watch_timer)
 }
 boot_recovery_asset_can_install() {
     local dest="$1" emitter="$2"
-    [ ! -L "$dest" ] && { [ ! -e "$dest" ] || { [ -f "$dest" ] && cmp -s "$dest" <("$emitter"); }; } && return 0
+    [ ! -L "$dest" ] && { [ ! -e "$dest" ] || { boot_recovery_trusted_file "$dest" && cmp -s "$dest" <("$emitter"); }; } && return 0
     echo "保留自定义恢复组件，迁移未完成: $dest" >&2
     return 1
+}
+boot_recovery_prepare_exec_dir() {
+    local directory=/usr/local/libexec ancestor owner="" mode=""
+    # Do not loosen unrelated ancestors, follow symlinks, or install root-run
+    # code below a directory writable by another account.
+    for ancestor in / /usr /usr/local; do
+        [ -d "$ancestor" ] && [ ! -L "$ancestor" ] || {
+            echo "启动恢复程序祖先目录异常，已保留: $ancestor" >&2; return 1;
+        }
+        read -r owner mode < <(boot_recovery_path_metadata "$ancestor")
+        [ "$owner" = 0 ] && [[ "$mode" =~ ^[0-7]{3,4}$ ]] &&
+            [ "$((8#$mode & 8#022))" -eq 0 ] && [ "$((8#$mode & 8#111))" -eq "$((8#111))" ] || {
+            echo "启动恢复程序祖先目录不可信或缺少搜索权限，未自动更改: $ancestor" >&2; return 1;
+        }
+    done
+    [ ! -L "$directory" ] && { [ ! -e "$directory" ] || [ -d "$directory" ]; } || {
+        echo "启动恢复目录不是普通目录，已保留: $directory" >&2; return 1;
+    }
+    if [ ! -d "$directory" ]; then mkdir -m 755 "$directory" || return 1; fi
+    read -r owner mode < <(boot_recovery_path_metadata "$directory")
+    [ "$owner" = 0 ] && [[ "$mode" =~ ^[0-7]{3,4}$ ]] && [ "$((8#$mode & 8#022))" -eq 0 ] || {
+        echo "启动恢复目录不是root所有或可被其他账户写入，已保留: $directory" >&2; return 1;
+    }
+    if [ "$((8#$mode & 8#111))" -ne "$((8#111))" ]; then
+        # Search permission lets snell/xray execute the known helper by name.
+        # Preserve read/write bits: 0700 becomes 0711, without exposing listings.
+        chmod a+x "$directory" || return 1
+        BOOT_RECOVERY_CHANGED=1
+    fi
 }
 boot_recovery_emit_watch_service() {
     cat <<'WATCH_SERVICE'
@@ -1533,10 +1565,13 @@ EOF
     fi
     return 1
 }
+boot_recovery_path_metadata() {
+    stat -c '%u %a' "$1" 2>/dev/null || stat -f '%u %Lp' "$1" 2>/dev/null
+}
 boot_recovery_trusted_file() {
     local file="$1" owner="" mode=""
     [ -f "$file" ] && [ ! -L "$file" ] || return 1
-    read -r owner mode < <(stat -c '%u %a' "$file" 2>/dev/null || stat -f '%u %Lp' "$file" 2>/dev/null)
+    read -r owner mode < <(boot_recovery_path_metadata "$file")
     [ "$owner" = 0 ] && [[ "$mode" =~ ^[0-7]{3,4}$ ]] && [ "$((8#$mode & 8#022))" -eq 0 ]
 }
 boot_recovery_xray_owned() {
@@ -8220,10 +8255,10 @@ install_required_packages_snell() {
 
     if [ "$system_type" = "debian" ]; then
         apt update
-        apt install -y wget unzip curl
+        apt install -y wget unzip curl iproute2 coreutils libc-bin
     elif [ "$system_type" = "centos" ]; then
         yum -y update
-        yum -y install wget unzip curl
+        yum -y install wget unzip curl iproute coreutils glibc-common
     else
         echo -e "${SNELL_RED}不支持的系统类型${SNELL_RESET}"
         exit 1
@@ -11234,6 +11269,10 @@ FIXED = (
     "/etc/systemd/system/xray.service.d", "/etc/systemd/system/xray@.service.d",
     "/etc/logrotate.d/xray", INSTALL_RECORD,
 )
+XRAY_DATA_DIRS = {
+    "/usr/local/share/xray": re.compile(r"(?:geoip\.dat|geosite\.dat|\.undat)\Z"),
+    "/var/log/xray": re.compile(r"(?:access|error)\.log(?:\.\d+)?(?:\.gz)?\Z"),
+}
 SNELL_PATHS = (
     "/etc/snell", "/etc/snell-v6", "/usr/local/bin/snell-server", "/usr/local/bin/snell-server-v6",
     "/usr/local/bin/snell-daily-restart.sh", "/usr/local/bin/snellv6-daily-restart.sh",
@@ -11244,14 +11283,14 @@ PROPS = (
     "Id", "Names", "LoadState", "ActiveState", "SubState", "UnitFileState", "MainPID",
     "ExecMainStartTimestampMonotonic", "FragmentPath", "DropInPaths", "ExecStart", "ExecStop",
     "ExecStopPost", "ExecStartPre", "ExecStartPost", "ExecCondition", "Requires", "RequiredBy", "Wants", "BindsTo", "BoundBy", "PartOf", "ConsistsOf", "UpheldBy",
-    "PropagatesStopTo", "StopPropagatedFrom", "Triggers", "TriggeredBy", "ControlGroup",
+    "PropagatesStopTo", "StopPropagatedFrom", "Triggers", "TriggeredBy", "ControlGroup", "User", "Group",
 )
 UNIT_KEYS = {
     "Unit": {"Description", "Documentation", "After", "StartLimitIntervalSec", "StartLimitBurst"},
     "Service": {"User", "Group", "CapabilityBoundingSet", "AmbientCapabilities", "NoNewPrivileges",
                 "ExecStart", "Restart", "RestartSec", "RestartPreventExitStatus", "LimitNPROC", "LimitNOFILE",
                 "RuntimeDirectory", "RuntimeDirectoryMode", "KillMode", "KillSignal", "TimeoutStopSec",
-                "OOMScoreAdjust", "Type"},
+                "OOMScoreAdjust", "Type", "UMask"},
     "Install": {"WantedBy"},
 }
 DNS_GUARD_NAME = "90-net-tcp-boot-recovery.conf"
@@ -11373,7 +11412,7 @@ class Environment:
     def candidates(self):
         return (*FIXED, self.home.rstrip("/") + "/xray_subscription_info.txt")
 
-    def safe_path(self, name, *, writable=False):
+    def safe_path(self, name, *, writable=False, data_uid=None):
         path = self.path(name)
         current = self.root
         for part in path.relative_to(self.root).parts:
@@ -11382,11 +11421,75 @@ class Environment:
                 raise Refused("拒绝符号链接路径: " + self.logical(current))
             if current.exists():
                 s = current.stat()
-                if current.is_dir() and (s.st_uid != 0 or s.st_mode & 0o022):
+                data_root = name in XRAY_DATA_DIRS and current == path and data_uid is not None
+                if current.is_dir() and (s.st_uid not in ({0, data_uid} if data_root else {0}) or s.st_mode & 0o022):
                     raise Refused("目录不是 root 专属可信目录: " + self.logical(current))
         if writable and path.exists() and path.stat().st_uid != 0:
             raise Refused("恢复记录不是 root 所有")
         return path
+
+    def verified_xray_uid(self):
+        # Only the dedicated account of a verified, loaded default service can
+        # authorize non-root data ownership. Configuration files grant no rights.
+        info = self.show("xray.service")
+        self.validate_unit("xray.service", info)
+        if info.get("LoadState") != "loaded" or info.get("User") != "xray" or info.get("Group") != "xray":
+            raise Refused("非 root 数据目录需要已核实的 xray:xray 默认服务")
+        unit = self.safe_path("/etc/systemd/system/xray.service")
+        section = ""
+        identity = {"User": [], "Group": []}
+        for line in unit.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1]
+            elif section == "Service" and "=" in line:
+                key, value = line.split("=", 1)
+                if key in identity:
+                    identity[key].append(value)
+        if identity != {"User": ["xray"], "Group": ["xray"]}:
+            raise Refused("默认服务文件未明确使用唯一 xray:xray 账号")
+        try:
+            account = pwd.getpwnam("xray")
+        except KeyError:
+            raise Refused("专用 xray 账号不存在") from None
+        if account.pw_uid <= 0 or account.pw_gid <= 0:
+            raise Refused("专用 xray 账号不能使用 root UID/GID")
+        return account.pw_uid
+
+    def validate_data_tree(self, path, name, data_uid):
+        # Both official data directories are flat. Never authorize arbitrary
+        # descendants or a different directory merely because xray owns it.
+        if name not in XRAY_DATA_DIRS:
+            raise Refused("非默认 Xray 数据目录")
+        for item in [path, *path.iterdir()]:
+            s = item.lstat()
+            is_root = item == path
+            if (stat.S_ISLNK(s.st_mode) or
+                    (not stat.S_ISDIR(s.st_mode) if is_root else
+                     not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or not XRAY_DATA_DIRS[name].fullmatch(item.name)) or
+                    s.st_uid not in ({0, data_uid} if data_uid is not None else {0}) or s.st_mode & 0o022):
+                raise Refused("Xray 数据目录所有者、权限或内容异常: " + self.logical(item))
+
+    def validate_data_directories(self):
+        directories = []
+        needs_account = False
+        mounts = self.mounts()
+        for name in XRAY_DATA_DIRS:
+            path = self.path(name)
+            self.safe_path(self.logical(path.parent))
+            if path.is_symlink():
+                raise Refused("拒绝符号链接数据目录: " + name)
+            if not path.exists():
+                continue
+            if not path.is_dir() or any(m == name or m.startswith(name + "/") for m in mounts):
+                raise Refused("Xray 数据目录类型或挂载异常: " + name)
+            directories.append((name, path))
+            needs_account = needs_account or any(item.lstat().st_uid != 0 for item in [path, *path.iterdir()])
+        data_uid = self.verified_xray_uid() if needs_account else None
+        for name, path in directories:
+            self.safe_path(name, data_uid=data_uid)
+            self.validate_data_tree(path, name, data_uid)
+        return data_uid
 
     @staticmethod
     def metadata_file(path):
@@ -11500,6 +11603,10 @@ class Environment:
             key, value = line.split("=", 1)
             if key not in UNIT_KEYS.get(section, set()):
                 raise Refused("发现非默认服务指令: " + name + "/" + key)
+            # The current official unit uses 0077. Accept its equivalent octal
+            # spelling only; accepting the key must not permit looser masks.
+            if key == "UMask" and value not in {"0077", "077"}:
+                raise Refused("Xray 服务 UMask 不是官方严格权限: " + name)
             if key == "ExecStart" and value and not re.fullmatch(
                     r"/usr/local/bin/xray run -config /usr/local/etc/xray/(?:config|%i)\.json", value):
                 raise Refused("Xray 启动程序或配置路径异常")
@@ -11568,13 +11675,14 @@ class Environment:
         self.safe_path(STATE, writable=True)
         for name in ("current.json", "current.tmp", "last-result.json"):
             self.metadata_file(self.state / name)
+        data_uid = self.validate_data_directories()
         snell = self.snell_snapshot()
         protected = set(snell["files"]) | set(SNELL_PATHS)
         candidates = []
         identities = {}
         mounts = self.mounts()
         for name in self.candidates():
-            path = self.safe_path(name)
+            path = self.safe_path(name, data_uid=data_uid)
             if not path.exists():
                 continue
             for protected_path in protected:
@@ -11589,11 +11697,6 @@ class Environment:
                 identities[self.logical(item)] = [s.st_dev, s.st_ino, s.st_uid, s.st_gid, stat.S_IMODE(s.st_mode)]
             candidates.append(name)
         self.config_check()
-        for name, pattern in (("/usr/local/share/xray", r"(?:geoip\.dat|geosite\.dat|\.undat)"),
-                              ("/var/log/xray", r"(?:access|error)\.log(?:\.\d+)?(?:\.gz)?")):
-            directory = self.path(name)
-            if directory.exists() and any(not p.is_file() or not re.fullmatch(pattern, p.name) for p in directory.iterdir()):
-                raise Refused("目录包含未知文件，不能确认全部专属于 Xray: " + name)
         subscription = self.path(self.home.rstrip("/") + "/xray_subscription_info.txt")
         if subscription.exists() and any(line.strip() and not line.startswith("vless://") for line in subscription.read_text().splitlines()):
             raise Refused("订阅文件含非 VLESS 内容，无法按临时 VLESS 范围清理")
@@ -11691,7 +11794,7 @@ class Environment:
             if name != "/var/log/xray":
                 static_files.update(self.tree(name))
         return {"paths": candidates, "identities": identities, "files": static_files,
-                "units": units, "links": links, "snell": snell}
+                "units": units, "links": links, "snell": snell, "data_uid": data_uid}
 
     def common_lock(self, readonly=False):
         path = self.safe_path(COMMON_LOCK, writable=True)
@@ -11726,6 +11829,7 @@ class Environment:
             raise Refused("不能登记异常 Xray 核心")
         for name in ("/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service"):
             self.validate_unit_file(name)
+        self.validate_data_directories()
         target = self.path(INSTALL_RECORD)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".tmp")
@@ -11779,6 +11883,9 @@ class Environment:
             raise Refused("事务路径超出白名单")
         if len(data["plan"]["paths"]) != len(set(data["plan"]["paths"])):
             raise Refused("事务包含重复路径")
+        data_uid = data["plan"].get("data_uid")
+        if data_uid is not None and (type(data_uid) is not int or not 0 < data_uid < 2**32):
+            raise Refused("事务数据目录 UID 异常")
         if set(data["plan"].get("units", {})) - {n for n in data["plan"].get("units", {}) if XRAY_UNIT.fullmatch(n) or n == "logrotate@xray.timer"}:
             raise Refused("事务包含非 Xray 服务")
         for name, target in data["plan"].get("links", {}).items():
@@ -11804,13 +11911,17 @@ class Environment:
                 continue
             backup = self.staged(index)
             logical = self.logical(backup)
-            self.safe_path(logical)
+            self.safe_path(self.logical(backup.parent) if name in XRAY_DATA_DIRS else logical)
             if any(m == logical or m.startswith(logical + "/") for m in mounts):
                 raise Refused("恢复区内出现挂载，停止处理")
             if not os.path.lexists(backup):
                 if partial:
                     continue
                 raise Refused("恢复材料缺失: " + name)
+            if name in XRAY_DATA_DIRS:
+                if not backup.is_dir() or backup.is_symlink():
+                    raise Refused("恢复数据目录类型异常: " + name)
+                self.validate_data_tree(backup, name, data["plan"].get("data_uid"))
             expected = {p: v for p, v in data["plan"].get("restore_files", {}).items() if p == name or p.startswith(name + "/")}
             actual = {name + p[len(logical):]: v for p, v in self.tree(logical).items()}
             if not expected or (actual != expected if not partial else any(expected.get(p) != v for p, v in actual.items())):
@@ -11824,7 +11935,7 @@ class Environment:
         errors = []
         for i, name in reversed(list(enumerate(data["plan"]["paths"]))):
             backup = self.staged(i)
-            original = self.safe_path(name)
+            original = self.safe_path(name, data_uid=data["plan"].get("data_uid"))
             if backup.exists():
                 if backup.is_symlink():
                     errors.append("恢复材料为符号链接，拒绝恢复")
@@ -11982,7 +12093,7 @@ class Environment:
                 self.save(data)
                 (self.state / "files").mkdir(mode=0o700)
                 for index, name in enumerate(plan["paths"]):
-                    original = self.safe_path(name)
+                    original = self.safe_path(name, data_uid=plan.get("data_uid"))
                     os.rename(original, self.staged(index))
                     self.fsync(original.parent)
                     self.fsync(self.state / "files")
@@ -12084,7 +12195,10 @@ run_xinchendahai_xray() {
 
 # ==============================================================================
 # Xray VLESS-Reality & Shadowsocks 2022 多功能管理脚本
-# 版本: Final v2.9.4
+# 版本: Final v2.9.5
+# 更新日志 (v2.9.5):
+# - 配置权限跟随实际 systemd 运行用户，兼容官方专用 xray 用户及旧 nobody。
+# - 官方安装器切换用户后先同步已有配置，协议安装重试补齐开机自启。
 # 更新日志 (v2.9.4):
 # - 卸载使用内置事务、固定路径和 Snell 基线核验，不联网、不删除公共模板。
 # - 增加恢复入口；菜单预检查不自动安装依赖。
@@ -12097,7 +12211,7 @@ run_xinchendahai_xray() {
 set -euo pipefail
 
 # --- 全局常量 ---
-readonly XRAY_SCRIPT_VERSION="Final v2.9.4"
+readonly XRAY_SCRIPT_VERSION="Final v2.9.5"
 readonly xray_config_path="/usr/local/etc/xray/config.json"
 readonly xray_binary_path="/usr/local/bin/xray"
 readonly xray_root_home="$(getent passwd 0 | cut -d: -f6)"
@@ -12179,13 +12293,26 @@ pre_check() {
 
 ensure_xray_dependencies() {
     require_no_xray_transaction || return 1
-    if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null || [ ! -x /usr/bin/python3 ]; then
-        info "安装/更新功能需要 jq、curl、python3，正在安装依赖..."
-        if ! DEBIAN_FRONTEND=noninteractive apt-get update || ! DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl python3; then
+    local tool
+    local -a packages=()
+    command -v jq >/dev/null 2>&1 || packages+=(jq)
+    command -v curl >/dev/null 2>&1 || packages+=(curl)
+    [ -x /usr/bin/python3 ] || packages+=(python3)
+    command -v ss >/dev/null 2>&1 || packages+=(iproute2)
+    command -v timeout >/dev/null 2>&1 || packages+=(coreutils)
+    command -v getent >/dev/null 2>&1 || packages+=(libc-bin)
+    command -v openssl >/dev/null 2>&1 || packages+=(openssl)
+    if [ "${#packages[@]}" -gt 0 ]; then
+        info "安装/更新及DNS启动保护缺少依赖，正在安装: ${packages[*]}"
+        if ! DEBIAN_FRONTEND=noninteractive apt-get update || ! DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"; then
             error "依赖安装失败。"
             return 1
         fi
     fi
+    for tool in jq curl ss timeout getent openssl; do
+        command -v "$tool" >/dev/null 2>&1 || { error "依赖命令仍不可用: ${tool}，未继续安装或更新。"; return 1; }
+    done
+    [ -x /usr/bin/python3 ] || { error "依赖命令仍不可用: /usr/bin/python3。"; return 1; }
 }
 
 require_no_xray_transaction() {
@@ -12299,6 +12426,36 @@ build_ss_inbound() {
     local port="$1" password="$2" node_name="$3"
     jq -n --argjson port "$port" --arg password "$password" --arg node_name "$node_name" \
     '{ "listen": "0.0.0.0", "port": $port, "protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": $password}, "tag": $node_name }'
+}
+
+xray_save_config() {
+    local content="$1" runtime_user runtime_uid load_state dynamic_user temporary
+    load_state=$(systemctl show xray.service --property=LoadState --value) || {
+        error "无法读取 Xray 服务，配置未写入。"; return 1;
+    }
+    [ "$load_state" = loaded ] || { error "Xray 服务尚未加载，配置未写入。"; return 1; }
+    dynamic_user=$(systemctl show xray.service --property=DynamicUser --value) || return 1
+    case "$dynamic_user" in ''|no) ;; *) error "不支持为动态运行用户写入固定配置，原配置已保留。"; return 1;; esac
+    runtime_user=$(systemctl show xray.service --property=User --value) || return 1
+    runtime_user="${runtime_user:-root}"
+    [[ "$runtime_user" =~ ^([a-zA-Z_][a-zA-Z0-9_.-]*\$?|[0-9]+)$ ]] || {
+        error "Xray 服务运行用户格式无效，原配置已保留。"; return 1;
+    }
+    runtime_uid=$(id -u "$runtime_user") || { error "Xray 服务运行用户不存在，原配置已保留。"; return 1; }
+    [[ "$runtime_uid" =~ ^[0-9]+$ ]] || return 1
+    [ ! -L "$xray_config_path" ] && [ -d "$(dirname "$xray_config_path")" ] || {
+        error "Xray 配置路径异常，原文件已保留。"; return 1;
+    }
+    # Start private, then atomically replace the configuration. The effective
+    # service UID and root may read it; it is never made world-readable.
+    temporary=$(mktemp "${xray_config_path}.tmp.XXXXXXXX") || return 1
+    if ! printf '%s\n' "$content" > "$temporary" ||
+       ! chown "$runtime_uid:0" "$temporary" || ! chmod 640 "$temporary" ||
+       ! mv -f -- "$temporary" "$xray_config_path"; then
+        rm -f -- "$temporary"
+        error "保存 Xray 配置或设置运行用户权限失败，原配置已保留。"
+        return 1
+    fi
 }
 
 write_config() {
@@ -12444,17 +12601,54 @@ write_config() {
         return 1
     fi
     
-    echo "$config_content" > "$xray_config_path"
-
-    # 安全：配置文件仅 nobody（xray运行用户）和 root 可读
-    chmod 640 "$xray_config_path"
-    chown nobody:root "$xray_config_path"
+    xray_save_config "$config_content" || return 1
 }
+
+xray_sync_existing_config_owner() (
+    # This closure is also exported into the official installer's Bash. Keep it
+    # independent of menu globals, colors and other shell functions.
+    local config=/usr/local/etc/xray/config.json directory owner mode links
+    local load_state dynamic_user runtime_user runtime_uid metadata temporary
+    for directory in /usr /usr/local /usr/local/etc /usr/local/etc/xray; do
+        [ ! -L "$directory" ] || { printf '%s\n' 'Xray 配置父目录为符号链接，拒绝启动。' >&2; return 1; }
+        [ -e "$directory" ] || continue
+        [ -d "$directory" ] || return 1
+        read -r owner mode < <(command stat -c '%u %a' -- "$directory")
+        [[ "$owner" = 0 && "$mode" =~ ^[0-7]{3,4}$ ]] && [ "$((8#$mode & 8#022))" -eq 0 ] || {
+            printf '%s\n' 'Xray 配置父目录不可信，拒绝启动。' >&2; return 1;
+        }
+    done
+    [ ! -L "$config" ] || { printf '%s\n' 'Xray 配置为符号链接，拒绝启动。' >&2; return 1; }
+    [ -e "$config" ] || return 0
+    [ -f "$config" ] || return 1
+    links=$(command stat -c '%h' -- "$config") || return 1
+    [ "$links" = 1 ] || { printf '%s\n' 'Xray 配置包含硬链接，拒绝启动。' >&2; return 1; }
+    load_state=$(command systemctl show xray.service --property=LoadState --value) || return 1
+    [ "$load_state" = loaded ] || return 1
+    dynamic_user=$(command systemctl show xray.service --property=DynamicUser --value) || return 1
+    case "$dynamic_user" in ''|no) ;; *) return 1;; esac
+    runtime_user=$(command systemctl show xray.service --property=User --value) || return 1
+    runtime_user="${runtime_user:-root}"
+    [[ "$runtime_user" =~ ^([a-zA-Z_][a-zA-Z0-9_.-]*\$?|[0-9]+)$ ]] || return 1
+    runtime_uid=$(command id -u "$runtime_user") || return 1
+    [[ "$runtime_uid" =~ ^[0-9]+$ ]] || return 1
+    metadata=$(command stat -c '%u:%g:%a' -- "$config") || return 1
+    [ "$metadata" != "$runtime_uid:0:640" ] || return 0
+    temporary=$(command mktemp "${config}.owner.XXXXXXXX") || return 1
+    # Copy bytes directly: command substitution would strip trailing newlines.
+    if ! command cp -- "$config" "$temporary" ||
+       ! command chown "$runtime_uid:0" "$temporary" || ! command chmod 640 "$temporary" ||
+       ! command mv -f -- "$temporary" "$config"; then
+        command rm -f -- "$temporary"
+        printf '%s\n' 'Xray 配置运行用户同步失败，拒绝启动。' >&2
+        return 1
+    fi
+)
 
 execute_official_script() {
     local args="$1"
     local script_content
-    local temp_script
+    local temp_script installer_pid
 
     # 下载官方安装脚本
     if ! script_content=$(curl -fsSL --max-time 30 "$xray_install_script_url" 2>/dev/null); then
@@ -12479,12 +12673,40 @@ execute_official_script() {
     echo "$script_content" > "$temp_script"
     chmod +x "$temp_script"
 
-    if [[ "$is_quiet" = false ]]; then
-        env -u DAT_PATH -u JSON_PATH -u JSONS_PATH bash "$temp_script" $args &
-        spinner $!
-        wait $! || { rm -f "$temp_script"; return 1; }
-    else
-        env -u DAT_PATH -u JSON_PATH -u JSONS_PATH bash "$temp_script" $args &>/dev/null || { rm -f "$temp_script"; return 1; }
+    if ! (
+        # The official updater changes User= before starting Xray. Intercept
+        # that one start inside its child process, never in the calling menu.
+        systemctl() {
+            local argument has_start=0 has_xray=0
+            for argument in "$@"; do
+                [ "$argument" != start ] || has_start=1
+                case "$argument" in
+                    xray|xray.service|xray@*) has_xray=1;;
+                    *) if [[ xray == $argument || xray.service == $argument ]]; then has_xray=1; fi;;
+                esac
+            done
+            if [ "$has_start" -eq 1 ] && [ "$has_xray" -eq 1 ]; then
+                if [ "$#" -ne 2 ] || [ "$1" != start ] ||
+                   { [ "$2" != xray ] && [ "$2" != xray.service ]; }; then
+                    printf '%s\n' '不支持此 Xray 启动参数，安装器未继续启动。' >&2
+                    return 1
+                fi
+                xray_sync_existing_config_owner || return 1
+            fi
+            command systemctl "$@"
+        }
+        export -f systemctl xray_sync_existing_config_owner
+        if [[ "$is_quiet" = false ]]; then
+            env -u DAT_PATH -u JSON_PATH -u JSONS_PATH bash "$temp_script" $args &
+            installer_pid=$!
+            spinner "$installer_pid"
+            wait "$installer_pid"
+        else
+            env -u DAT_PATH -u JSON_PATH -u JSONS_PATH bash "$temp_script" $args &>/dev/null
+        fi
+    ); then
+        rm -f "$temp_script"
+        return 1
     fi
 
     rm -f "$temp_script"
@@ -12501,6 +12723,11 @@ run_core_install() {
     fi
     if ! execute_official_script "install"; then
         error "Xray 核心安装失败！"
+        return 1
+    fi
+    # Already-latest/stopped update paths may not call systemctl start at all.
+    if ! xray_sync_existing_config_owner; then
+        error "Xray 现有配置运行用户同步失败，未继续安装或更新。"
         return 1
     fi
 
@@ -13688,9 +13915,7 @@ add_socks5_proxy() {
     cp "$xray_config_path" "${xray_config_path}.bak.$(date +%s)"
     
     # 保存配置（安全权限）
-    echo "$config" > "$xray_config_path"
-    chmod 640 "$xray_config_path"
-    chown nobody:root "$xray_config_path"
+    xray_save_config "$config" || return 1
 
     success "✅ 已为节点 ${cyan}${selected_tag}${none} 配置 SOCKS5 链式代理"
     info "SOCKS5: ${cyan}${socks5_addr}:${socks5_port}${none}"
@@ -13860,9 +14085,7 @@ delete_socks5_proxy() {
     cp "$xray_config_path" "${xray_config_path}.bak.$(date +%s)"
     
     # 保存配置（安全权限）
-    echo "$config" > "$xray_config_path"
-    chmod 640 "$xray_config_path"
-    chown nobody:root "$xray_config_path"
+    xray_save_config "$config" || return 1
 
     success "✅ 已删除节点 ${cyan}${inbound_tag}${none} 的链式代理配置"
     
@@ -13984,6 +14207,18 @@ manage_routing_rules() {
 }
 
 # --- 核心安装逻辑函数 ---
+xray_start_completed_install() {
+    # A prior official install can fail at start, before its enable step. On a
+    # retry the already-current core is skipped, so finish enable explicitly.
+    # Only explicit protocol installation calls this; migration/update keep state.
+    if ! systemctl enable xray.service ||
+       [ "$(systemctl is-enabled xray.service 2>/dev/null)" != enabled ]; then
+        error "Xray 开机自启未配置成功，安装未完成。"
+        return 1
+    fi
+    restart_xray
+}
+
 run_install_vless() {
     local port="$1" uuid="$2" domain="$3" node_name="$4"
     if [[ -z "$(get_public_ip)" ]]; then
@@ -13999,7 +14234,7 @@ run_install_vless() {
     vless_inbound=$(build_vless_inbound "$port" "$uuid" "$domain" "$private_key" "$public_key" "$node_name")
     write_config "[$vless_inbound]"
 
-    if ! restart_xray; then exit 1; fi
+    if ! xray_start_completed_install; then exit 1; fi
 
     success "VLESS-Reality 安装成功！"
     view_all_info
@@ -14016,7 +14251,7 @@ run_install_ss() {
     ss_inbound=$(build_ss_inbound "$port" "$password" "$node_name")
     write_config "[$ss_inbound]"
 
-    if ! restart_xray; then exit 1; fi
+    if ! xray_start_completed_install; then exit 1; fi
 
     success "Shadowsocks-2022 安装成功！"
     view_all_info
@@ -14038,7 +14273,7 @@ run_install_dual() {
     ss_inbound=$(build_ss_inbound "$ss_port" "$ss_password" "$ss_node_name")
     write_config "[$vless_inbound, $ss_inbound]"
 
-    if ! restart_xray; then exit 1; fi
+    if ! xray_start_completed_install; then exit 1; fi
 
     success "双协议安装成功！"
     view_all_info

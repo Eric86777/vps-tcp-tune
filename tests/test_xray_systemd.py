@@ -7,14 +7,17 @@ The Snell probe checks live TCP acceptance, NOT authenticated Snell proxy traffi
 The client-confirmation gate is exercised with test input.
 """
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
 import pty
 import select
+import signal
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -38,20 +41,45 @@ def write(name, content, mode=0o644):
     path.chmod(mode)
 
 
-def interactive(flag, answers):
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execv("/bin/bash", ["bash", str(SCRIPT), flag])
+def interactive(flag, answers, *, command=None, timeout=60):
+    # Let the external setsid program acquire the controlling terminal after
+    # exec. Forking Python with the live Snell probe thread is unsafe.
+    setsid = shutil.which("setsid")
+    if setsid is None:
+        raise RuntimeError("interactive fixture requires util-linux setsid")
+    fd, slave = pty.openpty()
+    argv = command if command is not None else ["/bin/bash", str(SCRIPT), flag]
+    try:
+        process = subprocess.Popen([setsid, "--ctty", "--wait", *argv], stdin=slave,
+                                   stdout=slave, stderr=slave, close_fds=True)
+    except BaseException:
+        os.close(fd)
+        raise
+    finally:
+        os.close(slave)
     output = b""
     remaining = list(answers)
-    deadline = time.monotonic() + 60
-    status = None
+    deadline = time.monotonic() + timeout
+
+    def kill_and_reap():
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                # The exec child may not have entered its new session yet.
+                if process.poll() is None:
+                    process.kill()
+            process.wait(timeout=5)
+
     try:
         while time.monotonic() < deadline:
-            if select.select([fd], [], [], 0.05)[0]:
+            budget = min(0.05, max(0, deadline - time.monotonic()))
+            if select.select([fd], [], [], budget)[0]:
                 try:
                     chunk = os.read(fd, 65536)
-                except OSError:
+                except OSError as exc:
+                    if exc.errno != errno.EIO:
+                        raise
                     chunk = b""
                 if not chunk:
                     break
@@ -59,20 +87,48 @@ def interactive(flag, answers):
             if remaining and remaining[0][0].encode() in output:
                 _, response = remaining.pop(0)
                 os.write(fd, response.encode() + b"\n")
-            done, state = os.waitpid(pid, os.WNOHANG)
-            if done:
-                status = state
+            if process.poll() is not None and not select.select([fd], [], [], 0)[0]:
                 break
-        if status is None:
-            done, state = os.waitpid(pid, os.WNOHANG)
-            if not done:
-                os.kill(pid, 9)
-                os.waitpid(pid, 0)
-                raise AssertionError("interactive test timed out: " + output.decode(errors="replace"))
-            status = state
+        # PTY EOF/EIO can arrive before the child has actually exited. Keep the
+        # original deadline and wait for/reap it instead of one WNOHANG race.
+        try:
+            status = process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            kill_and_reap()
+            raise AssertionError("interactive test timed out: " + output.decode(errors="replace")) from None
     finally:
         os.close(fd)
-    return os.waitstatus_to_exitcode(status), output.decode(errors="replace")
+        kill_and_reap()
+    return status, output.decode(errors="replace")
+
+
+@unittest.skipUnless(shutil.which("setsid"), "Linux util-linux setsid required")
+class InteractiveHarnessTests(unittest.TestCase):
+    def test_pty_eof_before_process_exit_waits_for_real_exit_status(self):
+        command = [sys.executable, "-c", "import os,time; print('closed-pty',flush=True); "
+                   "os.close(0); os.close(1); os.close(2); time.sleep(0.2); os._exit(7)"]
+        rc, output = interactive("unused", [], command=command, timeout=3)
+        self.assertEqual(rc, 7, output)
+        self.assertIn("closed-pty", output)
+
+    def test_child_has_controlling_tty_for_confirmation(self):
+        command = [sys.executable, "-c", "import os; fd=os.open('/dev/tty',os.O_RDWR); "
+                   "os.write(fd,b'fixture-prompt:'); reply=os.read(fd,128); "
+                   "print('accepted='+reply.decode().strip(),flush=True)"]
+        rc, output = interactive("unused", [("fixture-prompt:", "yes")], command=command, timeout=3)
+        self.assertEqual(rc, 0, output)
+        self.assertIn("accepted=yes", output)
+
+    def test_real_timeout_after_pty_eof_kills_and_reaps_child(self):
+        command = [sys.executable, "-c", "import os,time; print('fixture-pid='+str(os.getpid()),flush=True); "
+                   "os.close(0); os.close(1); os.close(2); time.sleep(10)"]
+        start = time.monotonic()
+        with self.assertRaisesRegex(AssertionError, "interactive test timed out") as caught:
+            interactive("unused", [], command=command, timeout=0.3)
+        self.assertLess(time.monotonic() - start, 3)
+        pid = int(str(caught.exception).split("fixture-pid=", 1)[1].split()[0])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 @unittest.skipUnless(ENABLED, "Opt-in disposable systemd container only")
