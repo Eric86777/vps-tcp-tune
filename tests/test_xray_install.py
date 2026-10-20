@@ -152,6 +152,30 @@ class WriterCoverageTests(unittest.TestCase):
             self.assertNotIn("chown nobody", body)
 
 
+class DependencyPreflightTests(unittest.TestCase):
+    def test_unsupported_python_stops_before_boot_or_official_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_python = Path(directory) / "old-python"
+            old_python.write_text("#!/bin/sh\nexit 1\n")
+            old_python.chmod(0o755)
+            changed = Path(directory) / "changed"
+            code = function("ensure_xray_dependencies").replace("/usr/bin/python3", str(old_python))
+            code += "\n" + function("run_core_install") + "\n" + r'''
+command() { if [ "$1" = -v ]; then return 0; else builtin command "$@"; fi; }
+require_no_xray_transaction() { return 0; }
+error() { printf '%s\n' "$*" >&2; }
+info() { :; }
+boot_recovery_migrate() { touch "$TEST_CHANGED"; }
+execute_official_script() { touch "$TEST_CHANGED"; }
+run_core_install
+'''
+            result = subprocess.run(["bash", "-c", code], text=True, capture_output=True,
+                env=dict(os.environ, TEST_CHANGED=str(changed)), timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Python 3.8", result.stderr)
+            self.assertFalse(changed.exists())
+
+
 REAL_ENABLED = (os.environ.get("XRAY_REAL_INSTALL_TEST") == "1" and os.geteuid() == 0
     and Path("/.dockerenv").exists() and Path("/root/xray-install-isolated-container").is_file()
     and Path("/proc/1/comm").read_text().strip() == "systemd")

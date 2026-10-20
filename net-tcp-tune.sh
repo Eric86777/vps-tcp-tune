@@ -8,6 +8,7 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.17 更新: 启动恢复先预检依赖和有效运行环境；隔离代理/DNS/IPv6操作，完整回滚共享恢复组件；修复Xray多实例更新、SS卸载及Snell快照误报 (by Eric86777)
 # v5.4.16 更新: 修复libexec0700导致启动保护203/EXEC；补齐DNS依赖；兼容官方Xray运行用户、配置/数据权限及UMask，失败安装重试补齐开机自启 (by Eric86777)
 # v5.4.15 更新: 已有项目安装进入菜单自动幂等迁移启动恢复；Snell/Xray新装、更新及已最新版路径统一补齐，失败停止并报告，空机器浏览和只读CLI不迁移 (by Eric86777)
 # v5.4.14 更新: 修复 resolved/D-Bus 启动依赖环，DNS失败返回失败并重试；Snell/Xray等待DNS，有限恢复Snell错误解析器；IPv6禁用前检查ifupdown冲突 (by Eric86777)
@@ -31,7 +32,7 @@
 #   「🔴配额用尽」「🟡即将用尽」从不显示(实际限流与每月重置不受影响)；现改读 nft -j 的原始字节，读不到配额对象时
 #   仍按计数器估算 (by Eric86777)
 
-SCRIPT_VERSION="5.4.16"
+SCRIPT_VERSION="5.4.17"
 SCRIPT_LAST_UPDATE="修复新机Xray启动权限、官方用户迁移与失败重试开机自启"
 #=============================================================================
 
@@ -1055,6 +1056,7 @@ boot_recovery_emit_helper() {
 set -uo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 BR_ETC=/etc
+BR_LOCAL=/usr/local
 BR_RUN=/run/net-tcp-boot-recovery
 BR_BACKUPS=/var/backups/net-tcp-boot-recovery
 
@@ -1091,10 +1093,10 @@ br_wait_dns() {
     deadline=$((SECONDS + budget))
     while [ "$SECONDS" -lt "$deadline" ]; do
         if br_dns_file_ready; then
-            for domain in www.apple.com www.cloudflare.com; do
+            for domain in www.apple.com www.cloudflare.com www.baidu.com; do
                 remaining=$((deadline - SECONDS))
                 [ "$remaining" -gt 0 ] || break
-                limit=3; [ "$remaining" -ge 3 ] || limit="$remaining"
+                limit=10; [ "$remaining" -ge 10 ] || limit="$remaining"
                 if timeout "$limit" getent ahosts "$domain" >/dev/null 2>&1; then return 0; fi
             done
         fi
@@ -1102,6 +1104,14 @@ br_wait_dns() {
     done
     br_log "DNS not ready after ${budget}s (readable resolv.conf, usable nameserver and successful lookup required)"
     return 1
+}
+# DNS can be policy-limited or temporarily unavailable. Wait for the common
+# cold-boot race, then let each proxy handle its own targets; a probe failure
+# must not disable otherwise usable IP/internal-domain traffic.
+br_prepare_app_dns() {
+    br_wait_dns "${1:-40}" && return 0
+    br_log 'DNS probe did not succeed; business startup continues with its native DNS/restart policy'
+    return 0
 }
 br_valid_dns() { [[ "$1" =~ ^[[:alnum:].:%#_-]+$ ]]; }
 br_restore_dns() {
@@ -1200,10 +1210,59 @@ br_current_ipv6_conflict() {
         br_check_ifupdown_ipv6
     fi
 }
+br_trusted_file() {
+    local owner mode
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    read -r owner mode < <(stat -c '%u %a' "$1" 2>/dev/null || stat -f '%u %Lp' "$1" 2>/dev/null)
+    [ "$owner" = 0 ] && [[ "$mode" =~ ^[0-7]{3,4}$ ]] && [ "$((8#$mode & 8#022))" -eq 0 ]
+}
+br_snell_runtime_owned() {
+    local unit="$1" fragment dropins file
+    fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null) || return 1
+    case "$fragment" in "$BR_ETC/systemd/system/$unit"|/lib/systemd/system/"$unit"|/usr/lib/systemd/system/"$unit") ;; *) return 1;; esac
+    br_trusted_file "$fragment" || return 1
+    [ "$(grep -c '^ExecStart=' "$fragment")" = 1 ] || return 1
+    case "$unit" in
+        snell.service|snell-[0-9]*.service)
+            grep -Eq '^ExecStart=/usr/local/bin/snell-server -c /etc/snell/(snell-server|snell-[0-9]+)\.conf$' "$fragment" &&
+                grep -Eq '^Description=Snell Proxy Service( \(Port[[:space:]]*[0-9]+\))?$' "$fragment" || return 1;;
+        snellv6-[0-9]*.service)
+            grep -Eq '^ExecStart=/usr/local/bin/snell-server-v6 -c /etc/snell-v6/snell-[0-9]+\.conf$' "$fragment" &&
+                grep -Eq '^Description=Snell V6 Proxy Service \(Port[[:space:]]*[0-9]+\)$' "$fragment" || return 1;;
+        *) return 1;;
+    esac
+    # A guard left by an older release is not proof of current ownership. Read
+    # loaded drop-ins every time: replacement commands/namespaces are preserved.
+    dropins=$(systemctl show -p DropInPaths --value "$unit" 2>/dev/null) || return 1
+    for file in "$fragment" $dropins; do
+        br_trusted_file "$file" || return 1
+        if grep -Eq '^[[:space:]]*ExecStart(Pre|Post)?[[:space:]]*=' "$file" && [ "$file" != "$fragment" ]; then
+            [ "$file" = "$BR_ETC/systemd/system/${unit}.d/90-net-tcp-boot-recovery.conf" ] || return 1
+        fi
+        if [ "$file" = "$fragment" ] && grep -Eq '^[[:space:]]*ExecStart(Pre|Post)[[:space:]]*=' "$file"; then return 1; fi
+        grep -Eq '^[[:space:]]*(RootDirectory|RootImage|PrivateNetwork|NetworkNamespacePath|JoinsNamespaceOf|InaccessiblePaths|NoExecPaths|ExecPaths|SystemCallFilter|DynamicUser|PrivateUsers|TemporaryFileSystem|BindPaths|BindReadOnlyPaths)[[:space:]]*=' "$file" && return 1
+    done
+    return 0
+}
 br_snell_units() {
     systemctl list-unit-files 'snell*.service' --no-legend --no-pager 2>/dev/null |
-        awk '$1 ~ /^snell\.service$/ || $1 ~ /^snell-[0-9]+\.service$/ || $1 ~ /^snellv6-[0-9]+\.service$/ { print $1 }'
+        awk '$1 ~ /^snell\.service$/ || $1 ~ /^snell-[0-9]+\.service$/ || $1 ~ /^snellv6-[0-9]+\.service$/ { print $1 }' |
+        while IFS= read -r unit; do
+            local guard="$BR_ETC/systemd/system/${unit}.d/90-net-tcp-boot-recovery.conf"
+            br_trusted_file "$guard" && br_snell_runtime_owned "$unit" || continue
+            # Exact generated body, including either released invocation form.
+            cmp -s "$guard" <(printf '%s\n' '# NET_TCP_BOOT_RECOVERY_V1' '[Unit]' \
+                'After=network-online.target nss-lookup.target systemd-resolved.service dns-purify-persist.service' \
+                'Wants=network-online.target' '[Service]' \
+                'ExecStartPre=/usr/local/libexec/net-tcp-boot-recovery --prepare-app-dns 40') ||
+            cmp -s "$guard" <(printf '%s\n' '# NET_TCP_BOOT_RECOVERY_V1' '[Unit]' \
+                'After=network-online.target nss-lookup.target systemd-resolved.service dns-purify-persist.service' \
+                'Wants=network-online.target' '[Service]' \
+                'ExecStartPre=/usr/local/libexec/net-tcp-boot-recovery --wait-dns 40') || continue
+            printf '%s\n' "$unit"
+        done
 }
+
 br_remove_app_guards() {
     local file unit expected actual failed=0
     expected=$(cat <<'MANAGED_DNS_GUARD'
@@ -1221,7 +1280,7 @@ MANAGED_DNS_GUARD
         [[ "$unit" =~ ^(snell\.service|snell-[0-9]+\.service|snellv6-[0-9]+\.service|xray(@[[:alnum:]_.:-]+)?\.service)$ ]] || continue
         [ -f "$file" ] && [ ! -L "$file" ] || { failed=1; continue; }
         actual=$(cat "$file") || { failed=1; continue; }
-        if [ "$actual" = "$expected" ]; then
+        if [ "$actual" = "$expected" ] || [ "$actual" = "${expected/--wait-dns/--prepare-app-dns}" ]; then
             br_backup "$file" && rm -- "$file" || { failed=1; continue; }
             rmdir "$(dirname "$file")" 2>/dev/null || true
         else
@@ -1236,6 +1295,30 @@ MANAGED_DNS_GUARD
     # may still reference it. Removing it would create an ExecStartPre= failure.
     [ "$failed" -eq 0 ]
 }
+br_dns_runtime_owned() {
+    local wrapper="$BR_LOCAL/bin/dns-purify-apply.sh" unit="$BR_ETC/systemd/system/dns-purify-persist.service" primary secondary actual expected digest fragment dropins
+    br_trusted_file "$wrapper" && br_trusted_file "$unit" || return 1
+    primary=$(sed -n 's/^DNS_PRIMARY="\([^"]*\)"$/\1/p' "$wrapper")
+    secondary=$(sed -n 's/^DNS_SECONDARY="\([^"]*\)"$/\1/p' "$wrapper")
+    br_valid_dns "$primary" && br_valid_dns "$secondary" || return 1
+    expected=$(cat <<EOF
+#!/bin/bash
+# NET_TCP_BOOT_RECOVERY_V1
+# 由 net-tcp-tune.sh DNS净化功能自动生成
+DNS_PRIMARY="$primary"
+DNS_SECONDARY="$secondary"
+exec /usr/local/libexec/net-tcp-boot-recovery --restore-dns "\$DNS_PRIMARY" "\$DNS_SECONDARY" 40
+EOF
+)
+    actual=$(cat "$wrapper") || return 1
+    [ "$actual" = "$expected" ] || return 1
+    # Exact boot_recovery_emit_dns_service body (5.4.14 onward), not its marker.
+    digest=$(sha256sum "$unit" 2>/dev/null) || return 1
+    [ "${digest%% *}" = 86c5119482a3efffe0b7fcb3e90d971dd2a4301c561f7f446f999ebc2336072b ] || return 1
+    fragment=$(systemctl show -p FragmentPath --value dns-purify-persist.service 2>/dev/null) || return 1
+    dropins=$(systemctl show -p DropInPaths --value dns-purify-persist.service 2>/dev/null) || return 1
+    [ "$fragment" = "$unit" ] && [ -z "$dropins" ]
+}
 br_watch() {
     local unit invocation dns_line state now previous=0 count=0 key stamp attempts
     command -v flock >/dev/null 2>&1 || { br_log 'flock missing'; return 1; }
@@ -1244,7 +1327,7 @@ br_watch() {
     exec 9>"$BR_RUN/watch.lock"; flock -n 9 || return 0
     if ! br_wait_dns 5; then
         # Only retry our active oneshot; preserve deliberately stopped/disabled services.
-        if grep -q 'NET_TCP_BOOT_RECOVERY_V1' /usr/local/bin/dns-purify-apply.sh 2>/dev/null &&
+        if br_dns_runtime_owned &&
             br_enabled dns-purify-persist.service && systemctl is-active --quiet dns-purify-persist.service; then
             systemctl --no-block try-restart dns-purify-persist.service || return 1
         fi
@@ -1279,6 +1362,7 @@ br_watch() {
 br_main() {
     case "${1:-}" in
         --wait-dns) br_wait_dns "${2:-40}";;
+        --prepare-app-dns) br_prepare_app_dns "${2:-40}";;
         --restore-dns) shift; br_restore_dns "$@";;
         --migrate-resolved) br_migrate_resolved;;
         --check-ifupdown-ipv6) br_check_ifupdown_ipv6;;
@@ -1311,8 +1395,9 @@ boot_recovery_put() {
     BOOT_RECOVERY_CHANGED=1
 }
 boot_recovery_install_assets() {
-    # The 5.4.14 helper/watch templates are unchanged. Exact comparison preserves
-    # operator edits even when they retain our generated marker comment.
+    # Preflight applies to DNS callers as well as proxy migration.
+    boot_recovery_require_tools || return 1
+    # Exact bodies or a known released hash only; keep operator edits intact.
     boot_recovery_asset_can_install /usr/local/libexec/net-tcp-boot-recovery boot_recovery_emit_helper &&
         boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.service boot_recovery_emit_watch_service &&
         boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.timer boot_recovery_emit_watch_timer || return 1
@@ -1327,9 +1412,52 @@ boot_recovery_install_assets() {
 }
 boot_recovery_asset_can_install() {
     local dest="$1" emitter="$2"
-    [ ! -L "$dest" ] && { [ ! -e "$dest" ] || { boot_recovery_trusted_file "$dest" && cmp -s "$dest" <("$emitter"); }; } && return 0
+    [ ! -L "$dest" ] && { [ ! -e "$dest" ] || { boot_recovery_trusted_file "$dest" &&
+        { cmp -s "$dest" <("$emitter") || boot_recovery_released_asset "$dest"; }; }; } && return 0
     echo "保留自定义恢复组件，迁移未完成: $dest" >&2
     return 1
+}
+boot_recovery_released_asset() {
+    local digest
+    [ "$1" = /usr/local/libexec/net-tcp-boot-recovery ] || return 1
+    command -v sha256sum >/dev/null 2>&1 || return 1
+    digest=$(sha256sum "$1") || return 1
+    # Exact helper emitted by 047f3f6, defc354 and dedd7ad (5.4.14-5.4.16).
+    [ "${digest%% *}" = 7d5fee9f4db168068288c4252057c4402097575f8bfc1ffd708ec4bbc76fe89b ]
+}
+boot_recovery_guard_can_install() {
+    local dest="/etc/systemd/system/${1}.d/90-net-tcp-boot-recovery.conf"
+    [ ! -L "$dest" ] && { [ ! -e "$dest" ] || { boot_recovery_trusted_file "$dest" &&
+        { cmp -s "$dest" <(boot_recovery_emit_guard) || cmp -s "$dest" <(boot_recovery_emit_guard | sed 's/--prepare-app-dns/--wait-dns/'); }; }; } && return 0
+    echo "保留自定义启动保护: $dest" >&2
+    return 1
+}
+boot_recovery_resolved_can_migrate() {
+    local file=/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf actual expected
+    [ -e "$file" ] || [ -L "$file" ] || return 0
+    boot_recovery_trusted_file "$file" || return 1
+    expected=$(cat <<'KNOWN_DBUS_DROPIN'
+# Debian 13 D-Bus接口注册修复
+# 确保D-Bus完全启动后再启动systemd-resolved
+[Unit]
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+# 启动后等待1秒，确保D-Bus接口注册完成
+ExecStartPost=/bin/sleep 1
+KNOWN_DBUS_DROPIN
+)
+    actual=$(cat "$file") || return 1
+    [ "$actual" = "$expected" ] || { echo "保留自定义resolved配置: $file" >&2; return 1; }
+}
+boot_recovery_require_tools() {
+    local tool
+    for tool in flock timeout getent ss awk grep sed stat; do
+        command -v "$tool" >/dev/null 2>&1 || {
+            echo "缺少启动恢复依赖 ${tool}，未安装或修改启动恢复组件；请在安装/更新操作中补齐依赖。" >&2; return 1;
+        }
+    done
 }
 boot_recovery_prepare_exec_dir() {
     local directory=/usr/local/libexec ancestor owner="" mode=""
@@ -1389,9 +1517,7 @@ boot_recovery_patch_unit() {
     local unit="$1"
     [[ "$unit" =~ ^(snell\.service|snell-[0-9]+\.service|snellv6-[0-9]+\.service|xray(@[[:alnum:]_.:-]+)?\.service)$ ]] || return 1
     local dest="/etc/systemd/system/${unit}.d/90-net-tcp-boot-recovery.conf"
-    if [ -e "$dest" ] && ! cmp -s "$dest" <(boot_recovery_emit_guard); then
-        echo "保留自定义启动保护: $dest" >&2; return 1
-    fi
+    boot_recovery_guard_can_install "$unit" || return 1
     boot_recovery_put "$dest" 644 < <(boot_recovery_emit_guard)
 }
 boot_recovery_emit_guard() {
@@ -1401,7 +1527,7 @@ boot_recovery_emit_guard() {
 After=network-online.target nss-lookup.target systemd-resolved.service dns-purify-persist.service
 Wants=network-online.target
 [Service]
-ExecStartPre=/usr/local/libexec/net-tcp-boot-recovery --wait-dns 40
+ExecStartPre=/usr/local/libexec/net-tcp-boot-recovery --prepare-app-dns 40
 DNS_GUARD
 }
 boot_recovery_legacy_dns_apply_matches() {
@@ -1528,21 +1654,17 @@ WantedBy=multi-user.target
 DNS_SERVICE
 }
 boot_recovery_patch_enabled_units() {
-    local unit state listing
-    listing=$(systemctl list-unit-files 'snell*.service' 'xray*.service' --no-legend --no-pager 2>/dev/null) || return 1
-    while read -r unit state; do
-        [ "$state" = enabled ] || continue
-        case "$unit" in snell.service|snell-[0-9]*.service|snellv6-[0-9]*.service|xray.service|xray@*.service)
-            # Templates are not instances. Do not enable/start/restart any service here.
-            [[ "$unit" != *@.service ]] || continue
-            boot_recovery_patch_unit "$unit" || return 1;;
-        esac
-    done < <(printf '%s\n' "$listing" | awk '{ print $1, $2 }')
+    local unit
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = enabled ] || continue
+        boot_recovery_patch_unit "$unit" || return 1
+    done < <(boot_recovery_project_units)
 }
 boot_recovery_project_dns() {
     local file=/usr/local/bin/dns-purify-apply.sh expected actual
     [ -f "$file" ] || return 1
-    [ ! -L "$file" ] || return 2
+    boot_recovery_trusted_file "$file" || return 2
     BOOT_RECOVERY_DNS_PRIMARY=$(sed -n 's/^DNS_PRIMARY="\([^"]*\)"$/\1/p' "$file")
     BOOT_RECOVERY_DNS_SECONDARY=$(sed -n 's/^DNS_SECONDARY="\([^"]*\)"$/\1/p' "$file")
     if [[ "$BOOT_RECOVERY_DNS_PRIMARY" =~ ^[[:alnum:].:%#_-]+$ && "$BOOT_RECOVERY_DNS_SECONDARY" =~ ^[[:alnum:].:%#_-]+$ ]]; then
@@ -1606,6 +1728,53 @@ XRAY_PROJECT_OVERRIDE
     actual=$(cat "$override") || return 1
     [ "$actual" = "$expected" ]
 }
+boot_recovery_runtime_dropins() {
+    local unit="$1" directory name prefix file
+    local -a names=(service "$unit")
+    case "$unit" in *@*.service) names+=("${unit%%@*}@.service");; esac
+    name="${unit%.service}"
+    while [[ "$name" == *-* ]]; do
+        name="${name%-*}"
+        names+=("${name}-.service")
+    done
+    for directory in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        for prefix in "${names[@]}"; do
+            for file in "$directory/${prefix}.d/"*.conf; do
+                [ -e "$file" ] || [ -L "$file" ] || continue
+                printf '%s\n' "$file"
+            done
+        done
+    done
+}
+boot_recovery_runtime_compatible() {
+    local unit="$1" fragment="" loaded_dropins="" file body expected allowed="" directory
+    fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null) || return 1
+    loaded_dropins=$(systemctl show -p DropInPaths --value "$unit" 2>/dev/null) || return 1
+    if [ -n "$fragment" ]; then
+        case "$fragment" in /etc/systemd/system/"$unit"|/lib/systemd/system/"$unit"|/usr/lib/systemd/system/"$unit") ;; *) return 1;; esac
+        boot_recovery_trusted_file "$fragment" || return 1
+    fi
+    # Query effective drop-ins, including template/global/prefix overrides, and
+    # inspect not-yet-loaded local drop-ins before a fresh unit is installed.
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        # systemd retains a removed drop-in's path until daemon-reload. Repair
+        # may recreate only our absent guard; all other unreadable paths fail.
+        if [ "$file" = "/etc/systemd/system/${unit}.d/90-net-tcp-boot-recovery.conf" ] &&
+            [ ! -e "$file" ] && [ ! -L "$file" ]; then continue; fi
+        boot_recovery_trusted_file "$file" || return 1
+        grep -Eq '^[[:space:]]*(RootDirectory|RootImage|PrivateNetwork|NetworkNamespacePath|JoinsNamespaceOf|InaccessiblePaths|NoExecPaths|ExecPaths|SystemCallFilter|DynamicUser|PrivateUsers|TemporaryFileSystem|BindPaths|BindReadOnlyPaths)[[:space:]]*=' "$file" && return 1
+        if [ "$file" = "$fragment" ] && grep -Eq '^[[:space:]]*ExecStart(Pre|Post)[[:space:]]*=' "$file"; then return 1; fi
+        if [ "$file" != "$fragment" ] && grep -Eq '^[[:space:]]*ExecStart(Pre|Post)?[[:space:]]*=' "$file"; then
+            if cmp -s "$file" <(boot_recovery_emit_guard) ||
+                cmp -s "$file" <(boot_recovery_emit_guard | sed 's/--prepare-app-dns/--wait-dns/'); then continue; fi
+            body=$(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$file") || return 1
+            expected=$(printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json')
+            [ "$unit" = xray.service ] && [ "$body" = "$expected" ] || return 1
+        fi
+    done < <(printf '%s\n' "$fragment"; printf '%s\n' "$loaded_dropins" | tr ' ' '\n'; boot_recovery_runtime_dropins "$unit")
+    return 0
+}
 boot_recovery_project_units() {
     local file unit xray_owned=no
     boot_recovery_xray_owned && xray_owned=yes
@@ -1627,38 +1796,64 @@ boot_recovery_project_units() {
                 grep -Eq '^ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/(config|%i|[[:alnum:]_.-]+)\.json$' "$file" || continue;;
             *) continue;;
         esac
-        printf '%s\n' "$unit"
+        if boot_recovery_runtime_compatible "$unit"; then
+            printf '%s\n' "$unit"
+        else
+            echo "保留自定义运行环境，未给 ${unit} 自动添加启动恢复。" >&2
+        fi
     done | awk '!seen[$0]++'
 }
 boot_recovery_migrate() (
-    # Subshell owns and releases its lock, including every error/early-return path.
-    local mode="${1:-auto}" units unit dns_state=0 legacy_dropin=/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf rc=0
+    # A service operation owns only its explicit targets. DNS/network maintenance
+    # is separate; an unrelated custom service must not veto a core install.
+    local mode="${1:-auto}" units="" unit dns_state=1 legacy_dropin=/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf
     shift || return 1
     BOOT_RECOVERY_CHANGED=0
-    units=$(boot_recovery_project_units) || return 1
-    boot_recovery_project_dns || dns_state=$?
-    [ "$dns_state" -ne 2 ] || return 1
-    if [ "$mode" = auto ] && [ -z "$units" ] && [ "$dns_state" -ne 0 ] && [ "$#" -eq 0 ]; then return 0; fi
+    if [ "$mode" = install ]; then
+        [ "$#" -gt 0 ] || return 1
+    else
+        units=$(boot_recovery_project_units) || return 1
+        if boot_recovery_project_dns; then dns_state=0; else dns_state=$?; fi
+        [ "$dns_state" -ne 2 ] || return 1
+    fi
     for unit in "$@"; do
         [[ "$unit" =~ ^(snell\.service|snell-[0-9]+\.service|snellv6-[0-9]+\.service|xray(@[[:alnum:]_.:-]+)?\.service)$ ]] || return 1
         units="${units}${units:+
 }${unit}"
     done
-    command -v flock >/dev/null 2>&1 || { echo '缺少flock，未安装或修改服务' >&2; return 1; }
+    [ -n "$units" ] || [ "$dns_state" -eq 0 ] || return 0
+    boot_recovery_require_tools || return 1
     exec 209>/run/net-tcp-boot-repair.lock
     flock -n 209 || { echo '另一个启动恢复修复正在运行' >&2; return 1; }
+    # Preflight the complete selected set before writing any shared component.
+    boot_recovery_asset_can_install /usr/local/libexec/net-tcp-boot-recovery boot_recovery_emit_helper &&
+        boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.service boot_recovery_emit_watch_service &&
+        boot_recovery_asset_can_install /etc/systemd/system/net-tcp-boot-watch.timer boot_recovery_emit_watch_timer || return 1
+    while IFS= read -r unit; do
+        if [ -n "$unit" ]; then
+            boot_recovery_runtime_compatible "$unit" || { echo "保留 ${unit} 的自定义运行环境，启动恢复未迁移。" >&2; return 1; }
+            boot_recovery_guard_can_install "$unit" || return 1
+        fi
+    done < <(printf '%s\n' "$units" | awk '!seen[$0]++')
+    if [ "$mode" != install ]; then
+        boot_recovery_resolved_can_migrate || return 1
+        if [ "$dns_state" -eq 0 ] && { [ -e /etc/systemd/system/dns-purify-persist.service ] || [ -L /etc/systemd/system/dns-purify-persist.service ]; }; then
+            boot_recovery_trusted_file /etc/systemd/system/dns-purify-persist.service || return 1
+            { boot_recovery_legacy_dns_unit_matches /etc/systemd/system/dns-purify-persist.service ||
+                cmp -s /etc/systemd/system/dns-purify-persist.service <(boot_recovery_emit_dns_service); } || return 1
+        fi
+    fi
     boot_recovery_install_assets || return 1
-    [ ! -e "$legacy_dropin" ] || BOOT_RECOVERY_CHANGED=1
-    /usr/local/libexec/net-tcp-boot-recovery --migrate-resolved || return 1
-    if [ "$dns_state" -eq 0 ]; then
-        boot_recovery_write_dns_service "$BOOT_RECOVERY_DNS_PRIMARY" "$BOOT_RECOVERY_DNS_SECONDARY" || return 1
+    if [ "$mode" != install ]; then
+        [ ! -e "$legacy_dropin" ] || BOOT_RECOVERY_CHANGED=1
+        /usr/local/libexec/net-tcp-boot-recovery --migrate-resolved || return 1
+        if [ "$dns_state" -eq 0 ]; then
+            boot_recovery_write_dns_service "$BOOT_RECOVERY_DNS_PRIMARY" "$BOOT_RECOVERY_DNS_SECONDARY" || return 1
+        fi
     fi
     while IFS= read -r unit; do
-        [ -n "$unit" ] || continue
-        boot_recovery_patch_unit "$unit" || return 1
+        [ -z "$unit" ] || boot_recovery_patch_unit "$unit" || return 1
     done < <(printf '%s\n' "$units" | awk '!seen[$0]++')
-    # Always retry a quiet reload: a previous invocation may have written all
-    # files and then failed to reload, leaving the old definitions in memory.
     systemctl daemon-reload >/dev/null || return 1
     if [ "$(systemctl is-enabled net-tcp-boot-watch.timer 2>/dev/null)" != enabled ] ||
         ! systemctl is-active --quiet net-tcp-boot-watch.timer; then
@@ -1666,18 +1861,126 @@ boot_recovery_migrate() (
     fi
     [ "$(systemctl is-enabled net-tcp-boot-watch.timer 2>/dev/null)" = enabled ] &&
         systemctl is-active --quiet net-tcp-boot-watch.timer || return 1
-    /usr/local/libexec/net-tcp-boot-recovery --check-current-ipv6 || rc=2
-    if [ "$rc" -ne 0 ]; then
-        echo '启动恢复配置已补齐，但IPv6/ifupdown仍冲突：已保留全部网络配置，安装/更新未继续；请先备份并协调cloud-init源和inet6段。' >&2
-    elif [ "$BOOT_RECOVERY_CHANGED" -ne 0 ] || [ "$mode" = repair ]; then
-        echo '启动恢复配置已补齐；原业务enable/手动停止状态保持，未重启机器、网络或业务服务。'
+    # IPv6 conflicts are checked by the operation that disables IPv6, never by
+    # unrelated proxy install/update paths after their recovery files were saved.
+    if [ "$BOOT_RECOVERY_CHANGED" -ne 0 ] || [ "$mode" = repair ]; then
+        echo '启动恢复配置已补齐；业务enable/手动停止状态保持，未直接重启机器、网络或业务服务。'
     fi
-    return "$rc"
 )
+
 run_boot_recovery_repair() {
     [ "$#" -eq 0 ] || { echo '用法: --repair-boot-recovery（不重启机器或网络，不启动手动停止的业务）' >&2; return 2; }
     boot_recovery_migrate repair
 }
+# DNS owns these shared assets only for the duration of its transaction. Save
+# bytes/metadata and the timer's independent enabled and active states, even if
+# the helper already existed; helper presence is not a rollback boundary.
+boot_recovery_snapshot_dns_assets() {
+    local state_dir="$1" path key=0 owner mode
+    mkdir -p "$state_dir/boot-assets" || return 1
+    : > "$state_dir/boot-assets.map" || return 1
+    for path in /usr/local/libexec/net-tcp-boot-recovery \
+        /etc/systemd/system/net-tcp-boot-watch.service /etc/systemd/system/net-tcp-boot-watch.timer; do
+        key=$((key + 1))
+        printf '%s|%s\n' "$path" "$key" >> "$state_dir/boot-assets.map" || return 1
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            cp -a "$path" "$state_dir/boot-assets/$key" || return 1
+        else
+            : > "$state_dir/boot-assets/$key.absent" || return 1
+        fi
+    done
+    # Later standalone rollback must not remove a helper needed by proxies that
+    # were installed after this DNS snapshot. Record current consumers by bytes.
+    mkdir -p "$state_dir/boot-consumers" || return 1
+    : > "$state_dir/boot-consumers.map" || return 1
+    key=0
+    for path in /etc/systemd/system/*.service /etc/systemd/system/*.service.d/*.conf; do
+        [ "$path" != /etc/systemd/system/net-tcp-boot-watch.service ] || continue
+        [ -f "$path" ] && [ ! -L "$path" ] || continue
+        grep -Fq /usr/local/libexec/net-tcp-boot-recovery "$path" || continue
+        key=$((key + 1))
+        cp -a "$path" "$state_dir/boot-consumers/$key" || return 1
+        printf '%s|%s\n' "$path" "$key" >> "$state_dir/boot-consumers.map" || return 1
+    done
+    if [ -d /usr/local/libexec ] && [ ! -L /usr/local/libexec ]; then
+        read -r owner mode < <(boot_recovery_path_metadata /usr/local/libexec)
+        printf '%s\n' "$mode" > "$state_dir/boot-libexec.mode" || return 1
+    fi
+    systemctl is-enabled net-tcp-boot-watch.timer > "$state_dir/boot-watch.enabled" 2>/dev/null || true
+    if systemctl is-active --quiet net-tcp-boot-watch.timer; then
+        echo active > "$state_dir/boot-watch.active"
+    else
+        echo inactive > "$state_dir/boot-watch.active"
+    fi
+    {
+        printf '#!/bin/bash\n'
+        declare -f boot_recovery_restore_dns_assets
+        printf '\nboot_recovery_restore_dns_assets "$(dirname "$0")" "${1:-}"\n'
+    } > "$state_dir/boot-recovery-restore.sh" || return 1
+    chmod 700 "$state_dir/boot-recovery-restore.sh"
+}
+boot_recovery_restore_dns_assets() (
+    local state_dir="$1" path key enabled active mode failed=0 keep_helper=0 consumer previous previous_key matched
+    [ -f "$state_dir/boot-assets.map" ] || return 1
+    if [ "${2:-}" != --lock-held ]; then
+        command -v flock >/dev/null 2>&1 || return 1
+        exec 207>/run/net-tcp-boot-repair.lock
+        flock -n 207 || { echo '另一个启动恢复/DNS操作正在运行，回滚未继续。' >&2; return 1; }
+    fi
+    for consumer in /etc/systemd/system/*.service /etc/systemd/system/*.service.d/*.conf; do
+        [ "$consumer" != /etc/systemd/system/net-tcp-boot-watch.service ] || continue
+        [ -f "$consumer" ] && [ ! -L "$consumer" ] || continue
+        grep -Fq /usr/local/libexec/net-tcp-boot-recovery "$consumer" || continue
+        matched=0
+        if [ -f "$state_dir/boot-consumers.map" ]; then
+            while IFS='|' read -r previous previous_key; do
+                if [ "$consumer" = "$previous" ] && cmp -s "$consumer" "$state_dir/boot-consumers/$previous_key"; then
+                    matched=1; break
+                fi
+            done < "$state_dir/boot-consumers.map"
+        fi
+        [ "$matched" -eq 1 ] || keep_helper=1
+    done
+    if [ "$keep_helper" -eq 1 ]; then
+        echo '检测到DNS快照后新增/改变的服务引用；保留当前shared helper/watch及其状态，防止破坏后来安装的服务。' >&2
+        return 0
+    fi
+    enabled=$(cat "$state_dir/boot-watch.enabled" 2>/dev/null)
+    active=$(cat "$state_dir/boot-watch.active" 2>/dev/null)
+    # Stop only a timer that was inactive before this DNS operation. Business
+    # services are never stopped/restarted by this asset rollback.
+    if [ "$active" != active ] && systemctl is-active --quiet net-tcp-boot-watch.timer; then
+        systemctl stop net-tcp-boot-watch.timer || failed=1
+    fi
+    case "$enabled" in
+        enabled) ;;
+        # A DNS install may have added a persistent wants link to a previously
+        # runtime-only timer. Remove it before recreating the runtime state.
+        *) systemctl disable net-tcp-boot-watch.timer >/dev/null 2>&1 || true;;
+    esac
+    while IFS='|' read -r path key; do
+        [ -n "$path" ] && [[ "$key" =~ ^[0-9]+$ ]] || { failed=1; continue; }
+        if [ -e "$state_dir/boot-assets/$key" ] || [ -L "$state_dir/boot-assets/$key" ]; then
+            rm -f "$path" && mkdir -p "$(dirname "$path")" &&
+                cp -a "$state_dir/boot-assets/$key" "$path" || failed=1
+        elif [ -f "$state_dir/boot-assets/$key.absent" ]; then
+            rm -f "$path" || failed=1
+        else
+            failed=1
+        fi
+    done < "$state_dir/boot-assets.map"
+    if [ -f "$state_dir/boot-libexec.mode" ]; then
+        mode=$(cat "$state_dir/boot-libexec.mode")
+        [[ "$mode" =~ ^[0-7]{3,4}$ ]] && chmod "$mode" /usr/local/libexec || failed=1
+    fi
+    systemctl daemon-reload || failed=1
+    case "$enabled" in
+        enabled) systemctl enable net-tcp-boot-watch.timer || failed=1;;
+        enabled-runtime) systemctl enable --runtime net-tcp-boot-watch.timer || failed=1;;
+    esac
+    [ "$active" != active ] || systemctl start net-tcp-boot-watch.timer || failed=1
+    [ "$failed" -eq 0 ]
+)
 boot_recovery_export_functions() {
     local kind flag fn
     while read -r kind flag fn; do
@@ -4869,9 +5172,15 @@ dns_purify_and_harden() {
     echo ""
 
     # ==================== 创建备份 ====================
-    local BACKUP_DIR="/root/.dns_purify_backup/$(date +%Y%m%d_%H%M%S)"
-    local PRE_STATE_DIR="$BACKUP_DIR/pre_state"
-    mkdir -p "$BACKUP_DIR" "$PRE_STATE_DIR"
+    command -v flock >/dev/null 2>&1 || { echo '缺少flock，DNS配置未继续。' >&2; return 1; }
+    exec 208>/run/net-tcp-boot-repair.lock
+    flock -n 208 || { exec 208>&-; echo '另一个启动恢复/DNS操作正在运行，DNS配置未继续。' >&2; return 1; }
+    trap 'exec 208>&-' RETURN
+    local BACKUP_DIR PRE_STATE_DIR
+    mkdir -p /root/.dns_purify_backup || return 1
+    BACKUP_DIR=$(mktemp -d "/root/.dns_purify_backup/$(date +%Y%m%d_%H%M%S).XXXXXXXX") || return 1
+    PRE_STATE_DIR="$BACKUP_DIR/pre_state"
+    mkdir -p "$PRE_STATE_DIR" || return 1
     echo ""
     echo -e "${gl_lv}✅ 创建备份目录：$BACKUP_DIR${gl_bai}"
     echo ""
@@ -4914,10 +5223,10 @@ dns_purify_and_harden() {
     backup_path_state "/usr/local/bin/dns-purify-apply.sh" "dns-purify-apply.sh"
     backup_path_state "/etc/systemd/system/systemd-resolved.service.d/dbus-fix.conf" "dbus-fix.conf"
     backup_path_state "/etc/NetworkManager/conf.d/99-dns-purify.conf" "nm-99-dns-purify.conf"
-    if [ -e /usr/local/libexec/net-tcp-boot-recovery ]; then
-        echo true > "$PRE_STATE_DIR/boot-recovery.was-installed"
-    else
-        echo false > "$PRE_STATE_DIR/boot-recovery.was-installed"
+    if ! boot_recovery_snapshot_dns_assets "$PRE_STATE_DIR"; then
+        exec 208>&-
+        echo '无法完整备份启动恢复组件，DNS配置未继续。' >&2
+        return 1
     fi
 
     # 快照 if-up.d/resolved 执行权限状态
@@ -4982,14 +5291,11 @@ dns_purify_and_harden() {
     done
 
     # 退出函数时自动清理本函数内动态定义的 helper，避免影响其他功能
-    trap 'unset -f backup_path_state restore_path_state plain_dns_ip auto_rollback_dns_purify dns_runtime_health_check can_connect_tcp >/dev/null 2>&1 || true' RETURN
+    trap 'exec 208>&-; unset -f backup_path_state restore_path_state plain_dns_ip auto_rollback_dns_purify dns_runtime_health_check can_connect_tcp >/dev/null 2>&1 || true' RETURN
 
     # 自动回滚函数（失败即恢复，避免遗留DNS隐患）
     auto_rollback_dns_purify() {
-        if [ "$(cat "$PRE_STATE_DIR/boot-recovery.was-installed" 2>/dev/null)" = false ] &&
-            [ -x /usr/local/libexec/net-tcp-boot-recovery ]; then
-            /usr/local/libexec/net-tcp-boot-recovery --remove-app-guards || echo '启动保护回滚有自定义残留，shared helper已保留' >&2
-        fi
+        bash "$PRE_STATE_DIR/boot-recovery-restore.sh" --lock-held || echo '启动恢复组件回滚未全部成功，请检查备份。' >&2
         # 恢复关键文件到执行前状态（注意：resolv.conf 延后恢复，避免悬空链接）
         restore_path_state "/etc/dhcp/dhclient.conf" "dhclient.conf"
         restore_path_state "/etc/network/interfaces" "interfaces"
@@ -5807,7 +6113,6 @@ STAGE4_TEMP
     if ! boot_recovery_install_assets ||
         ! /usr/local/libexec/net-tcp-boot-recovery --migrate-resolved ||
         ! boot_recovery_write_dns_service "$INTERFACE_DNS_PRIMARY" "$INTERFACE_DNS_SECONDARY" ||
-        ! boot_recovery_patch_enabled_units ||
         ! systemctl daemon-reload ||
         ! systemctl enable dns-purify-persist.service ||
         ! systemctl enable --now net-tcp-boot-watch.timer; then
@@ -5992,13 +6297,19 @@ echo ""
 
 BACKUP_DIR="$(dirname "$0")"
 PRE_STATE_DIR="$BACKUP_DIR/pre_state"
+command -v flock >/dev/null 2>&1 || { echo '缺少flock，回滚未继续。' >&2; exit 1; }
+exec 208>/run/net-tcp-boot-repair.lock
+flock -n 208 || { echo '另一个启动恢复/DNS操作正在运行，回滚未继续。' >&2; exit 1; }
 
 # 优先使用增强回滚（精确恢复执行前状态）
 if [[ -d "$PRE_STATE_DIR" ]]; then
     echo "检测到增强备份元数据，正在精确恢复执行前状态..."
-    if [[ "$(cat "$PRE_STATE_DIR/boot-recovery.was-installed" 2>/dev/null)" == false ]] &&
+    if [[ -f "$PRE_STATE_DIR/boot-recovery-restore.sh" ]]; then
+        bash "$PRE_STATE_DIR/boot-recovery-restore.sh" --lock-held || { echo '启动恢复组件回滚未全部成功，请检查备份。' >&2; exit 1; }
+    elif [[ "$(cat "$PRE_STATE_DIR/boot-recovery.was-installed" 2>/dev/null)" == false ]] &&
         [[ -x /usr/local/libexec/net-tcp-boot-recovery ]]; then
-        /usr/local/libexec/net-tcp-boot-recovery --remove-app-guards || echo '启动保护回滚有自定义残留，shared helper已保留' >&2
+        # Compatibility with backups made before per-asset snapshots existed.
+        /usr/local/libexec/net-tcp-boot-recovery --remove-app-guards || true
     fi
 
     restore_path_state() {
@@ -8255,14 +8566,21 @@ install_required_packages_snell() {
 
     if [ "$system_type" = "debian" ]; then
         apt update
-        apt install -y wget unzip curl iproute2 coreutils libc-bin
+        apt install -y wget unzip curl iproute2 coreutils libc-bin util-linux
     elif [ "$system_type" = "centos" ]; then
         yum -y update
-        yum -y install wget unzip curl iproute coreutils glibc-common
+        yum -y install wget unzip curl iproute coreutils glibc-common util-linux
     else
         echo -e "${SNELL_RED}不支持的系统类型${SNELL_RESET}"
         exit 1
     fi
+}
+
+snell_prepare_recovery_dependencies() {
+    boot_recovery_require_tools >/dev/null 2>&1 && return 0
+    wait_for_package_manager_snell
+    install_required_packages_snell || return 1
+    boot_recovery_require_tools
 }
 
 # 检查是否以 root 权限运行（Snell）
@@ -9359,6 +9677,11 @@ update_snell() {
     fi
 
     if ! snell_acquire_lock; then
+        return 1
+    fi
+
+    if ! snell_prepare_recovery_dependencies; then
+        snell_release_lock
         return 1
     fi
 
@@ -10958,6 +11281,12 @@ snellv6_update_and_repair() {
         return 0
     fi
 
+    # 已最新版也需要启动恢复的本地依赖，必须先于写 guard/重启。
+    if ! snell_prepare_recovery_dependencies; then
+        snellv6_release_lock
+        return 1
+    fi
+
     # 先补齐稳定性防护（不动二进制）
     if ! snellv6_apply_runtime_guards yes; then
         snellv6_release_lock
@@ -10984,7 +11313,6 @@ snellv6_update_and_repair() {
     # 需要更新二进制
     wait_for_package_manager_snell
     if ! install_required_packages_snell; then
-        echo -e "${SNELL_RED}安装必要软件包失败，请检查网络连接。${SNELL_RESET}"
         snellv6_release_lock
         return 1
     fi
@@ -11302,6 +11630,7 @@ Wants=network-online.target
 [Service]
 ExecStartPre=/usr/local/libexec/net-tcp-boot-recovery --wait-dns 40
 """
+DNS_APP_GUARD = DNS_GUARD.replace("--wait-dns 40", "--prepare-app-dns 40")
 
 
 class Refused(RuntimeError):
@@ -11428,26 +11757,16 @@ class Environment:
             raise Refused("恢复记录不是 root 所有")
         return path
 
-    def verified_xray_uid(self):
-        # Only the dedicated account of a verified, loaded default service can
-        # authorize non-root data ownership. Configuration files grant no rights.
-        info = self.show("xray.service")
-        self.validate_unit("xray.service", info)
-        if info.get("LoadState") != "loaded" or info.get("User") != "xray" or info.get("Group") != "xray":
-            raise Refused("非 root 数据目录需要已核实的 xray:xray 默认服务")
-        unit = self.safe_path("/etc/systemd/system/xray.service")
-        section = ""
-        identity = {"User": [], "Group": []}
-        for line in unit.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("[") and line.endswith("]"):
-                section = line[1:-1]
-            elif section == "Service" and "=" in line:
-                key, value = line.split("=", 1)
-                if key in identity:
-                    identity[key].append(value)
-        if identity != {"User": ["xray"], "Group": ["xray"]}:
-            raise Refused("默认服务文件未明确使用唯一 xray:xray 账号")
+    def verified_xray_uid(self, *, recording=False):
+        # The official geodata command owns these two flat directories with the
+        # dedicated xray account even when an already-current legacy service
+        # still runs as nobody. Runtime UID is not data provenance. Destructive
+        # removal still verifies the loaded unit and all its hooks separately.
+        if not recording:
+            info = self.show("xray.service")
+            self.validate_unit("xray.service", info)
+            if info.get("LoadState") != "loaded":
+                raise Refused("非 root 数据目录需要已核实的默认 Xray 服务")
         try:
             account = pwd.getpwnam("xray")
         except KeyError:
@@ -11470,7 +11789,7 @@ class Environment:
                     s.st_uid not in ({0, data_uid} if data_uid is not None else {0}) or s.st_mode & 0o022):
                 raise Refused("Xray 数据目录所有者、权限或内容异常: " + self.logical(item))
 
-    def validate_data_directories(self):
+    def validate_data_directories(self, *, recording=False):
         directories = []
         needs_account = False
         mounts = self.mounts()
@@ -11485,7 +11804,7 @@ class Environment:
                 raise Refused("Xray 数据目录类型或挂载异常: " + name)
             directories.append((name, path))
             needs_account = needs_account or any(item.lstat().st_uid != 0 for item in [path, *path.iterdir()])
-        data_uid = self.verified_xray_uid() if needs_account else None
+        data_uid = self.verified_xray_uid(recording=recording) if needs_account else None
         for name, path in directories:
             self.safe_path(name, data_uid=data_uid)
             self.validate_data_tree(path, name, data_uid)
@@ -11522,6 +11841,21 @@ class Environment:
             if SNELL_UNIT.fullmatch(name):
                 info = self.show(name)
                 units[name] = {k: info.get(k, "") for k in PROPS if k not in {"ControlGroup"}}
+                # daemon-reload clears systemd's cached ExecStart execution
+                # fields even while the same Snell process keeps running. Keep
+                # the configured executable/argv/ignore_errors, and verify live
+                # PID/start time independently below instead of treating cache
+                # eviction as a configuration change.
+                # Match only the complete terminal cache schema after the real
+                # ignore_errors field. systemctl leaves semicolons unescaped in
+                # argv, so a global field-name substitution could hide an argv
+                # change. An unknown serialization remains unchanged/fail-closed.
+                units[name]["ExecStart"] = re.sub(
+                    r"( ; ignore_errors=(?:yes|no)) ; start_time=\[[^\]]*\] ; stop_time=\[[^\]]*\]"
+                    r" ; pid=[0-9]+ ; code=[^ ;{}]+ ; status=[^ ;{}]+( \})$",
+                    lambda match: match[1] + " ; start_time=<runtime> ; stop_time=<runtime>"
+                    " ; pid=<runtime> ; code=<runtime> ; status=<runtime>" + match[2],
+                    units[name].get("ExecStart", ""))
                 for key in ("Names", "Requires", "RequiredBy", "Wants", "BindsTo", "BoundBy", "PartOf", "ConsistsOf",
                             "UpheldBy", "PropagatesStopTo", "StopPropagatedFrom", "Triggers", "TriggeredBy"):
                     units[name][key] = " ".join(sorted(units[name][key].split()))
@@ -11562,7 +11896,8 @@ class Environment:
             loaded = guards.intersection(info.get("DropInPaths", "").split())
             if (not loaded or pre.count("{") != 1 or pre.count("}") != 1 or
                     re.findall(r"path=([^ ;{}]+)", pre) != [DNS_HELPER] or
-                    [arg.strip() for arg in re.findall(r"argv\[\]=([^;{}]+)", pre)] != [DNS_HELPER + " --wait-dns 40"] or
+                    [arg.strip() for arg in re.findall(r"argv\[\]=([^;{}]+)", pre)] not in (
+                        [DNS_HELPER + " --wait-dns 40"], [DNS_HELPER + " --prepare-app-dns 40"]) or
                     re.findall(r"ignore_errors=([^ ;{}]+)", pre) != ["no"]):
                 raise Refused("Xray 存在非默认启动前钩子: " + name)
             for guard in loaded:
@@ -11620,7 +11955,7 @@ class Environment:
         # generic unit-key allowlist or remove the helper shared with Snell.
         path = self.safe_path(name)
         self.metadata_file(path)
-        if not path.is_file() or path.read_text() != DNS_GUARD:
+        if not path.is_file() or path.read_text() not in {DNS_GUARD, DNS_APP_GUARD}:
             raise Refused("Xray DNS 启动保护不是完整默认配置")
         helper = self.safe_path(DNS_HELPER)
         self.metadata_file(helper)
@@ -11640,8 +11975,8 @@ class Environment:
                 raise Refused("配置或备份不是有效 JSON: " + self.logical(path))
             if not isinstance(content, dict):
                 raise Refused("配置不是 JSON 对象")
-            if any(not isinstance(v, dict) or v.get("protocol") != "vless" for v in content.get("inbounds", [])):
-                raise Refused("发现非 VLESS 节点；不能按临时 VLESS 的范围卸载整套 Xray")
+            if any(not isinstance(v, dict) or v.get("protocol") not in {"vless", "shadowsocks"} for v in content.get("inbounds", [])):
+                raise Refused("发现脚本不支持的入站协议；需要先核实 Xray 配置归属")
             for key in ("access", "error"):
                 value = content.get("log", {}).get(key)
                 if value and value != "none" and not value.startswith("/var/log/xray/"):
@@ -11698,13 +12033,13 @@ class Environment:
             candidates.append(name)
         self.config_check()
         subscription = self.path(self.home.rstrip("/") + "/xray_subscription_info.txt")
-        if subscription.exists() and any(line.strip() and not line.startswith("vless://") for line in subscription.read_text().splitlines()):
-            raise Refused("订阅文件含非 VLESS 内容，无法按临时 VLESS 范围清理")
+        if subscription.exists() and any(line.strip() and not line.startswith(("vless://", "ss://")) for line in subscription.read_text().splitlines()):
+            raise Refused("订阅文件含非 VLESS/SS 内容，无法确认本脚本归属")
         rotate = self.path("/etc/logrotate.d/xray")
         if rotate.exists():
             lines = [line.strip() for line in rotate.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
             if not lines or lines[0] != "/var/log/xray/*.log {" or lines[-1] != "}" or any(
-                    not re.fullmatch(r"(?:daily|missingok|compress|delaycompress|notifempty|rotate \d+|create 0?[0-7]{3} [\w-]+ [\w-]+)", line)
+                    not re.fullmatch(r"(?:daily|missingok|compress|delaycompress|notifempty|copytruncate|rotate \d+|create 0?[0-7]{3} [\w-]+ [\w-]+)", line)
                     for line in lines[1:-1]):
                 raise Refused("日志轮转规则包含未知路径或脚本指令，拒绝处理")
         for name in ("/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service"):
@@ -11822,14 +12157,16 @@ class Environment:
         return fd
 
     def record_install(self):
-        # Called only after successful install/update by the embedded manager.
+        # This is non-destructive provenance, not permission to uninstall a
+        # custom service. Full unit/hook checks remain in preflight(). Keeping
+        # them here made harmless resource overrides fail after core updates.
         self.safe_path(INSTALL_RECORD, writable=True)
         binary = self.path("/usr/local/bin/xray")
-        if not binary.is_file() or binary.is_symlink() or binary.stat().st_uid != 0:
+        if not binary.is_file() or binary.is_symlink() or binary.stat().st_uid != 0 or binary.stat().st_mode & 0o022:
             raise Refused("不能登记异常 Xray 核心")
         for name in ("/etc/systemd/system/xray.service", "/etc/systemd/system/xray@.service"):
-            self.validate_unit_file(name)
-        self.validate_data_directories()
+            self.metadata_file(self.safe_path(name))
+        self.validate_data_directories(recording=True)
         target = self.path(INSTALL_RECORD)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".tmp")
@@ -12053,7 +12390,7 @@ class Environment:
         if not plan["paths"] and not plan["units"] and not plan["links"]:
             print("未发现 Xray 残留，无需卸载。")
             return
-        print("仅处理已核实的默认 VLESS/Xray 布局。以下候选文件将暂存后清除：")
+        print("仅处理已核实的默认 VLESS/SS Xray 布局。以下候选文件将暂存后清除：")
         for name in plan["paths"]:
             print("  " + name)
         print("服务: " + (", ".join(plan["units"]) or "无"))
@@ -12061,7 +12398,7 @@ class Environment:
         if check:
             print("只读预检通过；未停止服务或修改文件。")
             return
-        self.confirm("卸载Xray", "整套临时 VLESS/Xray 将卸载。异常时停止并尝试恢复；恢复材料清除后不能保证回滚。")
+        self.confirm("卸载Xray", "整套已核实的 Xray 将卸载。异常时停止并尝试恢复；恢复材料清除后不能保证回滚。")
         self.state_prepare()
         fd = os.open(self.state / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
@@ -12195,7 +12532,11 @@ run_xinchendahai_xray() {
 
 # ==============================================================================
 # Xray VLESS-Reality & Shadowsocks 2022 多功能管理脚本
-# 版本: Final v2.9.5
+# 版本: Final v2.9.6
+# 更新日志 (v2.9.6):
+# - 官方多实例更新先逐目标预检、启动前同步运行身份；兼容新旧geodata动作。
+# - 安装登记与卸载安全校验分离，卸载兼容SS/双协议及官方日志轮转。
+# - Snell保护忽略systemd命令缓存字段，保留实际进程、命令和文件基线。
 # 更新日志 (v2.9.5):
 # - 配置权限跟随实际 systemd 运行用户，兼容官方专用 xray 用户及旧 nobody。
 # - 官方安装器切换用户后先同步已有配置，协议安装重试补齐开机自启。
@@ -12211,7 +12552,7 @@ run_xinchendahai_xray() {
 set -euo pipefail
 
 # --- 全局常量 ---
-readonly XRAY_SCRIPT_VERSION="Final v2.9.5"
+readonly XRAY_SCRIPT_VERSION="Final v2.9.6"
 readonly xray_config_path="/usr/local/etc/xray/config.json"
 readonly xray_binary_path="/usr/local/bin/xray"
 readonly xray_root_home="$(getent passwd 0 | cut -d: -f6)"
@@ -12299,6 +12640,7 @@ ensure_xray_dependencies() {
     command -v curl >/dev/null 2>&1 || packages+=(curl)
     [ -x /usr/bin/python3 ] || packages+=(python3)
     command -v ss >/dev/null 2>&1 || packages+=(iproute2)
+    command -v flock >/dev/null 2>&1 || packages+=(util-linux)
     command -v timeout >/dev/null 2>&1 || packages+=(coreutils)
     command -v getent >/dev/null 2>&1 || packages+=(libc-bin)
     command -v openssl >/dev/null 2>&1 || packages+=(openssl)
@@ -12309,10 +12651,14 @@ ensure_xray_dependencies() {
             return 1
         fi
     fi
-    for tool in jq curl ss timeout getent openssl; do
+    for tool in jq curl ss flock timeout getent openssl; do
         command -v "$tool" >/dev/null 2>&1 || { error "依赖命令仍不可用: ${tool}，未继续安装或更新。"; return 1; }
     done
     [ -x /usr/bin/python3 ] || { error "依赖命令仍不可用: /usr/bin/python3。"; return 1; }
+    /usr/bin/python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 8))' || {
+        error "Xray 安装登记及安全卸载需要 Python 3.8 或更新版本；未继续安装或更新。"
+        return 1
+    }
 }
 
 require_no_xray_transaction() {
@@ -12605,37 +12951,67 @@ write_config() {
 }
 
 xray_sync_existing_config_owner() (
-    # This closure is also exported into the official installer's Bash. Keep it
-    # independent of menu globals, colors and other shell functions.
-    local config=/usr/local/etc/xray/config.json directory owner mode links
+    # Exported into the official installer's child Bash. --check performs the
+    # same path/identity validation before its first stop, without changing files.
+    local unit="${1:-xray.service}" check_only="${2:-}"
+    local config directory owner mode links exec_start arguments
     local load_state dynamic_user runtime_user runtime_uid metadata temporary
+    case "$unit" in
+        xray|xray.service) unit=xray.service; config=/usr/local/etc/xray/config.json;;
+        xray@*.service)
+            local instance="${unit#xray@}"; instance="${instance%.service}"
+            [[ "$instance" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+            config="/usr/local/etc/xray/${instance}.json";;
+        xray@*)
+            local instance="${unit#xray@}"
+            [[ "$instance" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+            unit="${unit}.service"; config="/usr/local/etc/xray/${instance}.json";;
+        *) return 1;;
+    esac
     for directory in /usr /usr/local /usr/local/etc /usr/local/etc/xray; do
         [ ! -L "$directory" ] || { printf '%s\n' 'Xray 配置父目录为符号链接，拒绝启动。' >&2; return 1; }
         [ -e "$directory" ] || continue
         [ -d "$directory" ] || return 1
         read -r owner mode < <(command stat -c '%u %a' -- "$directory")
-        [[ "$owner" = 0 && "$mode" =~ ^[0-7]{3,4}$ ]] && [ "$((8#$mode & 8#022))" -eq 0 ] || {
-            printf '%s\n' 'Xray 配置父目录不可信，拒绝启动。' >&2; return 1;
+        [[ "$owner" = 0 && "$mode" =~ ^[0-7]{3,4}$ ]] &&
+            [ "$((8#$mode & 8#022))" -eq 0 ] && [ "$((8#$mode & 8#001))" -ne 0 ] || {
+            printf '%s\n' 'Xray 配置父目录不可信或新运行账号无法穿过，未继续安装。' >&2; return 1;
         }
     done
     [ ! -L "$config" ] || { printf '%s\n' 'Xray 配置为符号链接，拒绝启动。' >&2; return 1; }
-    [ -e "$config" ] || return 0
+    if [ ! -e "$config" ]; then
+        [ "$check_only" != --check ] && return 0
+        printf '%s\n' '活动 Xray 服务缺少默认配置，未停止业务。' >&2; return 1
+    fi
     [ -f "$config" ] || return 1
     links=$(command stat -c '%h' -- "$config") || return 1
     [ "$links" = 1 ] || { printf '%s\n' 'Xray 配置包含硬链接，拒绝启动。' >&2; return 1; }
-    load_state=$(command systemctl show xray.service --property=LoadState --value) || return 1
+    load_state=$(command systemctl show "$unit" --property=LoadState --value) || return 1
     [ "$load_state" = loaded ] || return 1
-    dynamic_user=$(command systemctl show xray.service --property=DynamicUser --value) || return 1
+    exec_start=$(command systemctl show "$unit" --property=ExecStart --value) || return 1
+    arguments="${exec_start#*argv\[\]=}"
+    arguments="${arguments%% ;*}"
+    if [[ "$exec_start" != *"path=/usr/local/bin/xray ;"* ]] ||
+       [ "$arguments" != "/usr/local/bin/xray run -config $config" ]; then
+        printf '%s\n' 'Xray 使用非默认启动程序或配置路径，未停止业务。' >&2; return 1
+    fi
+    for directory in RootDirectory RootImage BindPaths BindReadOnlyPaths InaccessiblePaths TemporaryFileSystem; do
+        metadata=$(command systemctl show "$unit" --property="$directory" --value) || return 1
+        [ -z "$metadata" ] || {
+            printf '%s\n' 'Xray 使用自定义文件系统视图，未停止业务。' >&2; return 1;
+        }
+    done
+    dynamic_user=$(command systemctl show "$unit" --property=DynamicUser --value) || return 1
     case "$dynamic_user" in ''|no) ;; *) return 1;; esac
-    runtime_user=$(command systemctl show xray.service --property=User --value) || return 1
+    runtime_user=$(command systemctl show "$unit" --property=User --value) || return 1
     runtime_user="${runtime_user:-root}"
     [[ "$runtime_user" =~ ^([a-zA-Z_][a-zA-Z0-9_.-]*\$?|[0-9]+)$ ]] || return 1
     runtime_uid=$(command id -u "$runtime_user") || return 1
     [[ "$runtime_uid" =~ ^[0-9]+$ ]] || return 1
+    [ "$check_only" != --check ] || return 0
     metadata=$(command stat -c '%u:%g:%a' -- "$config") || return 1
     [ "$metadata" != "$runtime_uid:0:640" ] || return 0
     temporary=$(command mktemp "${config}.owner.XXXXXXXX") || return 1
-    # Copy bytes directly: command substitution would strip trailing newlines.
     if ! command cp -- "$config" "$temporary" ||
        ! command chown "$runtime_uid:0" "$temporary" || ! command chmod 640 "$temporary" ||
        ! command mv -f -- "$temporary" "$config"; then
@@ -12662,6 +13038,21 @@ execute_official_script() {
         return 1
     fi
 
+    # The upstream action was renamed. Choose from the downloaded parser,
+    # keeping existing menu callers compatible with both official generations.
+    case "$args" in
+        install-geodata|update-geodata)
+            if [[ "$script_content" == *"'update-geodata')"* ]]; then
+                args=update-geodata
+            elif [[ "$script_content" == *"'install-geodata')"* ]]; then
+                args=install-geodata
+            else
+                error "Xray 官方安装器没有可识别的 geodata 更新动作。"
+                return 1
+            fi
+            ;;
+    esac
+
     # 安全：使用 mktemp 生成不可预测的临时文件名，避免符号链接攻击
     temp_script=$(mktemp /tmp/xray_install_XXXXXX.sh) || {
         error "创建临时文件失败！"
@@ -12674,24 +13065,33 @@ execute_official_script() {
     chmod +x "$temp_script"
 
     if ! (
-        # The official updater changes User= before starting Xray. Intercept
-        # that one start inside its child process, never in the calling menu.
+        # Official upgrades stop/restart the complete active main/instance list.
+        # Validate every target before forwarding stop; after its unit replacement
+        # synchronize each configuration with that unit's effective runtime UID.
         systemctl() {
-            local argument has_start=0 has_xray=0
+            local argument has_xray=0 action="${1:-}"
             for argument in "$@"; do
-                [ "$argument" != start ] || has_start=1
-                case "$argument" in
-                    xray|xray.service|xray@*) has_xray=1;;
-                    *) if [[ xray == $argument || xray.service == $argument ]]; then has_xray=1; fi;;
-                esac
+                case "$argument" in xray|xray.service|xray@*) has_xray=1;; esac
+                # Globs could include Xray after systemctl expansion; require
+                # explicit targets so every configuration is checked first.
+                case "$argument" in *'*'*|*'?'*|*'['*) has_xray=1;; esac
             done
-            if [ "$has_start" -eq 1 ] && [ "$has_xray" -eq 1 ]; then
-                if [ "$#" -ne 2 ] || [ "$1" != start ] ||
-                   { [ "$2" != xray ] && [ "$2" != xray.service ]; }; then
-                    printf '%s\n' '不支持此 Xray 启动参数，安装器未继续启动。' >&2
-                    return 1
+            if [ "$has_xray" -eq 1 ] && { [[ " $* " == *" start "* ]] || [[ " $* " == *" stop "* ]]; }; then
+                if { [ "$action" != start ] && [ "$action" != stop ]; } || [ "$#" -lt 2 ]; then
+                    printf '%s\n' '不支持此 Xray 启停参数，安装器未继续。' >&2; return 1
                 fi
-                xray_sync_existing_config_owner || return 1
+                for argument in "${@:2}"; do
+                    [[ "$argument" =~ ^xray(@[A-Za-z0-9_.-]+)?([.]service)?$ ]] || {
+                        printf '%s\n' 'Xray 启停目标不明确，安装器未继续。' >&2; return 1;
+                    }
+                done
+                for argument in "${@:2}"; do
+                    if [ "$action" = stop ]; then
+                        xray_sync_existing_config_owner "$argument" --check || return 1
+                    else
+                        xray_sync_existing_config_owner "$argument" || return 1
+                    fi
+                done
             fi
             command systemctl "$@"
         }
@@ -12714,6 +13114,7 @@ execute_official_script() {
 }
 
 run_core_install() {
+    ensure_xray_dependencies || return 1
     info "正在下载并安装 Xray 核心..."
     # Explicit installation owns this target even before the official installer
     # enables it. Install the guard before any installer-triggered start.
@@ -13149,6 +13550,7 @@ install_dual() {
 
 update_xray() {
     if [[ ! -f "$xray_binary_path" ]]; then error "错误: Xray 未安装。" && return; fi
+    ensure_xray_dependencies || return 1
     if ! boot_recovery_migrate install xray.service; then
         error "Xray 启动恢复迁移失败，未继续更新。"
         return 1

@@ -60,13 +60,28 @@ class InstallerIdentityTests(unittest.TestCase):
         self.executable("systemctl", r'''#!/bin/bash
 set -u
 printf '%s\n' "$*" >> "$TEST_CALLS"
-case "$*" in
-  'show xray.service --property=LoadState --value') printf '%s\n' "$TEST_LOADED";;
-  'show xray.service --property=DynamicUser --value') printf '%s\n' "$TEST_DYNAMIC";;
-  'show xray.service --property=User --value') cat "$TEST_USER_STATE";;
-  'start xray'|'start xray.service')
-    runuser -u "$(cat "$TEST_USER_STATE")" -- test -r /usr/local/etc/xray/config.json;;
-esac
+if [ "$1" = show ]; then
+  unit="$2"; instance="${unit#xray@}"; instance="${instance%.service}"
+  config=/usr/local/etc/xray/config.json
+  [[ "$unit" != xray@* ]] || config="/usr/local/etc/xray/${instance}.json"
+  case "$3" in
+    --property=LoadState) printf '%s\n' "$TEST_LOADED";;
+    --property=DynamicUser) printf '%s\n' "$TEST_DYNAMIC";;
+    --property=User) cat "$TEST_USER_STATE";;
+    --property=RootDirectory) printf '%s\n' "${TEST_ROOT_DIRECTORY:-}";;
+    --property=ExecStart) printf '{ path=/usr/local/bin/xray ; argv[]=/usr/local/bin/xray run -config %s ; ignore_errors=no ; }\n' "${TEST_CONFIG_OVERRIDE:-$config}";;
+  esac
+elif [ "$1" = start ]; then
+  for unit in "${@:2}"; do
+    [[ "$unit" == xray* ]] || continue
+    config=/usr/local/etc/xray/config.json
+    if [[ "$unit" == xray@* ]]; then
+      instance="${unit#xray@}"; instance="${instance%.service}"
+      config="/usr/local/etc/xray/${instance}.json"
+    fi
+    runuser -u "$(cat "$TEST_USER_STATE")" -- test -r "$config" || exit 1
+  done
+fi
 ''')
 
     def executable(self, name, content):
@@ -117,6 +132,17 @@ exit "$result"
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assert_synced()
 
+    def test_geodata_action_adapts_to_actual_downloaded_official_commands(self):
+        for official_action in ("install-geodata", "update-geodata"):
+            with self.subTest(official_action=official_action):
+                self.payload.write_text("#!/bin/bash\n# install-release\ncase \"$1\" in\n  '" + official_action +
+                    "') printf 'DATA_ACTION_OK\\n';;\n  *) exit 87;;\nesac\n")
+                result = self.script('execute_official_script "install-geodata"')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("DATA_ACTION_OK", result.stdout)
+                self.assertFalse(self.calls.exists())
+                self.assertEqual(CONFIG.read_bytes(), self.original)
+
     def test_installer_failure_propagates_for_quiet_and_normal_mode(self):
         for quiet in (False, True):
             with self.subTest(quiet=quiet):
@@ -137,10 +163,9 @@ exit "$result"
                 self.assertEqual(CONFIG.stat().st_uid, before.st_uid)
                 self.assertEqual(list(CONFIG.parent.glob("config.json.owner.*")), [])
 
-    def test_option_multiple_target_and_instance_starts_are_rejected(self):
+    def test_ambiguous_or_mixed_service_starts_are_rejected(self):
         for command in ("systemctl --no-block start xray", "systemctl start xray --no-block",
                         "systemctl start xray snell.service", "systemctl start -- xray.service",
-                        "systemctl start xray@one.service", "systemctl start xray@one",
                         "systemctl start 'xray*'", "systemctl start '*.service'",
                         "systemctl start snell.service xray.service"):
             with self.subTest(command=command):
@@ -150,10 +175,50 @@ exit "$result"
                 self.assertFalse(self.calls.exists())
                 self.assertEqual(CONFIG.read_bytes(), self.original)
 
+    def test_official_active_instance_list_is_synced_and_restarted(self):
+        for targets in ("xray@one.service", "xray.service xray@one.service xray@two.service"):
+            with self.subTest(targets=targets):
+                self.calls.unlink(missing_ok=True)
+                self.user.write_text("nobody\n")
+                for name in ("one", "two"):
+                    config = CONFIG.parent / (name + ".json")
+                    config.write_bytes(self.original + name.encode())
+                    os.chown(config, pwd.getpwnam("nobody").pw_uid, 0)
+                    config.chmod(0o640)
+                result = self.installer("systemctl stop " + targets +
+                    '\nprintf "xray\\n" > "$TEST_USER_STATE"\n' +
+                    "systemctl start " + targets)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.calls.read_text()
+                self.assertIn("stop " + targets + "\n", calls)
+                self.assertIn("start " + targets + "\n", calls)
+                for target in targets.split():
+                    config = CONFIG if target == "xray.service" else CONFIG.parent / (target[5:-8] + ".json")
+                    self.assertEqual(config.stat().st_uid, self.account.pw_uid)
+                    self.assertEqual(config.read_bytes(), self.original if config == CONFIG else self.original + target[5:-8].encode())
+
+    def test_invalid_instance_path_is_rejected_before_official_stop(self):
+        self.env["TEST_CONFIG_OVERRIDE"] = "/opt/custom/config.json"
+        config = CONFIG.parent / "one.json"
+        config.write_bytes(self.original)
+        result = self.installer("systemctl stop xray.service xray@one.service\nexit 90")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("stop xray", self.calls.read_text())
+        self.assertEqual(CONFIG.read_bytes(), self.original)
+        self.assertEqual(config.read_bytes(), self.original)
+
+    def test_custom_instance_filesystem_view_is_rejected_before_stop(self):
+        self.env["TEST_ROOT_DIRECTORY"] = "/srv/xray-jail"
+        (CONFIG.parent / "one.json").write_bytes(self.original)
+        result = self.installer("systemctl stop xray@one.service")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("stop xray", self.calls.read_text())
+
     def test_other_service_calls_are_forwarded_without_identity_change(self):
         result = self.installer("systemctl stop xray\nsystemctl start snell.service\nsystemctl enable xray")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls.read_text(), "stop xray\nstart snell.service\nenable xray\n")
+        forwarded = [line for line in self.calls.read_text().splitlines() if not line.startswith("show ")]
+        self.assertEqual(forwarded, ["stop xray", "start snell.service", "enable xray"])
         self.assertEqual(CONFIG.stat().st_uid, pwd.getpwnam("nobody").pw_uid)
 
     def test_invalid_dynamic_or_unloaded_identity_prevents_start(self):
@@ -206,6 +271,7 @@ exit "$result"
 
     def test_core_no_start_branch_still_syncs_before_registration(self):
         extra = body("run_core_install") + '''
+ensure_xray_dependencies() { return 0; }
 boot_recovery_migrate() { return 0; }
 execute_official_script() { printf 'xray\\n' > "$TEST_USER_STATE"; }
 run_xray_safe_uninstall() { runuser -u xray -- test -r /usr/local/etc/xray/config.json; }

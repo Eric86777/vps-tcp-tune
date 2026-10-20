@@ -2,7 +2,7 @@
 
 Never run on a VPS. Requires /.dockerenv, /root/xray-uninstall-isolated-container,
 XRAY_ISOLATED_SYSTEMD_TEST=1, PID 1 systemd and predownloaded official binaries
-at /root/xray-test-assets/{xray,snell-server}. Does not install/download tools.
+at /root/xray-test-assets/{xray,snell-server,install-release.sh}. Does not install/download tools.
 The Snell probe checks live TCP acceptance, NOT authenticated Snell proxy traffic.
 The client-confirmation gate is exercised with test input.
 """
@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
+import shlex
 import select
 import signal
 import shutil
@@ -19,6 +21,7 @@ import socket
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import unittest
 
@@ -136,7 +139,7 @@ class RealSystemdTests(unittest.TestCase):
     def setUp(self):
         # A fresh disposable image has no units; fixture cleanup tolerates that.
         for action in ("stop", "disable"):
-            subprocess.run(["/usr/bin/systemctl", action, "xray.service", "xray@one.service"],
+            subprocess.run(["/usr/bin/systemctl", action, "xray.service", "xray@one.service", "xray@two.service"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for name in MODULE.FIXED:
             path = Path(name)
@@ -145,6 +148,7 @@ class RealSystemdTests(unittest.TestCase):
             elif path.exists() or path.is_symlink():
                 path.unlink()
         shutil.rmtree(MODULE.STATE, ignore_errors=True)
+        shutil.rmtree("/etc/systemd/system/xray@one.service.d", ignore_errors=True)
         self.assets = Path("/root/xray-test-assets")
         Path("/usr/local/bin").mkdir(parents=True, exist_ok=True)
         shutil.copyfile(self.assets / "xray", "/usr/local/bin/xray")
@@ -205,6 +209,102 @@ class RealSystemdTests(unittest.TestCase):
             if path.exists():
                 path.unlink()
         systemctl("daemon-reload")
+
+    def test_actual_official_already_current_then_geodata_preserves_legacy_runtime(self):
+        from test_xray_installer_identity import body
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            fakebin = directory / "bin"
+            fakebin.mkdir()
+            # HTTP responses are deterministic fixtures. The complete official
+            # already-latest branch, checksums, chown and record helper execute.
+            curl = fakebin / "curl"
+            curl.write_text(r'''#!/bin/bash
+set -euo pipefail
+output= url="${!#}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in -o|-sSfLo) output="$2"; shift 2;; *) shift;; esac
+done
+[ -n "$output" ] || exit 81
+base="${url##*/}"
+case "$url" in
+    https://api.github.com/repos/XTLS/Xray-core/releases*)
+        printf '{"tag_name":"v%s","assets":[{"browser_download_url":"https://github.com/XTLS/Xray-core/releases/download/v%s/Xray-linux-arm64-v8a.zip"},{"browser_download_url":"https://github.com/XTLS/Xray-core/releases/download/v%s/Xray-linux-64.zip"}]}\n' "${XRAY_FIXTURE_VERSION#v}" "${XRAY_FIXTURE_VERSION#v}" "${XRAY_FIXTURE_VERSION#v}" > "$output"; exit 0;;
+esac
+case "$base" in
+    geoip.dat|geosite.dat) printf 'isolated-geodata' > "$output";;
+    geoip.dat.sha256sum|geosite.dat.sha256sum)
+        sum=$(printf 'isolated-geodata' | sha256sum); sum="${sum%% *}"
+        printf '%s  %s\n' "$sum" "${base%.sha256sum}" > "$output";;
+    *) exit 82;;
+esac
+''')
+            curl.chmod(0o755)
+            original = Path("/usr/local/etc/xray/config.json").read_bytes()
+            unit = Path("/etc/systemd/system/xray.service").read_bytes()
+            safe = "run_xray_safe_uninstall() {" + SCRIPT.read_text().split("run_xray_safe_uninstall() {", 1)[1].split("\nrun_xinchendahai_xray()", 1)[0]
+            code = "set -euo pipefail\nexport TERM=xterm\n" + body("xray_sync_existing_config_owner") + "\n" + body("execute_official_script") + "\n" + safe
+            code += "\nerror() { printf '%s\\n' \"$*\" >&2; }\n"
+            code += "curl() { cat /root/xray-test-assets/install-release.sh; }\n"
+            code += "xray_install_script_url=https://example.invalid/install-release.sh\nis_quiet=false\n" + body("spinner")
+            code += '\nexecute_official_script install\nexecute_official_script install-geodata\nrun_xray_safe_uninstall --record-install\n'
+            version = subprocess.check_output(["/usr/local/bin/xray", "version"], text=True).split()[1]
+            result = subprocess.run(["bash", "-c", code], text=True, capture_output=True,
+                env=dict(os.environ, PATH=str(fakebin) + ":" + os.environ["PATH"], XRAY_FIXTURE_VERSION=version), timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("No new version", result.stdout)
+            self.assertEqual(Path("/etc/systemd/system/xray.service").read_bytes(), unit)
+            self.assertEqual(Path("/usr/local/etc/xray/config.json").read_bytes(), original)
+            self.assertEqual(systemctl("show", "xray.service", "-p", "User", "--value"), "nobody")
+            uid = __import__("pwd").getpwnam("xray").pw_uid
+            self.assertEqual(Path("/usr/local/share/xray/geoip.dat").stat().st_uid, uid)
+            self.assertEqual(systemctl("is-active", "xray.service"), "active")
+            self.assert_snell()
+
+    def test_official_stop_start_cycle_restores_main_and_instances_with_new_uid(self):
+        from test_xray_installer_identity import body
+        config = json.loads(Path("/usr/local/etc/xray/config.json").read_text())
+        before = {"config": Path("/usr/local/etc/xray/config.json").read_bytes()}
+        for name, port in (("one", 19081), ("two", 19082)):
+            config["inbounds"][0]["port"] = port
+            path = Path("/usr/local/etc/xray") / (name + ".json")
+            write(str(path), json.dumps(config), 0o640)
+            os.chown(path, 65534, 0)
+            before[name] = path.read_bytes()
+        # An instance-specific identity override survives the official template
+        # rewrite and must keep its own readable configuration.
+        write("/etc/systemd/system/xray@one.service.d/identity.conf", "[Service]\nUser=nobody\nGroup=nogroup\n")
+        systemctl("daemon-reload")
+        systemctl("start", "xray@one.service", "xray@two.service")
+        # These are the official installer's unmodified stop/start functions.
+        official = (self.assets / "install-release.sh").read_text()
+        functions = "\n".join(re.search(r"^" + name + r"\(\) \{\n.*?^\}",
+            official, re.M | re.S).group() for name in ("stop_xray", "start_xray"))
+        payload = "#!/bin/bash\n# install-release\nset -euo pipefail\n" + functions + "\n" + r'''
+stop_xray
+install -m 755 /root/xray-test-assets/xray /usr/local/bin/xray
+sed -i 's/User=nobody/User=xray\nGroup=xray/' /etc/systemd/system/xray.service /etc/systemd/system/xray@.service
+systemctl daemon-reload
+start_xray
+'''
+        installer = Path("/tmp/xray-real-upgrade-fixture.sh")
+        installer.write_text(payload)
+        code = "set -euo pipefail\n" + body("xray_sync_existing_config_owner") + "\n" + body("execute_official_script")
+        code += "\nerror() { printf '%s\\n' \"$*\" >&2; }\n"
+        code += "curl() { cat " + shlex.quote(str(installer)) + "; }\n"
+        code += "xray_install_script_url=https://example.invalid/install-release.sh\nis_quiet=true\nexecute_official_script install\n"
+        result = subprocess.run(["bash", "-c", code], text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        uid = __import__("pwd").getpwnam("xray").pw_uid
+        for name, port in (("config", 19080), ("one", 19081), ("two", 19082)):
+            path = Path("/usr/local/etc/xray") / (name + ".json")
+            self.assertEqual(path.read_bytes(), before[name])
+            self.assertEqual(path.stat().st_uid, 65534 if name == "one" else uid)
+            unit = "xray.service" if name == "config" else "xray@" + name + ".service"
+            self.assertEqual(systemctl("is-active", unit), "active")
+            with socket.create_connection(("127.0.0.1", port), timeout=2):
+                pass
+        self.assert_snell()
 
     def test_shared_logrotate_timer_survives_xray_uninstall(self):
         write("/etc/systemd/system/logrotate@.timer", "[Unit]\nDescription=Run logrotate for %i logs\n[Timer]\nOnCalendar=2099-01-01 00:00:00\nPersistent=false\n[Install]\nWantedBy=timers.target\n")
