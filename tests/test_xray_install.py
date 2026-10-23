@@ -177,9 +177,28 @@ run_core_install
 
 
 class VersionPolicyTests(unittest.TestCase):
-    """Pinned Xray core version: new installs and menu 11 never follow upstream latest by default."""
+    """Stable Xray core by default; upstream latest only after an explicit menu choice and confirmation."""
 
-    POLICY = re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group() + "\n" + function("xray_target_version")
+    POLICY = "\n".join([re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group(),
+                         'xray_chosen_version=""'] + [function(name) for name in (
+                             "xray_target_version", "xray_version_gt", "xray_fetch_latest_version",
+                             "xray_choose_version", "xray_newer_version_notice")])
+    STUBS = r'''
+cyan=''; none=''; green=''; yellow=''
+info() { printf 'info %s\n' "$1"; }
+success() { printf 'success %s\n' "$1"; }
+warning() { printf 'warning %s\n' "$1"; }
+error() { printf 'error %s\n' "$1"; }
+draw_divider() { echo ---; }
+curl() { [ -n "$TEST_LATEST" ] || return 22; printf '{"tag_name":"%s"}\n' "$TEST_LATEST"; }
+'''
+
+    def env(self, override=None, latest="v26.10.21", **extra):
+        env = dict(os.environ, TEST_LATEST=latest, **extra)
+        env.pop("XRAY_VERSION_OVERRIDE", None)
+        if override is not None:
+            env["XRAY_VERSION_OVERRIDE"] = override
+        return env
 
     def target(self, override=None):
         env = dict(os.environ)
@@ -205,62 +224,141 @@ class VersionPolicyTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertIn("XRAY_VERSION_OVERRIDE 格式无效", result.stderr)
 
-    def update(self, current, override=None):
+    def update(self, current, stdin="", override=None, latest="v26.10.21"):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "xray"
             binary.write_text("#!/bin/sh\necho 'Xray " + current + " (Xray, Penetrates Everything.)'\n")
             binary.chmod(0o755)
-            code = self.POLICY + "\n" + function("update_xray") + "\n" + r'''
-cyan=''; none=''
+            code = "set -euo pipefail\n" + self.POLICY + "\n" + function("update_xray") + "\n" + self.STUBS + r"""
 xray_binary_path="$TEST_BINARY"
-info() { printf 'info %s\n' "$1"; }
-success() { printf 'success %s\n' "$1"; }
-warning() { printf 'warning %s\n' "$1"; }
-error() { printf 'error %s\n' "$1"; }
 ensure_xray_dependencies() { return 0; }
 boot_recovery_migrate() { return 0; }
-curl() { echo '{"tag_name":"v26.10.21"}'; }
-run_core_install() { echo CORE_INSTALL; }
+run_core_install() { echo "CORE_INSTALL[${xray_chosen_version}]"; }
 restart_xray() { echo RESTART; }
 update_xray
-'''
-            env = dict(os.environ, TEST_BINARY=str(binary))
-            env.pop("XRAY_VERSION_OVERRIDE", None)
-            if override is not None:
-                env["XRAY_VERSION_OVERRIDE"] = override
-            return subprocess.run(["bash", "-c", code], env=env, text=True, capture_output=True, timeout=10)
+"""
+            return subprocess.run(["bash", "-c", code], input=stdin, env=self.env(override, latest, TEST_BINARY=str(binary)),
+                                  text=True, capture_output=True, timeout=10)
 
-    def test_update_equal_to_pin_does_nothing(self):
-        result = self.update("26.3.27")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("已是固定版本", result.stdout)
+    def test_update_default_keeps_stable_when_already_stable(self):
+        result = self.update("26.3.27", stdin="\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("稳定版 26.3.27（推荐，默认），即当前版本", result.stdout)
+        self.assertIn("官方最新版 26.10.21", result.stdout)
+        self.assertIn("mihomo 内核需 v1.19.31 及以上", result.stdout)
+        self.assertIn("已是 26.3.27，无需更新", result.stdout)
         self.assertNotIn("CORE_INSTALL", result.stdout)
 
-    def test_update_newer_than_pin_is_not_downgraded_or_upgraded(self):
-        result = self.update("26.10.21")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("当前版本高于固定版本，保持不动", result.stdout)
-        self.assertNotIn("CORE_INSTALL", result.stdout)
-        self.assertNotIn("RESTART", result.stdout)
+    def test_update_older_than_stable_installs_stable_by_default(self):
+        for stdin in ("\n", "1\n", ""):  # Enter, explicit 1, and EOF/non-interactive all mean default
+            with self.subTest(stdin=stdin):
+                result = self.update("26.2.6", stdin=stdin)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("CORE_INSTALL[v26.3.27]", result.stdout)
+                self.assertIn("RESTART", result.stdout)
 
-    def test_update_older_than_pin_installs_pin(self):
-        result = self.update("26.2.6")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("开始安装 Xray 26.3.27", result.stdout)
-        self.assertIn("CORE_INSTALL", result.stdout)
-        self.assertIn("RESTART", result.stdout)
+    def test_update_latest_requires_y_confirmation(self):
+        result = self.update("26.3.27", stdin="2\ny\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("CORE_INSTALL[v26.10.21]", result.stdout)
+        for answer in ("2\nn\n", "2\n\n", "2\n"):
+            with self.subTest(answer=answer):
+                result = self.update("26.2.6", stdin=answer)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("已取消，改用稳定版 26.3.27", result.stdout)
+                self.assertIn("CORE_INSTALL[v26.3.27]", result.stdout)
+
+    def test_update_invalid_choice_asks_again(self):
+        result = self.update("26.2.6", stdin="9\nabc\n1\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("无效选项"), 2)
+        self.assertIn("CORE_INSTALL[v26.3.27]", result.stdout)
+
+    def test_update_newer_than_stable_keeps_by_default(self):
+        for stdin in ("\n", ""):
+            with self.subTest(stdin=stdin):
+                result = self.update("26.10.21", stdin=stdin)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("保持当前版本 26.10.21（默认）", result.stdout)
+                self.assertIn("保持当前版本 26.10.21，未更新", result.stdout)
+                self.assertNotIn("CORE_INSTALL", result.stdout)
+                self.assertNotIn("RESTART", result.stdout)
+
+    def test_update_newer_than_stable_can_downgrade_to_stable(self):
+        result = self.update("26.10.21", stdin="2\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("降回稳定版 26.3.27", result.stdout)
+        self.assertNotIn("官方最新版", result.stdout)  # latest == current: no third option
+        self.assertIn("CORE_INSTALL[v26.3.27]", result.stdout)
+
+    def test_update_newer_than_stable_offers_even_newer_latest(self):
+        result = self.update("26.10.21", stdin="3\ny\n", latest="v26.11.1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("CORE_INSTALL[v26.11.1]", result.stdout)
+        result = self.update("26.10.21", stdin="3\nn\n", latest="v26.11.1")
+        self.assertIn("已取消，保持当前版本 26.10.21", result.stdout)
+        self.assertNotIn("CORE_INSTALL", result.stdout)
+
+    def test_update_without_newer_latest_or_network_shows_no_menu(self):
+        for latest, warned in (("", True), ("v26.3.27", False), ("v26.2.6", False), ("garbage;rm", True)):
+            with self.subTest(latest=latest):
+                result = self.update("26.2.6", latest=latest)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("请选择要安装的 Xray 版本", result.stdout)
+                self.assertEqual("无法获取官方最新版本号" in result.stdout, warned)
+                self.assertIn("CORE_INSTALL[v26.3.27]", result.stdout)
+
+    def test_update_override_skips_menu_and_may_downgrade(self):
+        result = self.update("26.10.21", override="v26.3.27")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("请选择要安装的 Xray 版本", result.stdout)
+        self.assertIn("按 XRAY_VERSION_OVERRIDE 指定 Xray 版本", result.stdout)
+        self.assertIn("CORE_INSTALL[v26.3.27]", result.stdout)
 
     def test_update_latest_override_keeps_upstream_latest_behavior(self):
-        result = self.update("26.3.27", override="latest")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("固定版本", result.stdout)
-        self.assertIn("最新版本: 26.10.21", result.stdout)
-        self.assertIn("CORE_INSTALL", result.stdout)
+        code_result = self.update("26.3.27", override="latest")
+        self.assertEqual(code_result.returncode, 0, code_result.stdout + code_result.stderr)
+        self.assertNotIn("请选择要安装的 Xray 版本", code_result.stdout)
+        self.assertIn("最新版本: 26.10.21", code_result.stdout)
+        self.assertIn("CORE_INSTALL[]", code_result.stdout)
 
     def test_update_invalid_override_stops_before_install(self):
         result = self.update("26.2.6", override="bad;rm")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("CORE_INSTALL", result.stdout)
+
+    def choose_install(self, current, stdin="", latest="v26.10.21"):
+        code = "set -euo pipefail\n" + self.POLICY + "\n" + self.STUBS + r"""
+xray_choose_version install "$TEST_CURRENT"
+echo "CHOSEN[${xray_chosen_version}]"
+"""
+        return subprocess.run(["bash", "-c", code], input=stdin, env=self.env(None, latest, TEST_CURRENT=current),
+                              text=True, capture_output=True, timeout=10)
+
+    def test_install_defaults_to_stable_and_keeps_newer_installed_core(self):
+        for current, stdin, chosen in (("", "\n", "v26.3.27"), ("", "2\ny\n", "v26.10.21"),
+                                       ("26.10.21", "\n", "v26.10.21"), ("26.10.21", "2\n", "v26.3.27")):
+            with self.subTest(current=current, stdin=stdin):
+                result = self.choose_install(current, stdin)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("CHOSEN[" + chosen + "]", result.stdout)
+
+    def test_install_entries_choose_version_before_any_prompt(self):
+        for name in ("install_vless_only", "install_ss_only", "install_dual"):
+            with self.subTest(name=name):
+                self.assertRegex(function(name), r"^\w+\(\) \{\n    xray_choose_install_version \|\| return 1\n")
+
+    def test_newer_core_notice_only_above_stable(self):
+        for current, shown in (("26.10.21", True), ("26.3.27", False), ("26.2.6", False)):
+            with self.subTest(current=current):
+                with tempfile.TemporaryDirectory() as directory:
+                    binary = Path(directory) / "xray"
+                    binary.write_text("#!/bin/sh\necho 'Xray " + current + " (Xray)'\n")
+                    binary.chmod(0o755)
+                    code = "set -euo pipefail\n" + self.POLICY + "\n" + self.STUBS + '\nxray_binary_path="' + str(binary) + '"\nxray_newer_version_notice\necho DONE\n'
+                    result = subprocess.run(["bash", "-c", code], text=True, capture_output=True, timeout=10)
+                self.assertIn("DONE", result.stdout, result.stderr)
+                self.assertEqual("需 mihomo v1.19.31 及以上" in result.stdout, shown)
 
     def run_core(self, override=None):
         code = self.POLICY + "\n" + function("run_core_install") + "\n" + r'''
@@ -276,6 +374,19 @@ run_core_install
         if override is not None:
             env["XRAY_VERSION_OVERRIDE"] = override
         return subprocess.run(["bash", "-c", code], env=env, text=True, capture_output=True, timeout=10)
+
+    def test_core_install_uses_menu_choice_before_policy(self):
+        code = self.POLICY + "\n" + function("run_core_install") + "\n" + r'''
+info() { :; }
+error() { printf 'error %s\n' "$1"; }
+ensure_xray_dependencies() { return 0; }
+boot_recovery_migrate() { return 0; }
+execute_official_script() { printf 'OFFICIAL[%s]\n' "$1"; exit 0; }
+xray_chosen_version=v26.10.21
+run_core_install
+'''
+        result = subprocess.run(["bash", "-c", code], env=self.env(), text=True, capture_output=True, timeout=10)
+        self.assertIn("OFFICIAL[install --version v26.10.21]", result.stdout, result.stderr)
 
     def test_core_install_passes_pinned_version_to_official_installer(self):
         for override, action in ((None, "install --version v26.3.27"),

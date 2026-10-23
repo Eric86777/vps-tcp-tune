@@ -22,7 +22,10 @@ def function(name):
     return re.findall(r"^" + re.escape(name) + r"\(\) \{\n.*?^\}", SOURCE, re.M | re.S)[-1]
 
 
-XRAY_VERSION_POLICY = re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group() + "\n" + function("xray_target_version")
+XRAY_VERSION_POLICY = "\n".join([re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group(),
+                                 'xray_chosen_version=""'] + [function(name) for name in (
+                                     "xray_target_version", "xray_version_gt", "xray_fetch_latest_version",
+                                     "xray_choose_version", "xray_newer_version_notice")])
 
 
 class BootRecoveryTests(unittest.TestCase):
