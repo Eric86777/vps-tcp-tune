@@ -246,7 +246,7 @@ update_xray
     def test_update_older_than_pin_installs_pin(self):
         result = self.update("26.2.6")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("开始安装固定版本 26.3.27", result.stdout)
+        self.assertIn("开始安装 Xray 26.3.27", result.stdout)
         self.assertIn("CORE_INSTALL", result.stdout)
         self.assertIn("RESTART", result.stdout)
 
@@ -289,6 +289,11 @@ run_core_install
         result = self.run_core("bad;rm")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("OFFICIAL", result.stdout)
+
+    def test_vless_link_requests_x25519mlkem768_for_mihomo(self):
+        # Xray v26.10.21+ REALITY rejects Client Hellos without X25519MLKEM768; mihomo only sends it when asked.
+        link = re.search(r'vless_url="vless://[^"]*"', function("view_all_info")).group()
+        self.assertIn("&sid=${shortid}&support-x25519mlkem768=true#", link)
 
     def test_official_installer_receives_version_as_separate_arguments(self):
         # execute_official_script expands $args unquoted on purpose; confirm the split.

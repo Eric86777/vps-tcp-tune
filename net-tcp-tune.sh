@@ -15,7 +15,7 @@
 # v5.4.14 更新: 修复 resolved/D-Bus 启动依赖环，DNS失败返回失败并重试；Snell/Xray等待DNS，有限恢复Snell错误解析器；IPv6禁用前检查ifupdown冲突 (by Eric86777)
 
 SCRIPT_VERSION="5.4.18"
-SCRIPT_LAST_UPDATE="修复Xray配置目录权限误判并默认固定Xray v26.3.27"
+SCRIPT_LAST_UPDATE="VLESS链接加抗量子参数,兼容新版Xray"
 #=============================================================================
 
 #=============================================================================
@@ -12544,8 +12544,9 @@ readonly xray_root_home="$(getent passwd 0 | cut -d: -f6)"
 readonly xray_subscription_path="${xray_root_home}/xray_subscription_info.txt"
 readonly xray_install_script_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
 # Xray 核心版本策略：默认固定到已验证可用的版本，不跟随官方"最新版"。
-# 原因：v26.10.21 在 DMIT / 绿云AU + mihomo v1.19.30 客户端下出现 VLESS-Reality
-#       握手不被识别(连接超时)，回退到 v26.3.27 后恢复；根因尚未确认，待验证后再放开。
+# 原因：v26.10.21 起 REALITY 拒绝不带 X25519MLKEM768 的握手，而 mihomo 默认不带，
+#       旧客户端(如 mihomo v1.19.30)连接超时；客户端升级到 mihomo v1.19.31+ 并导入带
+#       support-x25519mlkem768=true 的链接后可连。客户端全部就绪前保持 v26.3.27。
 # 临时指定版本:  XRAY_VERSION_OVERRIDE=v26.10.21 bbr
 # 跟随官方最新:  XRAY_VERSION_OVERRIDE=latest bbr
 readonly XRAY_PINNED_VERSION="v26.3.27"
@@ -13155,7 +13156,7 @@ run_core_install() {
     target_version=$(xray_target_version) || return 1
     if [[ -n "$target_version" ]]; then
         install_action="install --version $target_version"
-        info "正在下载并安装 Xray 核心（固定版本 ${target_version#v}）..."
+        info "正在下载并安装 Xray 核心（版本 ${target_version#v}）..."
     else
         info "正在下载并安装 Xray 核心（官方最新版）..."
     fi
@@ -13606,7 +13607,11 @@ update_xray() {
     local target_version
     target_version=$(xray_target_version) || return 1
     if [[ -n "$target_version" ]]; then
-        info "脚本固定 Xray 版本: ${cyan}${target_version#v}${none}（官方 26.10.21 在部分环境出现 VLESS-Reality 连接超时，暂不自动升级）"
+        if [[ -n "${XRAY_VERSION_OVERRIDE:-}" ]]; then
+            info "按 XRAY_VERSION_OVERRIDE 指定 Xray 版本: ${cyan}${target_version#v}${none}"
+        else
+            info "脚本固定 Xray 版本: ${cyan}${target_version#v}${none}（v26.10.21 起需客户端带抗量子握手，mihomo 需 v1.19.31+，暂不自动升级）"
+        fi
         info "当前版本: ${cyan}${current_version}${none}"
         if [[ "$current_version" == "${target_version#v}" ]]; then
             success "已是固定版本，无需更新。"
@@ -13617,13 +13622,13 @@ update_xray() {
             warning "当前版本高于固定版本，保持不动。如需指定版本: XRAY_VERSION_OVERRIDE=vX.Y.Z bbr"
             return
         fi
-        info "开始安装固定版本 ${target_version#v}..."
+        info "开始安装 Xray ${target_version#v}..."
         if ! run_core_install; then
             error "Xray 更新失败！"
             return 1
         fi
         if ! restart_xray; then return 1; fi
-        success "Xray 已更新到固定版本 ${target_version#v}。"
+        success "Xray 已更新到 ${target_version#v}。"
         return
     fi
 
@@ -14123,7 +14128,9 @@ view_all_info() {
 
             link_name_raw="$node_name"
             link_name_encoded=$(echo "$link_name_raw" | sed 's/ /%20/g')
-            vless_url="vless://${uuid}@${display_ip}:${port}?flow=xtls-rprx-vision&encryption=none&type=tcp&security=reality&sni=${domain}&fp=chrome&pbk=${public_key}&sid=${shortid}#${link_name_encoded}"
+            # support-x25519mlkem768=true：mihomo 默认从握手里去掉 X25519MLKEM768，而 Xray v26.10.21 起的
+            # REALITY 会拒绝不带它的握手；mihomo v1.19.31+ 导入链接时读取该参数，其他客户端忽略。
+            vless_url="vless://${uuid}@${display_ip}:${port}?flow=xtls-rprx-vision&encryption=none&type=tcp&security=reality&sni=${domain}&fp=chrome&pbk=${public_key}&sid=${shortid}&support-x25519mlkem768=true#${link_name_encoded}"
             links_array+=("$vless_url")
 
             if [[ "$is_quiet" = false ]]; then
