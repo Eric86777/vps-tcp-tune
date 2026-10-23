@@ -22,6 +22,9 @@ def function(name):
     return re.findall(r"^" + re.escape(name) + r"\(\) \{\n.*?^\}", SOURCE, re.M | re.S)[-1]
 
 
+XRAY_VERSION_POLICY = re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group() + "\n" + function("xray_target_version")
+
+
 class BootRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1163,7 +1166,7 @@ snellv6_update_and_repair
         self.assertNotIn("systemctl start", self.calls_text())
 
     def test_xray_core_install_guard_exists_before_official_installer(self):
-        code = self.mapped(function("run_core_install")) + r'''
+        code = XRAY_VERSION_POLICY + "\n" + self.mapped(function("run_core_install")) + r'''
 execute_official_script() {
     [ -f "$TEST_ROOT/etc/systemd/system/xray.service.d/90-net-tcp-boot-recovery.conf" ] || return 91
     echo "official $*" >> "$CALLS"
@@ -1173,7 +1176,7 @@ xray_sync_existing_config_owner() { echo fixture-config-sync >> "$CALLS"; }
 run_core_install
 '''
         self.assert_ok(self.run_code(code))
-        self.assertIn("official install\n", self.calls_text())
+        self.assertIn("official install --version v26.3.27\n", self.calls_text())
         self.assertNotIn("helper --migrate-resolved", self.calls_text())
 
     def test_xray_core_install_aborts_before_official_on_migration_failure(self):
@@ -1188,7 +1191,7 @@ run_core_install
     def test_xray_already_latest_update_runs_full_migration(self):
         binary = self.write("/usr/local/bin/xray", "#!/bin/sh\necho 'Xray 26.3.27'\n")
         binary.chmod(0o755)
-        code = function("update_xray") + r'''
+        code = XRAY_VERSION_POLICY + "\n" + function("update_xray") + r'''
 xray_binary_path="$TEST_ROOT/usr/local/bin/xray"
 curl() { echo '{"tag_name":"v26.3.27"}'; }
 jq() { echo v26.3.27; }
@@ -1196,9 +1199,13 @@ run_core_install() { echo forbidden-core-update >> "$CALLS"; return 99; }
 restart_xray() { echo forbidden-restart >> "$CALLS"; return 99; }
 update_xray
 '''
-        self.assert_ok(self.run_code(code))
-        self.assertTrue(self.guard("xray.service").exists())
-        self.assertNotIn("forbidden", self.calls_text())
+        # 固定版本与 latest 两种策略下的"已是最新"路径都必须先完成迁移。
+        for override in ("", "latest"):
+            with self.subTest(override=override):
+                self.guard("xray.service").unlink(missing_ok=True)
+                self.assert_ok(self.run_code(code, extra={"XRAY_VERSION_OVERRIDE": override}))
+                self.assertTrue(self.guard("xray.service").exists())
+                self.assertNotIn("forbidden", self.calls_text())
 
 
 if __name__ == "__main__":

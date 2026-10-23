@@ -30,6 +30,9 @@ def body(name):
     return match.group()
 
 
+XRAY_VERSION_POLICY = re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group() + "\n" + body("xray_target_version")
+
+
 @unittest.skipUnless(ENABLED, "Explicitly marked disposable Linux container only")
 class InstallerIdentityTests(unittest.TestCase):
     def setUp(self):
@@ -269,8 +272,76 @@ exit "$result"
         self.assertFalse(CONFIG.exists())
         self.assertFalse(self.calls.exists())
 
+    def parent(self, mode, group=0):
+        os.chown(CONFIG.parent, 0, group)
+        CONFIG.parent.chmod(mode)
+
+    def test_official_750_root_xray_directory_is_traversable_by_xray_runtime(self):
+        # Regression: the official installer creates 750 root:xray; o+x must not be required.
+        self.user.write_text("xray\n")
+        self.parent(0o750, self.account.pw_gid)
+        for check in ("", " '' --check"):
+            with self.subTest(check=check):
+                result = self.script("xray_sync_existing_config_owner xray.service" + check)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_synced()
+        self.assertEqual(subprocess.run(["runuser", "-u", "xray", "--", "test", "-r", str(CONFIG)]).returncode, 0)
+
+    def test_traversable_parent_modes_are_accepted(self):
+        for user, mode, group in (("xray", 0o751, 0), ("xray", 0o711, 0), ("root", 0o700, 0)):
+            with self.subTest(user=user, mode=oct(mode)):
+                self.user.write_text(user + "\n")
+                self.parent(mode, group)
+                result = self.script("xray_sync_existing_config_owner")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_parent_the_runtime_account_cannot_traverse_is_rejected(self):
+        for user, mode, group in (("xray", 0o700, "xray"), ("nobody", 0o750, "xray"), ("xray", 0o740, "xray")):
+            with self.subTest(user=user, mode=oct(mode)):
+                self.user.write_text(user + "\n")
+                self.parent(mode, self.account.pw_gid if group == "xray" else 0)
+                result = self.script("xray_sync_existing_config_owner")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("无法穿过: /usr/local/etc/xray", result.stderr)
+                self.assertEqual(CONFIG.read_bytes(), self.original)
+                self.assertEqual(CONFIG.stat().st_uid, pwd.getpwnam("nobody").pw_uid)
+
+    def test_writable_or_foreign_owned_parent_is_still_rejected(self):
+        self.user.write_text("xray\n")
+        cases = ((0o770, 0, self.account.pw_gid), (0o757, 0, 0), (0o775, 0, self.account.pw_gid),
+                 (0o750, self.account.pw_uid, self.account.pw_gid))
+        for mode, owner, group in cases:
+            with self.subTest(mode=oct(mode), owner=owner):
+                os.chown(CONFIG.parent, owner, group)
+                CONFIG.parent.chmod(mode)
+                result = self.script("xray_sync_existing_config_owner")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Xray 配置父目录不可信", result.stderr)
+                self.assertEqual(CONFIG.stat().st_uid, pwd.getpwnam("nobody").pw_uid)
+
+    def test_unloaded_unit_cannot_vouch_for_non_world_traversable_parent(self):
+        self.env["TEST_LOADED"] = "not-found"
+        self.user.write_text("xray\n")
+        self.parent(0o750, self.account.pw_gid)
+        result = self.script("xray_sync_existing_config_owner")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("运行账号(未知)无法穿过", result.stderr)
+
+    def test_symlinked_parent_is_still_rejected_with_runtime_traversal(self):
+        self.user.write_text("xray\n")
+        CONFIG.unlink()
+        CONFIG.parent.rmdir()
+        outside_directory = self.root / "outside-directory"
+        outside_directory.mkdir()
+        os.chown(outside_directory, 0, self.account.pw_gid)
+        outside_directory.chmod(0o750)
+        CONFIG.parent.symlink_to(outside_directory)
+        result = self.script("xray_sync_existing_config_owner")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("符号链接", result.stderr)
+
     def test_core_no_start_branch_still_syncs_before_registration(self):
-        extra = body("run_core_install") + '''
+        extra = XRAY_VERSION_POLICY + "\n" + body("run_core_install") + '''
 ensure_xray_dependencies() { return 0; }
 boot_recovery_migrate() { return 0; }
 execute_official_script() { printf 'xray\\n' > "$TEST_USER_STATE"; }

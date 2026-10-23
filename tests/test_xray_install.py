@@ -176,6 +176,125 @@ run_core_install
             self.assertFalse(changed.exists())
 
 
+class VersionPolicyTests(unittest.TestCase):
+    """Pinned Xray core version: new installs and menu 11 never follow upstream latest by default."""
+
+    POLICY = re.search(r"^readonly XRAY_PINNED_VERSION=.*$", SOURCE, re.M).group() + "\n" + function("xray_target_version")
+
+    def target(self, override=None):
+        env = dict(os.environ)
+        env.pop("XRAY_VERSION_OVERRIDE", None)
+        if override is not None:
+            env["XRAY_VERSION_OVERRIDE"] = override
+        return subprocess.run(["bash", "-c", self.POLICY + "\nxray_target_version"], env=env,
+                              text=True, capture_output=True, timeout=10)
+
+    def test_target_version_defaults_to_pin_and_accepts_overrides(self):
+        for override, expected in ((None, "v26.3.27"), ("", "v26.3.27"), ("latest", ""),
+                                   ("v26.10.21", "v26.10.21"), ("26.4.1", "v26.4.1")):
+            with self.subTest(override=override):
+                result = self.target(override)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+
+    def test_invalid_override_is_rejected(self):
+        for override in ("bad;rm", "v26", "26.3.27 --reinstall", "../v1.2"):
+            with self.subTest(override=override):
+                result = self.target(override)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("XRAY_VERSION_OVERRIDE 格式无效", result.stderr)
+
+    def update(self, current, override=None):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "xray"
+            binary.write_text("#!/bin/sh\necho 'Xray " + current + " (Xray, Penetrates Everything.)'\n")
+            binary.chmod(0o755)
+            code = self.POLICY + "\n" + function("update_xray") + "\n" + r'''
+cyan=''; none=''
+xray_binary_path="$TEST_BINARY"
+info() { printf 'info %s\n' "$1"; }
+success() { printf 'success %s\n' "$1"; }
+warning() { printf 'warning %s\n' "$1"; }
+error() { printf 'error %s\n' "$1"; }
+ensure_xray_dependencies() { return 0; }
+boot_recovery_migrate() { return 0; }
+curl() { echo '{"tag_name":"v26.10.21"}'; }
+run_core_install() { echo CORE_INSTALL; }
+restart_xray() { echo RESTART; }
+update_xray
+'''
+            env = dict(os.environ, TEST_BINARY=str(binary))
+            env.pop("XRAY_VERSION_OVERRIDE", None)
+            if override is not None:
+                env["XRAY_VERSION_OVERRIDE"] = override
+            return subprocess.run(["bash", "-c", code], env=env, text=True, capture_output=True, timeout=10)
+
+    def test_update_equal_to_pin_does_nothing(self):
+        result = self.update("26.3.27")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("已是固定版本", result.stdout)
+        self.assertNotIn("CORE_INSTALL", result.stdout)
+
+    def test_update_newer_than_pin_is_not_downgraded_or_upgraded(self):
+        result = self.update("26.10.21")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("当前版本高于固定版本，保持不动", result.stdout)
+        self.assertNotIn("CORE_INSTALL", result.stdout)
+        self.assertNotIn("RESTART", result.stdout)
+
+    def test_update_older_than_pin_installs_pin(self):
+        result = self.update("26.2.6")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("开始安装固定版本 26.3.27", result.stdout)
+        self.assertIn("CORE_INSTALL", result.stdout)
+        self.assertIn("RESTART", result.stdout)
+
+    def test_update_latest_override_keeps_upstream_latest_behavior(self):
+        result = self.update("26.3.27", override="latest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("固定版本", result.stdout)
+        self.assertIn("最新版本: 26.10.21", result.stdout)
+        self.assertIn("CORE_INSTALL", result.stdout)
+
+    def test_update_invalid_override_stops_before_install(self):
+        result = self.update("26.2.6", override="bad;rm")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("CORE_INSTALL", result.stdout)
+
+    def run_core(self, override=None):
+        code = self.POLICY + "\n" + function("run_core_install") + "\n" + r'''
+info() { printf 'info %s\n' "$1"; }
+error() { printf 'error %s\n' "$1"; }
+ensure_xray_dependencies() { return 0; }
+boot_recovery_migrate() { return 0; }
+execute_official_script() { printf 'OFFICIAL[%s]\n' "$1"; [ "$1" = install-geodata ] || exit 0; }
+run_core_install
+'''
+        env = dict(os.environ)
+        env.pop("XRAY_VERSION_OVERRIDE", None)
+        if override is not None:
+            env["XRAY_VERSION_OVERRIDE"] = override
+        return subprocess.run(["bash", "-c", code], env=env, text=True, capture_output=True, timeout=10)
+
+    def test_core_install_passes_pinned_version_to_official_installer(self):
+        for override, action in ((None, "install --version v26.3.27"),
+                                 ("v26.10.21", "install --version v26.10.21"), ("latest", "install")):
+            with self.subTest(override=override):
+                result = self.run_core(override)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("OFFICIAL[" + action + "]", result.stdout)
+
+    def test_core_install_invalid_override_never_runs_official_installer(self):
+        result = self.run_core("bad;rm")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("OFFICIAL", result.stdout)
+
+    def test_official_installer_receives_version_as_separate_arguments(self):
+        # execute_official_script expands $args unquoted on purpose; confirm the split.
+        self.assertRegex(function("execute_official_script"), r'bash "\$temp_script" \$args &')
+
+
 REAL_ENABLED = (os.environ.get("XRAY_REAL_INSTALL_TEST") == "1" and os.geteuid() == 0
     and Path("/.dockerenv").exists() and Path("/root/xray-install-isolated-container").is_file()
     and Path("/proc/1/comm").read_text().strip() == "systemd")
