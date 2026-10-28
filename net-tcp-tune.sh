@@ -8,14 +8,15 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.20 更新: 功能3提速与修复：tcp_notsent_lowat恢复内核默认(长距离起步提速)；缓冲区按内存封顶并设置tcp_mem；tcp_rmem起步值改回131072；内核不支持的参数自动注释；多队列网卡保留mq；修复功能3与菜单33端口限速互相覆盖 (by Eric86777)
 # v5.4.19 更新: Xray安装/更新(菜单13→1/11)可选版本：默认稳定版v26.3.27，可选官方最新版并提示客户端要求、需确认；已装更新版本时默认保持，可降回稳定版 (by Eric86777)
 # v5.4.18 更新: 修复新机Xray安装被目录权限误拦(750 root:xray 按实际运行账号判断穿越)；Xray核心默认固定v26.3.27，XRAY_VERSION_OVERRIDE可覆盖 (by Eric86777)
 # v5.4.17 更新: 启动恢复先预检依赖和有效运行环境；隔离代理/DNS/IPv6操作，完整回滚共享恢复组件；修复Xray多实例更新、SS卸载及Snell快照误报 (by Eric86777)
 # v5.4.16 更新: 修复libexec0700导致启动保护203/EXEC；补齐DNS依赖；兼容官方Xray运行用户、配置/数据权限及UMask，失败安装重试补齐开机自启 (by Eric86777)
 # v5.4.15 更新: 已有项目安装进入菜单自动幂等迁移启动恢复；Snell/Xray新装、更新及已最新版路径统一补齐，失败停止并报告，空机器浏览和只读CLI不迁移 (by Eric86777)
 
-SCRIPT_VERSION="5.4.19"
-SCRIPT_LAST_UPDATE="Xray安装/更新可选版本"
+SCRIPT_VERSION="5.4.20"
+SCRIPT_LAST_UPDATE="BBR直连优化提速与修复"
 #=============================================================================
 
 #=============================================================================
@@ -3039,6 +3040,81 @@ calculate_tw_buckets() {
 }
 
 #=============================================================================
+# tcp_mem 取值计算（TCP 全局内存，单位：页）
+# 不设置时内核只给约 1/16 内存作压力线、约 9% 作上限。中转机每个用户占两条连接，
+# 几条大流同时跑就会撞线，内核进入内存压力后会同时压缩所有连接的缓冲区。
+# 现规则：1/16 内存开始收紧、1/8 进入压力、1/4 硬上限，三档都不低于内核默认值。
+# 按实际页大小换算（arm64 可能是 16K/64K 页，不能写死 4K）。
+#=============================================================================
+calculate_tcp_mem() {
+    local mem_mb=$1
+    local page_size
+    page_size=$(getconf PAGESIZE 2>/dev/null)
+    [[ "$page_size" =~ ^[0-9]+$ ]] && [ "$page_size" -gt 0 ] || page_size=4096
+    awk -v m="$mem_mb" -v ps="$page_size" 'BEGIN{
+        pg = m * 1048576 / ps
+        low = int(pg / 16); pres = int(pg / 8); max = int(pg / 4)
+        if (low < 4096) low = 4096; if (pres < 8192) pres = 8192; if (max < 16384) max = 16384
+        printf "%d %d %d", low, pres, max
+    }'
+}
+
+#=============================================================================
+# 按内存限制单连接缓冲区上限
+# 单连接最多占 tcp_mem 上限的 1/8（≈ 内存的 1/32），保证至少 8 条大流能同时跑满；
+# 否则小内存机（如 1G 跑美西 1Gbps 档的 64MB）几条大流就吃光 TCP 全局内存。
+# 下限 4MB，低于此连百兆长距离都跑不满。用法：cap_buffer_by_memory <缓冲区MB> <内存MB>
+#=============================================================================
+cap_buffer_by_memory() {
+    local buffer_mb=$1
+    local mem_mb=$2
+    if ! [[ "$mem_mb" =~ ^[0-9]+$ ]] || [ "$mem_mb" -le 0 ]; then
+        echo "$buffer_mb"
+        return 0
+    fi
+    local cap_mb=$((mem_mb / 32))
+    [ "$cap_mb" -lt 4 ] && cap_mb=4
+    if [ "$buffer_mb" -gt "$cap_mb" ]; then
+        echo -e "${gl_huang}⚠️ 内存 ${mem_mb}MB，单连接缓冲区按内存的 1/32 封顶：${buffer_mb}MB → ${cap_mb}MB${gl_bai}" >&2
+        echo "$cap_mb"
+    else
+        echo "$buffer_mb"
+    fi
+}
+
+#=============================================================================
+# 逐项校验 sysctl 配置文件，把内核不接受的参数就地注释
+# 被拒的参数留在文件里，systemd-sysctl.service 每次开机都会 failed，用户只看到
+# 一个红色的系统服务，看不出是哪个参数。直接试写每一项（不解析 sysctl -p 的报错文本，
+# 其格式随 procps 版本和语言环境变化）；试写成功的同时也就应用了该参数。
+# 输出被注释的项数。用法：sysctl_apply_validated <配置文件>
+#=============================================================================
+sysctl_apply_validated() {
+    local conf="$1"
+    local line key val lineno=0 rejected=0 bad_lines=""
+    [ -f "$conf" ] || { echo 0; return 0; }
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        case "$line" in ''|\#*|[[:space:]]\#*) continue ;; esac
+        [[ "$line" == *=* ]] || continue
+        key=$(printf '%s' "${line%%=*}" | tr -d ' \t')
+        val=$(printf '%s' "${line#*=}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        [ -n "$key" ] || continue
+        if [ ! -e "/proc/sys/${key//.//}" ] || ! sysctl -qw "${key}=${val}" >/dev/null 2>&1; then
+            bad_lines="${bad_lines}${lineno} "
+            echo -e "${gl_huang}  内核不接受 ${key} = ${val}，已在配置中注释${gl_bai}" >&2
+            rejected=$((rejected + 1))
+        fi
+    done < "$conf"
+    # 按行号注释（同名参数出现多次时只处理被拒的那一行），读完再统一改文件
+    local n
+    for n in $bad_lines; do
+        sed -i "${n}s/^/# 本内核不支持，已自动注释: /" "$conf"
+    done
+    echo "$rejected"
+}
+
+#=============================================================================
 # SWAP智能检测和建议函数（集成到选项2/3）
 #=============================================================================
 check_and_suggest_swap() {
@@ -3227,17 +3303,70 @@ eligible_ifaces() {
     done
 }
 
+# 给单个网卡设置 fq
+# 多队列网卡（发送队列 > 1）保留根 mq，只把每个子队列换成 fq；直接把根换成一个 fq
+# 会让所有发送队列挤进同一个 qdisc、共用一把锁。单队列网卡直接把根换成 fq。
+# 内核自建的 mq 句柄是 0:，其子队列无法用 parent :N 寻址，需先换成 1: 句柄（子队列保留）。
+# mq 设置失败时退回根 fq（与旧版行为一致）。本函数也会原样写入开机恢复脚本。
+# 网卡上已有生效的限速/队列设置（菜单33或 dog 的端口限速 HTB、菜单30的 CAKE 等）时不覆盖，返回 2；
+# BBR 自带发送节奏控制，不依赖 fq。只剩空壳的 HTB（没有子类、默认类也不存在）照常换成 fq。
+fq_apply_iface() {
+    local dev="$1" txq handle parents p root def
+    root=$(tc qdisc show dev "$dev" 2>/dev/null | awk '$1=="qdisc" && / root /{print $2; exit}')
+    case "$root" in
+        ''|fq|fq_codel|mq|noqueue|pfifo_fast|pfifo|sfq) ;;
+        htb)
+            def=$(tc qdisc show dev "$dev" 2>/dev/null | awk '$2=="htb" && / root /{for(i=1;i<NF;i++) if($i=="default"){v=$(i+1); sub(/^0x/,"",v); print v; exit}}')
+            # 除菜单33自己的 1:1 父类外还有任何类（含直接挂在根下的，如其他工具的 1:10），即为生效中的限速
+            if tc class show dev "$dev" 2>/dev/null | grep -v '^class htb 1:1 root ' | grep -q .; then
+                return 2
+            fi
+            if [ -n "$def" ] && [ "$def" != 0 ] && tc class show dev "$dev" 2>/dev/null | grep -qE "^class htb [0-9a-f]+:${def} "; then
+                return 2
+            fi
+            # 空壳：先删掉，网卡回到默认队列后再按下面的逻辑设置（多队列网卡才能正确建出 mq）
+            tc qdisc del dev "$dev" root 2>/dev/null
+            ;;
+        *) return 2 ;;
+    esac
+    txq=$(ls -d /sys/class/net/"$dev"/queues/tx-* 2>/dev/null | wc -l)
+    if [ "$txq" -gt 1 ]; then
+        handle=$(tc qdisc show dev "$dev" 2>/dev/null | awk '$1=="qdisc" && $2=="mq" && / root /{print $3; exit}')
+        if [ "$handle" = "1:" ] || tc qdisc replace dev "$dev" root handle 1: mq 2>/dev/null; then
+            parents=$(tc qdisc show dev "$dev" 2>/dev/null | awk '$1=="qdisc"{for(i=1;i<NF;i++) if($i=="parent" && index($(i+1),"1:")==1) print $(i+1)}')
+            if [ -n "$parents" ]; then
+                for p in $parents; do
+                    tc qdisc replace dev "$dev" parent "$p" fq 2>/dev/null || break
+                done
+                # 全部子队列都已是 fq 才算成功
+                tc qdisc show dev "$dev" 2>/dev/null | awk '$1=="qdisc" && / parent 1:/ && $2!="fq"{bad=1} END{exit bad}' && return 0
+            fi
+        fi
+    fi
+    tc qdisc replace dev "$dev" root fq 2>/dev/null
+}
+
 # tc fq 立即生效（无需重启）
 apply_tc_fq_now() {
     if ! command -v tc >/dev/null 2>&1; then
         echo -e "${gl_huang}警告: 未检测到 tc（iproute2），跳过 fq 应用${gl_bai}"
         return 0
     fi
-    local applied=0
+    local applied=0 rc
+    # 因已有限速/队列设置而保留未动的网卡，供调用方提示
+    FQ_SKIPPED_IFACES=""
     for dev in $(eligible_ifaces); do
-        tc qdisc replace dev "$dev" root fq 2>/dev/null && applied=$((applied+1))
+        fq_apply_iface "$dev"
+        rc=$?
+        if [ $rc -eq 0 ]; then
+            applied=$((applied+1))
+        elif [ $rc -eq 2 ]; then
+            FQ_SKIPPED_IFACES="${FQ_SKIPPED_IFACES} ${dev}"
+        fi
     done
     [ $applied -gt 0 ] && echo -e "${gl_lv}已对 $applied 个网卡应用 fq（即时生效）${gl_bai}" || echo -e "${gl_huang}未发现可应用 fq 的网卡${gl_bai}"
+    [ -n "$FQ_SKIPPED_IFACES" ] && echo -e "${gl_huang}网卡${FQ_SKIPPED_IFACES} 已有限速/队列设置（端口限速、CAKE 等），已保留未覆盖${gl_bai}"
+    return 0
 }
 
 # MSS clamp（防分片）自动启用
@@ -3307,8 +3436,13 @@ bbr_configure_direct() {
     esac
 
     local buffer_mb=$(calculate_buffer_size "$detected_bandwidth" "$region")
+    # 物理内存：缓冲区封顶、tcp_mem 和虚拟内存参数都按它推导
+    local mem_total=$(free -m | awk 'NR==2{print $2}')
+    buffer_mb=$(cap_buffer_by_memory "$buffer_mb" "$mem_total")
     local buffer_bytes=$((buffer_mb * 1024 * 1024))
-    
+    local tcp_mem
+    tcp_mem=$(calculate_tcp_mem "$mem_total")
+
     echo -e "${gl_lv}✅ 将使用 ${buffer_mb}MB 缓冲区配置${gl_bai}"
     sleep 2
     
@@ -3342,8 +3476,7 @@ bbr_configure_direct() {
     echo -e "${gl_zi}[步骤 4/6] 创建配置文件...${gl_bai}"
     echo "正在创建新配置..."
     
-    # 获取物理内存用于虚拟内存参数调整
-    local mem_total=$(free -m | awk 'NR==2{print $2}')
+    # 根据物理内存调整虚拟内存参数（mem_total 已在步骤 2 取得）
     local vm_swappiness=5
     local vm_dirty_ratio=15
     local vm_min_free_kbytes=65536
@@ -3373,8 +3506,12 @@ net.ipv4.tcp_congestion_control=bbr
 # TCP 缓冲区优化（智能检测：${buffer_mb}MB）
 net.core.rmem_max=${buffer_bytes}
 net.core.wmem_max=${buffer_bytes}
-net.ipv4.tcp_rmem=4096 87380 ${buffer_bytes}
+# 接收起步值 131072 = 新内核默认值（旧版 87380 是老内核默认值，等于把起步调小了）
+net.ipv4.tcp_rmem=4096 131072 ${buffer_bytes}
 net.ipv4.tcp_wmem=4096 65536 ${buffer_bytes}
+
+# TCP 全局内存（页）：内存 1/16 开始收紧、1/8 进入压力、1/4 硬上限
+net.ipv4.tcp_mem=${tcp_mem}
 
 # ===== 直连/落地优化参数 =====
 
@@ -3397,8 +3534,11 @@ net.ipv4.tcp_mtu_probing=1
 
 # ===== Reality终极优化参数 =====
 
-# 发送低水位（上传速度优化关键）
-net.ipv4.tcp_notsent_lowat=16384
+# 发送低水位：恢复内核默认（不限制）
+# 旧版设 16384，实测在 2 核中转机、170ms 线路上让连接起步阶段供数不足，
+# 前 3 秒平均速度低约 40%，跑满后速度无差别。写明默认值而不是删掉这一行：
+# 重跑本功能时运行中的旧值会立即改回，/etc/sysctl.conf 里的同名旧值也会被注释
+net.ipv4.tcp_notsent_lowat=4294967295
 
 # 连接回收优化（tw_buckets 取 max(5000, 内核默认值)，不人为调低）
 net.ipv4.tcp_fin_timeout=15
@@ -3452,13 +3592,11 @@ EOF
     echo ""
     echo -e "${gl_zi}[步骤 5/6] 应用所有优化参数...${gl_bai}"
     echo "正在应用配置..."
-    local sysctl_output
-    sysctl_output=$(sysctl -p "$SYSCTL_CONF" 2>&1)
-    local sysctl_rc=$?
-    if [ $sysctl_rc -ne 0 ]; then
-        echo -e "${gl_huang}⚠️ sysctl 部分参数应用失败（可能有不支持的参数）:${gl_bai}"
-        echo "$sysctl_output" | grep -i "error\|invalid\|unknown\|cannot" | head -5
-        echo -e "${gl_zi}已支持的参数仍然生效，不影响整体优化${gl_bai}"
+    local sysctl_rejected
+    sysctl_rejected=$(sysctl_apply_validated "$SYSCTL_CONF")
+    if [ "${sysctl_rejected:-0}" -gt 0 ]; then
+        echo -e "${gl_huang}⚠️ ${sysctl_rejected} 项参数本内核不支持，已在配置中注释（避免开机 systemd-sysctl 报错）${gl_bai}"
+        echo -e "${gl_zi}其余参数均已生效，不影响整体优化${gl_bai}"
     else
         echo -e "${gl_lv}✓ 所有 sysctl 参数已成功应用${gl_bai}"
     fi
@@ -3466,15 +3604,19 @@ EOF
     # 立即应用 fq，并启用 MSS clamp（无需重启）
     echo "正在应用队列与防分片（无需重启）..."
     apply_tc_fq_now >/dev/null 2>&1
+    if [ -n "$FQ_SKIPPED_IFACES" ]; then
+        echo -e "${gl_huang}ℹ 网卡${FQ_SKIPPED_IFACES} 已有端口限速/CAKE 等设置，已保留未覆盖（BBR 自带发送节奏控制，不受影响）${gl_bai}"
+    fi
     apply_mss_clamp enable >/dev/null 2>&1
 
     # 持久化 tc fq 和 iptables MSS clamp（重启后自动恢复）
     echo "正在配置重启持久化..."
     # 创建 systemd 服务实现 tc fq + MSS clamp 开机恢复
+    # 排在端口限速开机恢复（菜单33）之后：先由它建好 HTB，本服务再看到限速就跳过，不会互相覆盖
     cat > /etc/systemd/system/bbr-optimize-persist.service << 'PERSISTEOF'
 [Unit]
 Description=BBR Optimize - Restore tc fq and MSS clamp after boot
-After=network-online.target
+After=network-online.target ptm-boot-restore.service
 Wants=network-online.target
 
 [Service]
@@ -3486,17 +3628,20 @@ ExecStart=/usr/local/bin/bbr-optimize-apply.sh
 WantedBy=multi-user.target
 PERSISTEOF
 
-    cat > /usr/local/bin/bbr-optimize-apply.sh << 'APPLYEOF'
-#!/bin/bash
-# BBR Optimize 重启恢复脚本 - 自动生成，勿手动编辑
-# 应用 tc fq 到所有物理网卡
+    # fq_apply_iface 原样写入恢复脚本，开机与即时生效走同一份逻辑
+    {
+        echo '#!/bin/bash'
+        echo '# BBR Optimize 重启恢复脚本 - 自动生成，勿手动编辑'
+        declare -f fq_apply_iface
+        cat << 'APPLYEOF'
+# 应用 tc fq 到所有物理网卡（多队列网卡保留 mq，子队列设 fq）
 for d in /sys/class/net/*; do
     [ -e "$d" ] || continue
     dev=$(basename "$d")
     case "$dev" in
         lo|docker*|veth*|br-*|virbr*|zt*|tailscale*|wg*|tun*|tap*) continue;;
     esac
-    tc qdisc replace dev "$dev" root fq 2>/dev/null
+    fq_apply_iface "$dev"
 done
 # 应用 iptables MSS clamp
 if command -v iptables >/dev/null 2>&1; then
@@ -3535,6 +3680,7 @@ if [ "$CPU_COUNT" -gt 1 ]; then
     done
 fi
 APPLYEOF
+    } > /usr/local/bin/bbr-optimize-apply.sh
     chmod +x /usr/local/bin/bbr-optimize-apply.sh
     systemctl daemon-reload 2>/dev/null
     systemctl enable bbr-optimize-persist.service 2>/dev/null
@@ -3674,6 +3820,15 @@ LIMITSEOF
         echo -e "接收缓冲区: ${gl_lv}${buffer_mb}MB ✓${gl_bai}"
     else
         echo -e "接收缓冲区: ${gl_huang}${actual_rmem_mb}MB (期望: ${buffer_mb}MB) ⚠${gl_bai}"
+    fi
+
+    # 验证 TCP 全局内存（sysctl 输出以制表符分隔，统一成空格再比较）
+    local actual_tcp_mem
+    actual_tcp_mem=$(sysctl -n net.ipv4.tcp_mem 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/ $//')
+    if [ "$actual_tcp_mem" = "$tcp_mem" ]; then
+        echo -e "TCP 全局内存: ${gl_lv}${tcp_mem} 页 ✓${gl_bai}"
+    else
+        echo -e "TCP 全局内存: ${gl_huang}${actual_tcp_mem} 页 (期望: ${tcp_mem}) ⚠${gl_bai}"
     fi
 
     # 验证 initcwnd
@@ -26275,12 +26430,40 @@ ptm_parse_tc_rate_to_kbps() {
     fi
 }
 
+# 准备端口限速用的根 HTB（句柄 1:）
+#   已是本功能的 HTB → 直接复用
+#   fq / mq 等普通队列（含功能3设置的 fq）→ 先删再建：已有显式根队列时内核拒绝 add；
+#     也不能 replace，功能3在多队列网卡上的 mq 同为 1: 句柄，类型不同会报错
+#   CAKE、其他句柄的 HTB 等别的工具的设置 → 不覆盖，提示用户先处理
+ptm_prepare_htb_root() {
+    local interface=$1 root handle
+    read -r root handle < <(tc qdisc show dev "$interface" 2>/dev/null | awk '$1=="qdisc" && / root /{print $2, $3; exit}')
+    case "$root" in
+        htb)
+            [ "$handle" = "1:" ] && return 0
+            echo -e "${gl_hong}网卡 ${interface} 上已有其他工具设置的 HTB 限速（句柄 ${handle}），为避免覆盖已停止，请先移除${gl_bai}" >&2
+            return 1
+            ;;
+        ''|noqueue|fq|fq_codel|mq|pfifo_fast|pfifo|sfq)
+            tc qdisc del dev "$interface" root 2>/dev/null || true
+            ;;
+        *)
+            echo -e "${gl_hong}网卡 ${interface} 上已有 ${root} 队列设置（如 CAKE 调优），为避免覆盖已停止，请先移除${gl_bai}" >&2
+            return 1
+            ;;
+    esac
+    if ! tc qdisc add dev "$interface" root handle 1: htb default 30 2>/dev/null; then
+        echo -e "${gl_hong}网卡 ${interface} 创建限速队列失败${gl_bai}" >&2
+        return 1
+    fi
+}
+
 ptm_apply_tc_limit() {
     local port=$1 total_limit=$2
     local interface
     interface=$(ptm_get_default_interface)
 
-    tc qdisc add dev "$interface" root handle 1: htb default 30 2>/dev/null || true
+    ptm_prepare_htb_root "$interface" || return 1
     tc class add dev "$interface" parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
 
     local class_id
@@ -26338,6 +26521,14 @@ ptm_remove_tc_limit() {
             match ip protocol 17 0xff match ip dport "$port" 0xffff 2>/dev/null || true
     fi
     tc class del dev "$interface" classid "$class_id" 2>/dev/null || true
+
+    # 最后一个端口限速删除后，连同本功能的根 HTB 一起移除，网卡恢复系统默认队列
+    # （功能3已把默认队列设为 fq）；否则空壳 HTB 会一直留在网卡上。
+    # 只在除本功能的 1:1 父类外再无任何类时删除，避免误删其他工具挂在 1: 下的限速。
+    if tc qdisc show dev "$interface" 2>/dev/null | grep -qE '^qdisc htb 1: root' &&
+        ! tc class show dev "$interface" 2>/dev/null | grep -v '^class htb 1:1 root ' | grep -q .; then
+        tc qdisc del dev "$interface" root 2>/dev/null || true
+    fi
 }
 
 # ---- 到期日 / 计费周期计算 ----
@@ -27161,6 +27352,10 @@ for port in \$(jq -r '.ports | keys[]' "\$CONFIG_FILE" 2>/dev/null); do
                 [[ "\$lower" =~ mbps\$ ]] && tc_rate="\${lower%mbps}mbit"
                 [[ "\$lower" =~ gbps\$ ]] && tc_rate="\${lower%gbps}gbit"
                 if [ -n "\$tc_rate" ]; then
+                    # fq / mq 等普通队列先删再建（已有显式根队列时 add 会被拒）；CAKE 等其他设置不动
+                    case "\$(tc qdisc show dev "\$iface" 2>/dev/null | awk '\$1=="qdisc" && / root /{print \$2; exit}')" in
+                        fq|fq_codel|mq|pfifo_fast|pfifo|sfq) tc qdisc del dev "\$iface" root 2>/dev/null || true ;;
+                    esac
                     tc qdisc add dev "\$iface" root handle 1: htb default 30 2>/dev/null || true
                     tc class add dev "\$iface" parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
                     if [[ "\$port" =~ , ]] || [[ "\$port" =~ ^[0-9]+-[0-9]+\$ ]]; then
@@ -27195,6 +27390,7 @@ PTMBOOTEOF
 [Unit]
 Description=ptm 端口流量监控 - 开机恢复 nftables 规则/配额/限速
 After=network-online.target
+Before=bbr-optimize-persist.service
 Wants=network-online.target
 
 [Service]
