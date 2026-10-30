@@ -573,6 +573,52 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(self.env.calls, [])
         self.assert_snell()
 
+    def legacy_nobody_owned_logs(self):
+        nobody = MODULE.pwd.getpwnam("nobody")
+        for item in self.env.path("/var/log/xray").iterdir():
+            os.chown(item, nobody.pw_uid, nobody.pw_gid)
+            item.chmod(0o600)
+        self.env.properties["xray.service"] = {"User": "nobody"}
+        return nobody
+
+    def test_legacy_nobody_owned_logs_without_xray_account_record_and_uninstall(self):
+        # Pre-1142d3d official installs: no xray account, logs owned by nobody.
+        real = MODULE.pwd.getpwnam
+        no_xray = lambda name: (_ for _ in ()).throw(KeyError(name)) if name == "xray" else real(name)
+        nobody = self.legacy_nobody_owned_logs()
+        with mock.patch.object(MODULE.pwd, "getpwnam", side_effect=no_xray):
+            self.env.record_install()
+            self.assertEqual(self.env.preflight()["data_uid"], nobody.pw_uid)
+            self.env.uninstall(check=True)
+            self.assertEqual(self.env.calls, [])
+            self.env.uninstall()
+        self.assertFalse(self.env.path("/usr/local/bin/xray").exists())
+        self.assertFalse(self.env.path("/var/log/xray").exists())
+        self.assert_snell()
+
+    def test_nobody_owned_data_without_xray_account_requires_legacy_nobody_unit(self):
+        real = MODULE.pwd.getpwnam
+        no_xray = lambda name: (_ for _ in ()).throw(KeyError(name)) if name == "xray" else real(name)
+        nobody = self.legacy_nobody_owned_logs()
+        with mock.patch.object(MODULE.pwd, "getpwnam", side_effect=no_xray):
+            for user in ("", "root", "xray", "daemon"):
+                with self.subTest(user=user):
+                    self.env.properties["xray.service"]["User"] = user
+                    self.assert_refused_without_mutations()
+            self.env.properties["xray.service"]["User"] = "nobody"
+            # The nobody exception never covers other owners or other paths.
+            item = self.env.path("/var/log/xray/error.log")
+            os.chown(item, nobody.pw_uid + 10000, nobody.pw_gid)
+            self.assert_refused_without_mutations()
+            os.chown(item, nobody.pw_uid, nobody.pw_gid)
+            path = self.env.path("/usr/local/share")
+            os.chown(path, nobody.pw_uid, nobody.pw_gid)
+            self.assert_refused_without_mutations()
+            os.chown(path, 0, 0)
+            self.env.uninstall(check=True)
+        with mock.patch.object(MODULE.pwd, "getpwnam", side_effect=KeyError("any")):
+            self.assert_refused_without_mutations()
+
     def test_legacy_unit_with_official_xray_owned_data_records_and_uninstalls(self):
         self.official_owned_layout()
         self.env.write("/etc/systemd/system/xray.service", UNIT)

@@ -8,15 +8,14 @@
 # 1. 正式版本迭代时修改 SCRIPT_VERSION，并更新版本备注（保留最新5条）
 # 2. 临时热修/不发版时只修改 SCRIPT_LAST_UPDATE，用于快速识别脚本是否已更新
 #=============================================================================
+# v5.4.21 更新: 修复旧版官方安装(无xray账号、服务以nobody运行、日志属nobody)的Xray卸载被“专用 xray 账号不存在”拦住 (by Eric86777)
 # v5.4.20 更新: 功能3提速与修复：tcp_notsent_lowat恢复内核默认(长距离起步提速)；缓冲区按内存封顶并设置tcp_mem；tcp_rmem起步值改回131072；内核不支持的参数自动注释；多队列网卡保留mq；修复功能3与菜单33端口限速互相覆盖 (by Eric86777)
 # v5.4.19 更新: Xray安装/更新(菜单13→1/11)可选版本：默认稳定版v26.3.27，可选官方最新版并提示客户端要求、需确认；已装更新版本时默认保持，可降回稳定版 (by Eric86777)
 # v5.4.18 更新: 修复新机Xray安装被目录权限误拦(750 root:xray 按实际运行账号判断穿越)；Xray核心默认固定v26.3.27，XRAY_VERSION_OVERRIDE可覆盖 (by Eric86777)
 # v5.4.17 更新: 启动恢复先预检依赖和有效运行环境；隔离代理/DNS/IPv6操作，完整回滚共享恢复组件；修复Xray多实例更新、SS卸载及Snell快照误报 (by Eric86777)
-# v5.4.16 更新: 修复libexec0700导致启动保护203/EXEC；补齐DNS依赖；兼容官方Xray运行用户、配置/数据权限及UMask，失败安装重试补齐开机自启 (by Eric86777)
-# v5.4.15 更新: 已有项目安装进入菜单自动幂等迁移启动恢复；Snell/Xray新装、更新及已最新版路径统一补齐，失败停止并报告，空机器浏览和只读CLI不迁移 (by Eric86777)
 
-SCRIPT_VERSION="5.4.20"
-SCRIPT_LAST_UPDATE="BBR直连优化提速与修复"
+SCRIPT_VERSION="5.4.21"
+SCRIPT_LAST_UPDATE="修复旧版Xray卸载"
 #=============================================================================
 
 #=============================================================================
@@ -11899,17 +11898,24 @@ class Environment:
         # dedicated xray account even when an already-current legacy service
         # still runs as nobody. Runtime UID is not data provenance. Destructive
         # removal still verifies the loaded unit and all its hooks separately.
+        info = self.show("xray.service")
         if not recording:
-            info = self.show("xray.service")
             self.validate_unit("xray.service", info)
             if info.get("LoadState") != "loaded":
                 raise Refused("非 root 数据目录需要已核实的默认 Xray 服务")
         try:
             account = pwd.getpwnam("xray")
         except KeyError:
-            raise Refused("专用 xray 账号不存在") from None
+            # Installers before XTLS/Xray-install 1142d3d (2026-10-18) create no
+            # dedicated account; the service runs as nobody, which owns the logs.
+            if info.get("LoadState") != "loaded" or info.get("User") != "nobody":
+                raise Refused("专用 xray 账号不存在，且默认 Xray 服务不是旧版 nobody 身份") from None
+            try:
+                account = pwd.getpwnam("nobody")
+            except KeyError:
+                raise Refused("旧版 Xray 服务使用的 nobody 账号不存在") from None
         if account.pw_uid <= 0 or account.pw_gid <= 0:
-            raise Refused("专用 xray 账号不能使用 root UID/GID")
+            raise Refused("Xray 数据账号不能使用 root UID/GID")
         return account.pw_uid
 
     def validate_data_tree(self, path, name, data_uid):
@@ -12669,7 +12675,9 @@ run_xinchendahai_xray() {
 
 # ==============================================================================
 # Xray VLESS-Reality & Shadowsocks 2022 多功能管理脚本
-# 版本: Final v2.9.8
+# 版本: Final v2.9.9
+# 更新日志 (v2.9.9):
+# - 卸载兼容 2026-10-18 前官方安装器的旧布局：无 xray 账号时，已加载服务为 User=nobody 才认 nobody 所有的日志。
 # 更新日志 (v2.9.8):
 # - 安装/更新可选核心版本：默认稳定版，官方最新版附客户端要求说明并需输入 y 确认。
 # - 已装版本高于稳定版时默认保持不动，可在菜单 11 降回稳定版；VLESS 链接带 support-x25519mlkem768=true。
@@ -12695,7 +12703,7 @@ run_xinchendahai_xray() {
 set -euo pipefail
 
 # --- 全局常量 ---
-readonly XRAY_SCRIPT_VERSION="Final v2.9.8"
+readonly XRAY_SCRIPT_VERSION="Final v2.9.9"
 readonly xray_config_path="/usr/local/etc/xray/config.json"
 readonly xray_binary_path="/usr/local/bin/xray"
 readonly xray_root_home="$(getent passwd 0 | cut -d: -f6)"
