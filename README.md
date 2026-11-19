@@ -1,10 +1,10 @@
-# BBR v3 优化脚本 - Ultimate Edition v5.4.21
+# BBR v3 优化脚本 - Ultimate Edition v5.4.22
 
 **XanMod 内核 + BBR v3 + 全方位 VPS 管理工具集**
 
 一键安装 XanMod 内核，启用 BBR v3 拥塞控制，集成 33 项实用功能，优化你的 VPS 服务器。
 
-> **最新版本 v5.4.21**：修复旧版官方安装（服务以 nobody 运行、没有 xray 账号）的 Xray 无法卸载。
+> **最新版本 v5.4.22**：纯 IPv6 机器上一键优化不再禁用 IPv6、Realm 修复保留原监听；cloudflared 和 Caddy 安装先在临时位置验证能运行再替换，Caddy 支持 ARM64。
 
 ---
 
