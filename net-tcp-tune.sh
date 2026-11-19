@@ -6714,6 +6714,11 @@ ROLLBACK_SCRIPT
 # Realm 转发首连超时修复（专项优化）
 #=============================================================================
 
+# 没有 IPv4 默认路由视为纯 IPv6 机器（禁用 IPv6 或改 IPv4 监听会断开 SSH/转发）
+has_ipv4_default_route() {
+    [ -n "$(ip -4 route show default 2>/dev/null)" ]
+}
+
 realm_fix_timeout() {
     clear
     echo -e "${gl_kjlan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${gl_bai}"
@@ -6785,10 +6790,14 @@ SYSC
         # 已写入过的旧键保持原样（无害），不做删除。
 
         # 用文本替换确保 IPv6 监听改为 IPv4
-        sed -i.bak -E 's/"listen"\s*:\s*":::([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
-        sed -i.bak -E 's/"listen"\s*:\s*"\[::\]:([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
-        sed -i.bak 's/:::/0.0.0.0:/g' "$realm_cfg" 2>/dev/null || true
-        echo -e "${gl_lv}  ✓ Realm 配置已优化${gl_bai}"
+        if has_ipv4_default_route; then
+            sed -i.bak -E 's/"listen"\s*:\s*":::([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
+            sed -i.bak -E 's/"listen"\s*:\s*"\[::\]:([0-9]+)"/"listen": "0.0.0.0:\1"/g' "$realm_cfg" 2>/dev/null || true
+            sed -i.bak 's/:::/0.0.0.0:/g' "$realm_cfg" 2>/dev/null || true
+            echo -e "${gl_lv}  ✓ Realm 配置已优化${gl_bai}"
+        else
+            echo -e "${gl_huang}  检测到本机无 IPv4，保留 Realm 原监听地址${gl_bai}"
+        fi
     else
         echo -e "${gl_huang}  未找到 $realm_cfg，跳过 Realm 配置修改${gl_bai}"
     fi
@@ -7582,14 +7591,18 @@ one_click_optimize() {
 
         echo ""
         echo -e "${gl_kjlan}━━━━━━ [4/4] 禁用 IPv6（可选） ━━━━━━${gl_bai}"
-        read -e -p "$(echo -e "${gl_huang}是否永久禁用 IPv6？(Y/N) [Y]: ${gl_bai}")" ipv6_choice
-        ipv6_choice=${ipv6_choice:-Y}
-        if [[ "$ipv6_choice" =~ ^[Yy]$ ]]; then
-            AUTO_MODE=1
-            disable_ipv6_permanent
-            AUTO_MODE=""
+        if ! has_ipv4_default_route; then
+            echo -e "${gl_huang}检测到本机无 IPv4，已跳过禁用 IPv6（避免断开 SSH）${gl_bai}"
         else
-            echo -e "${gl_huang}已跳过 IPv6 禁用${gl_bai}"
+            read -e -p "$(echo -e "${gl_huang}是否永久禁用 IPv6？(Y/N) [Y]: ${gl_bai}")" ipv6_choice
+            ipv6_choice=${ipv6_choice:-Y}
+            if [[ "$ipv6_choice" =~ ^[Yy]$ ]]; then
+                AUTO_MODE=1
+                disable_ipv6_permanent
+                AUTO_MODE=""
+            else
+                echo -e "${gl_huang}已跳过 IPv6 禁用${gl_bai}"
+            fi
         fi
 
         echo ""
