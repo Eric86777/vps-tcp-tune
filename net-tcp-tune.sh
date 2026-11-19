@@ -17977,10 +17977,7 @@ configure_cf_tunnel() {
                         ;;
                 esac
                 
-                wget -O /usr/local/bin/cloudflared "$download_url"
-                chmod +x /usr/local/bin/cloudflared
-                
-                if [ $? -eq 0 ]; then
+                if cloudflared_install_from_url "$download_url"; then
                     echo -e "${gl_lv}✅ cloudflared 安装成功${gl_bai}"
                 else
                     echo -e "${gl_hong}❌ cloudflared 安装失败${gl_bai}"
@@ -20042,6 +20039,20 @@ check_port_listening() {
     return 1
 }
 
+# 先下载到临时文件并确认可运行，再替换 /usr/local/bin/cloudflared；失败时原有程序不动
+cloudflared_install_from_url() {
+    local url="$1"
+    local tmp_file
+    tmp_file=$(mktemp) || return 1
+    if wget -O "$tmp_file" "$url" && [ -s "$tmp_file" ] && chmod 755 "$tmp_file" \
+        && "$tmp_file" --version >/dev/null 2>&1 \
+        && mv -f "$tmp_file" /usr/local/bin/cloudflared; then
+        return 0
+    fi
+    rm -f "$tmp_file"
+    return 1
+}
+
 # 安装 cloudflared
 install_cloudflared() {
     if command -v cloudflared &>/dev/null; then
@@ -20067,7 +20078,7 @@ install_cloudflared() {
             ;;
     esac
 
-    if wget -O /usr/local/bin/cloudflared "$download_url" && chmod +x /usr/local/bin/cloudflared; then
+    if cloudflared_install_from_url "$download_url"; then
         echo -e "${gl_lv}✅ cloudflared 安装成功${gl_bai}"
         return 0
     else
