@@ -23952,56 +23952,79 @@ caddy_install() {
     local CADDY_VERSION="${CADDY_DEFAULT_VERSION}"
     local download_success=false
 
+    local cpu_arch caddy_arch
+    cpu_arch=$(uname -m)
+    case "$cpu_arch" in
+        x86_64) caddy_arch="amd64" ;;
+        aarch64|arm64) caddy_arch="arm64" ;;
+        *)
+            echo -e "${gl_hong}❌ 不支持的架构: ${cpu_arch}${gl_bai}"
+            break_end
+            return 1
+            ;;
+    esac
+
+    local tmp_dir
+    if ! tmp_dir=$(mktemp -d); then
+        echo -e "${gl_hong}❌ 无法创建临时目录${gl_bai}"
+        break_end
+        return 1
+    fi
+
     # 下载源列表(按优先级)
     declare -a download_urls=(
-        "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
-        "https://caddyserver.com/api/download?os=linux&arch=amd64"
-        "https://ghproxy.com/https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+        "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz"
+        "https://caddyserver.com/api/download?os=linux&arch=${caddy_arch}"
+        "https://ghproxy.com/https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz"
     )
 
     # 尝试多个下载源
+    # 下载和解压都在临时目录内完成，验证能运行后才替换 /usr/bin/caddy
     for url in "${download_urls[@]}"; do
         echo "尝试下载: $url"
+        rm -f "$tmp_dir/caddy" "$tmp_dir/caddy.tar.gz"
 
         if [[ "$url" == *.tar.gz ]]; then
             # 下载 tar.gz 格式
-            if curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o /tmp/caddy.tar.gz 2>/dev/null; then
+            if curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o "$tmp_dir/caddy.tar.gz" 2>/dev/null; then
                 echo "解压 Caddy..."
-                if tar -xzf /tmp/caddy.tar.gz -C /tmp/ caddy 2>/dev/null; then
-                    mv /tmp/caddy /usr/bin/caddy
-                    chmod +x /usr/bin/caddy
-                    rm -f /tmp/caddy.tar.gz
-                    download_success=true
-                    break
-                fi
+                tar -xzf "$tmp_dir/caddy.tar.gz" -C "$tmp_dir" caddy 2>/dev/null || rm -f "$tmp_dir/caddy"
             fi
         else
             # 直接下载二进制文件
-            if curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o /usr/bin/caddy 2>/dev/null; then
+            if curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o "$tmp_dir/caddy" 2>/dev/null; then
                 # 验证文件是否有效(检查文件大小)
-                if [ -f /usr/bin/caddy ] && [ -s /usr/bin/caddy ]; then
-                    local file_size=$(stat -f%z /usr/bin/caddy 2>/dev/null || stat -c%s /usr/bin/caddy 2>/dev/null)
+                if [ -f "$tmp_dir/caddy" ] && [ -s "$tmp_dir/caddy" ]; then
+                    local file_size=$(stat -f%z "$tmp_dir/caddy" 2>/dev/null || stat -c%s "$tmp_dir/caddy" 2>/dev/null)
                     # Caddy 二进制文件应该大于 10MB
-                    if [ "$file_size" -gt 10485760 ]; then
-                        chmod +x /usr/bin/caddy
-                        download_success=true
-                        break
-                    else
+                    if [ "$file_size" -le 10485760 ]; then
                         echo "文件大小异常,尝试下一个源..."
-                        rm -f /usr/bin/caddy
+                        rm -f "$tmp_dir/caddy"
                     fi
                 fi
+            else
+                rm -f "$tmp_dir/caddy"
             fi
         fi
+
+        if [ -f "$tmp_dir/caddy" ] && chmod +x "$tmp_dir/caddy" && "$tmp_dir/caddy" version &>/dev/null; then
+            if mv -f "$tmp_dir/caddy" /usr/bin/caddy; then
+                download_success=true
+                break
+            fi
+        elif [ -f "$tmp_dir/caddy" ]; then
+            echo "下载的 Caddy 无法运行,尝试下一个源..."
+        fi
     done
+    rm -rf "$tmp_dir"
 
     # 检查下载结果
     if [ "$download_success" = false ]; then
         echo -e "${gl_hong}❌ 所有下载源均失败${gl_bai}"
         echo ""
         echo "请手动安装 Caddy:"
-        echo "  wget https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
-        echo "  tar -xzf caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+        echo "  wget https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz"
+        echo "  tar -xzf caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz"
         echo "  mv caddy /usr/bin/caddy"
         echo "  chmod +x /usr/bin/caddy"
         echo ""
