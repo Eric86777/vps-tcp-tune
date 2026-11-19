@@ -20043,7 +20043,7 @@ check_port_listening() {
 cloudflared_install_from_url() {
     local url="$1"
     local tmp_file
-    tmp_file=$(mktemp) || return 1
+    tmp_file=$(mktemp /usr/local/bin/.cloudflared.XXXXXX) || return 1
     if wget -O "$tmp_file" "$url" && [ -s "$tmp_file" ] && chmod 755 "$tmp_file" \
         && "$tmp_file" --version >/dev/null 2>&1 \
         && mv -f "$tmp_file" /usr/local/bin/cloudflared; then
@@ -24007,12 +24007,18 @@ caddy_install() {
             fi
         fi
 
-        if [ -f "$tmp_dir/caddy" ] && chmod +x "$tmp_dir/caddy" && "$tmp_dir/caddy" version &>/dev/null; then
-            if mv -f "$tmp_dir/caddy" /usr/bin/caddy; then
-                download_success=true
-                break
+        # 在 /usr/bin 内的临时文件上验证（/tmp 可能是 noexec），同一文件系统内 mv 为原子替换
+        if [ -f "$tmp_dir/caddy" ]; then
+            local caddy_tmp
+            if caddy_tmp=$(mktemp /usr/bin/.caddy.XXXXXX); then
+                if cp -f "$tmp_dir/caddy" "$caddy_tmp" && chmod 755 "$caddy_tmp" \
+                    && "$caddy_tmp" version &>/dev/null \
+                    && mv -f "$caddy_tmp" /usr/bin/caddy; then
+                    download_success=true
+                    break
+                fi
+                rm -f "$caddy_tmp"
             fi
-        elif [ -f "$tmp_dir/caddy" ]; then
             echo "下载的 Caddy 无法运行,尝试下一个源..."
         fi
     done
