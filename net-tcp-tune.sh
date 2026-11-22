@@ -2016,16 +2016,24 @@ disable_ipv6_temporary() {
 }
 
 disable_ipv6_permanent() {
-    if ! bash <(boot_recovery_emit_helper) --check-ifupdown-ipv6; then
-        echo -e "${gl_hong}❌ 检测到ifupdown IPv6配置冲突，未写入sysctl或网络配置。请先协调cloud-init/inet6配置。${gl_bai}"
-        return 1
-    fi
-    clear
+    [ "${AUTO_MODE:-}" = "1" ] || clear
     echo -e "${gl_kjlan}=== 永久禁用IPv6 ===${gl_bai}"
     echo ""
     echo "此操作将永久禁用IPv6，重启后仍然生效"
     echo "------------------------------------------------"
     echo ""
+
+    if ! bash <(boot_recovery_emit_helper) --check-ifupdown-ipv6; then
+        echo ""
+        echo -e "${gl_hong}❌ 检测到ifupdown IPv6配置冲突，未写入sysctl或网络配置。请先协调cloud-init/inet6配置。${gl_bai}"
+        echo ""
+        echo "说明："
+        echo "  - 请根据上方提示检查 /etc/network/interfaces 及 /etc/network/interfaces.d/* 中的配置"
+        echo "  - 如需永久禁用 IPv6，请先注释或移除其中的 inet6 配置段（若由 cloud-init 生成请同步调整），避免重启后网络服务启动失败"
+        echo ""
+        break_end
+        return 1
+    fi
     
     # 检查是否已经永久禁用
     if [ -f /etc/sysctl.d/99-disable-ipv6.conf ]; then
